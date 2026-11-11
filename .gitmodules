@@ -1,0 +1,6 @@
+[submodule "third-party/chimera-vocal-synth"]
+	path = third-party/chimera-vocal-synth
+	url = https://github.com/jamesondh/chimera-vocal-synth/
+[submodule "third-party/arti-6"]
+	path = third-party/arti-6
+	url = https://github.com/lee-jhwn/arti-6
