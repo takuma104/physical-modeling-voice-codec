@@ -1,7 +1,7 @@
 """Score a directory of renders.
 
 usage: python -m pmvc.evaluate [dir] [--variants rule,f0,floor,durf0,fit] [--against real]
-                               [--name results] [--jobs N] [--no-asr]
+                               [--aligned warp,...] [--name results] [--jobs N] [--no-asr]
 
 `dir` (default out/transplant) holds real/<id>.wav, meta/<id>.json, pitch/<id>.npy and one
 directory of <id>.wav per variant, as `pmvc.transplant` and `pmvc.perturb` write them. Scores
@@ -17,8 +17,8 @@ Against the reference (`--against`: the recording, or another variant such as a 
              each signal's mean cepstrum removed
   other      (against the recording) the same for another real speaker reading the sentence, of
              the same sex where the database has one: what a different person scores
-For variants on the reference's timeline (meta's `aligned` list against the recording; every
-variant against another variant):
+For variants on the reference's timeline (meta's `aligned` list and `--aligned` against the
+recording; every variant against another variant):
   mcdLinear  the distortion frame against frame, with no warp
   timing     how far the best warp strays from frame-against-frame (ms, mean)
   voicing    share of speech frames where both agree on voiced/unvoiced
@@ -202,6 +202,7 @@ def main() -> None:
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
     ap.add_argument("--variants", type=str, default="rule,f0,floor,durf0,fit")
     ap.add_argument("--against", type=str, default="real")
+    ap.add_argument("--aligned", type=str, default="", help="more variants on the recording's timeline")
     ap.add_argument("--name", type=str, default="results")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     ap.add_argument("--no-asr", action="store_true")
@@ -211,6 +212,8 @@ def main() -> None:
     names = list(dict.fromkeys(["real", a.against, *variants]))
     metas = [json.loads(p.read_text()) for p in sorted((d / "meta").glob("*.json"))]
     metas = [m for m in metas if all((d / v / f"{m['id']}.wav").exists() for v in names)]
+    for m in metas:
+        m["aligned"] = [*m["aligned"], *filter(None, a.aligned.split(","))]
     with ProcessPoolExecutor(a.jobs, initializer=_init, initargs=(not a.no_asr, 2)) as pool:
         rows = list(pool.map(score, [(d, m, variants, a.against) for m in metas]))
     summary = summarise(rows, names)
