@@ -1,12 +1,15 @@
 //! `pmvc-synth`: drives the CHIMERA voice (third-party/chimera-vocal-synth, unmodified) from JSON.
 //!
 //!   pmvc-synth render <spec.json> <out.wav> [--info info.json] [--tracks tracks.json] [--rate 100]
+//!   pmvc-synth plan   <spec.json> <info.json>
 //!   pmvc-synth drive  <tracks.json> <out.wav>
 //!
 //! `render` plans phones with CHIMERA's own gestural planner, but takes what a text front end
 //! would otherwise decide from the caller: each phone's duration, each phrase's start time and,
 //! optionally, the pitch contour. `--tracks` also writes what the voice did as a control track:
 //! the articulator positions and the glottal, breath and pitch controls, `rate` times a second.
+//! `plan` only plans: it writes the phones' times (the durations the planner's rules give the
+//! phones that came without one) and renders nothing.
 //!
 //! `drive` plays such a control track back with no planner: every frame becomes one gesture
 //! whose activation is a Hann window one frame wide on each side, so neighbouring frames
@@ -34,6 +37,7 @@ const SOURCE_KEYS: [&str; 4] = ["abduction", "closure", "breath", "f0"];
 
 const USAGE: &str = "\
 usage: pmvc-synth render <spec.json> <out.wav> [--info info.json] [--tracks tracks.json] [--rate 100]
+       pmvc-synth plan   <spec.json> <info.json>
        pmvc-synth drive  <tracks.json> <out.wav>";
 
 #[derive(Deserialize)]
@@ -159,24 +163,9 @@ fn source_controls(v: &HumanVoice, t: f64) -> [f64; 4] {
     [half(ControlKey::ABDUCTION), half(ControlKey::CLOSURE), breath, f0]
 }
 
-fn render(args: &[String]) -> Result<(), String> {
-    let mut pos: Vec<&String> = Vec::new();
-    let (mut info_out, mut tracks_out, mut rate) = (None, None, 100.0);
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--info" => info_out = Some(it.next().ok_or("--info needs a file")?.clone()),
-            "--tracks" => tracks_out = Some(it.next().ok_or("--tracks needs a file")?.clone()),
-            "--rate" => rate = it.next().and_then(|r| r.parse().ok()).ok_or("--rate needs a number")?,
-            _ => pos.push(a),
-        }
-    }
-    let [spec_path, wav_path] = pos[..] else { return Err(USAGE.into()) };
-    let spec: Spec = read_json(spec_path)?;
-    chimera::init();
-    let mut voice = new_voice(spec.body, &spec.source);
-    let base_f0 = voice.source.f0;
-
+/// The gestures of every phrase of `spec` (with its pitch contour, if it has one, in place of
+/// the planner's intonation), the phones as planned, and the end of the last phrase (s).
+fn plan_spec(spec: &Spec, base_f0: f64) -> Result<(Vec<Gesture>, Vec<PlannedSegment>, f64), String> {
     let mut gestures: Vec<Gesture> = Vec::new();
     let mut segments: Vec<PlannedSegment> = Vec::new();
     let mut end: f64 = 0.0;
@@ -199,6 +188,35 @@ fn render(args: &[String]) -> Result<(), String> {
             }
         }
     }
+    Ok((gestures, segments, end))
+}
+
+fn plan(args: &[String]) -> Result<(), String> {
+    let [spec_path, info_path] = args else { return Err(USAGE.into()) };
+    let spec: Spec = read_json(spec_path)?;
+    chimera::init();
+    let base_f0 = new_voice(spec.body, &spec.source).source.f0;
+    let (_, segments, end) = plan_spec(&spec, base_f0)?;
+    write_json(info_path, &Info { segments, end, duration: end + spec.tail, peak: 0.0, non_finite: 0 })
+}
+
+fn render(args: &[String]) -> Result<(), String> {
+    let mut pos: Vec<&String> = Vec::new();
+    let (mut info_out, mut tracks_out, mut rate) = (None, None, 100.0);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--info" => info_out = Some(it.next().ok_or("--info needs a file")?.clone()),
+            "--tracks" => tracks_out = Some(it.next().ok_or("--tracks needs a file")?.clone()),
+            "--rate" => rate = it.next().and_then(|r| r.parse().ok()).ok_or("--rate needs a number")?,
+            _ => pos.push(a),
+        }
+    }
+    let [spec_path, wav_path] = pos[..] else { return Err(USAGE.into()) };
+    let spec: Spec = read_json(spec_path)?;
+    chimera::init();
+    let mut voice = new_voice(spec.body, &spec.source);
+    let (gestures, segments, end) = plan_spec(&spec, voice.source.f0)?;
     voice.schedule(&gestures);
     if voice.score.dropped > 0 {
         return Err(format!("{} gestures did not fit the score", voice.score.dropped));
@@ -302,6 +320,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("render") => render(&args[1..]),
+        Some("plan") => plan(&args[1..]),
         Some("drive") => drive(&args[1..]),
         _ => Err(USAGE.to_string()),
     };
