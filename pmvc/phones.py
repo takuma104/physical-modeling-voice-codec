@@ -113,18 +113,46 @@ def to_phrases(segs: list[Seg]) -> list[list[Seg]]:
     return phrases
 
 
-def phrase_specs(phrases: list[list[Seg]], shift: float) -> list[dict[str, object]]:
-    """The phrases as `pmvc-synth render` takes them, `shift` seconds later than the recording."""
+# The planner splits these into two vowel targets (two planned segments).
+DIPHTHONGS: frozenset[str] = frozenset(["aɪ", "aʊ", "ɔɪ", "eɪ", "oʊ"])
+
+
+def phrase_specs(phrases: list[list[Seg]], shift: float, durations: bool = True) -> list[dict[str, object]]:
+    """The phrases as `pmvc-synth` takes them, `shift` seconds later than their own times.
+    Without `durations` the planner's rules time the phones."""
     out: list[dict[str, object]] = []
     for n, ph in enumerate(phrases):
+        segs: list[dict[str, object]] = []
+        for s in ph:
+            seg: dict[str, object] = {"ipa": s.ipa, "stress": s.stress, "wordEnd": s.word_end}
+            if durations:
+                seg["dur"] = round(s.dur, 4)
+            segs.append(seg)
         out.append(
             {
                 "t0": round(ph[0].start + shift, 4),
                 # only the sentence's end falls; a pause inside it does not
                 "intonation": "statement" if n + 1 == len(phrases) else "flat",
-                "segments": [
-                    {"ipa": s.ipa, "dur": round(s.dur, 4), "stress": s.stress, "wordEnd": s.word_end} for s in ph
-                ],
+                "segments": segs,
             }
         )
     return out
+
+
+def relayout(phrases: list[list[Seg]], durs: list[list[float]]) -> list[list[Seg]]:
+    """The phrases with other phone durations: the first starts where it did, and each pause
+    between phrases stays as long as it was."""
+    out: list[list[Seg]] = []
+    for n, (ph, ds) in enumerate(zip(phrases, durs)):
+        t = ph[0].start if n == 0 else out[-1][-1].end + (ph[0].start - phrases[n - 1][-1].end)
+        new: list[Seg] = []
+        for s, d in zip(ph, ds):
+            new.append(Seg(s.ipa, t, t + d, s.stress, s.word_end))
+            t += d
+        out.append(new)
+    return out
+
+
+def boundary_times(phrases: list[list[Seg]]) -> list[float]:
+    """Every phone boundary in order: each phrase's start, then the end of each of its phones."""
+    return [t for ph in phrases for t in (ph[0].start, *(s.end for s in ph))]

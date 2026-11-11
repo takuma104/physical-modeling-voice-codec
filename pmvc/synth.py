@@ -32,6 +32,15 @@ def render_spec(spec: dict[str, Any], wav: Path, tracks: bool = False) -> dict[s
     return json.loads(info_path.read_text())
 
 
+def plan_spec(spec: dict[str, Any], stem: Path) -> dict[str, Any]:
+    """Plan `spec` without rendering: the phones' times as the planner sets them. Writes
+    `<stem>.plan-spec.json` and `<stem>.plan.json` and returns the latter's content."""
+    spec_path, info_path = stem.with_suffix(".plan-spec.json"), stem.with_suffix(".plan.json")
+    spec_path.write_text(json.dumps(spec, ensure_ascii=False))
+    _run([str(SYNTH_BIN), "plan", str(spec_path), str(info_path)])
+    return json.loads(info_path.read_text())
+
+
 def drive(tracks: dict[str, Any], wav: Path) -> None:
     """Play a control track back (`pmvc-synth drive`). Writes `<wav>.tracks.json` beside the WAV."""
     path = wav.with_suffix("").with_suffix(".tracks.json")

@@ -2,10 +2,11 @@
 
 A control track (21 values, 100 times a second: 17 articulator positions, glottal abduction and
 closure, breath, pitch) is a complete description of an utterance for CHIMERA: `pmvc-synth
-drive` plays it back with no planner. Here the tracks of `pmvc.transplant`'s `fit` renders are
-damaged the way a codec or a generative model damages a latent, and played back.
+drive` plays it back with no planner. Here the tracks of `pmvc.transplant`'s `f0` renders (the
+most intelligible it makes) are damaged the way a codec or a generative model damages a
+latent, and played back.
 
-usage: python -m pmvc.perturb [dir] [--base fit] [--ids FA01_01,...] [--n 24] [--jobs N]
+usage: python -m pmvc.perturb [dir] [--base f0] [--ids FA01_01,...] [--n 24] [--jobs N]
 
 Writes one directory of <id>.wav per condition under <dir> (default out/transplant):
   drive                  the track unchanged: what the round trip through a track costs
@@ -114,7 +115,7 @@ def perturb(x: Array, cond: str, scale: Scale, rng: np.random.Generator) -> Arra
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
-    ap.add_argument("--base", type=str, default="fit", help="the variant whose control tracks are perturbed")
+    ap.add_argument("--base", type=str, default="f0", help="the variant whose control tracks are perturbed")
     ap.add_argument("--ids", type=str, default="")
     ap.add_argument("--n", type=int, default=24, help="how many recordings (the first n ids, alternating sexes)")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
