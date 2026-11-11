@@ -11,6 +11,7 @@
 | `third-party/chimera-vocal-synth` | 物理モデル音声合成 CHIMERA(サブモジュール、無改造で使う) |
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` を持つ |
 | `pmvc/` | 実験スクリプト(Python) |
 | `docs/` | 企画メモと関連論文 |
 
@@ -20,7 +21,7 @@
 git submodule update --init
 cargo build --release          # target/release/pmvc-synth
 cargo build --release -p chimera-cli --manifest-path third-party/chimera-vocal-synth/Cargo.toml
-uv sync
+uv sync                        # pmvc-engine もここでビルドされる(Rust が必要)
 ```
 
 実験は TSP speech database(48 kHz、254 MB、Simplified BSD)を `~/datasets/tsp` に置いて使います。
@@ -50,8 +51,16 @@ uv run python -m pmvc.perturb
 uv run python -m pmvc.evaluate --against drive --name perturb_results \
   --variants "$(uv run python -c "from pmvc.perturb import conditions; print(','.join(c for c in conditions() if c != 'drive'))")"
 
-# 3. 試聴ページ(音声埋め込みの HTML 1 枚)
+# 3. コピー合成: 制御列を実録音に合わせて最適化する
+uv run python -m pmvc.warp                      # 出発点: 規則の発音を録音の時間軸に伸縮(200 文)
+uv run python -m pmvc.copysynth                 # 局所探索(40 文、1 文 1〜2 分)
+uv run python -m pmvc.evaluate --variants rule,f0,warp,copy --aligned warp,copy --name results_copy
+uv run python -m pmvc.second_judge --name results_copy   # 第 2 の判定役(Whisper large-v3-turbo)
+
+# 4. 試聴ページ(音声埋め込みの HTML 1 枚)
 uv run python -m pmvc.page --notes notes.html
 ```
+
+`pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。
 
 各スクリプトの条件や指標の定義は、それぞれのファイル冒頭の docstring にあります。

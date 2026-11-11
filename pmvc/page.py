@@ -40,6 +40,20 @@ VARIANT_NOTES: dict[str, str] = {
     "durf0": "話者の音素長をそのまま",
     "fit": "有声の開始・終了が録音と合うよう音素境界を補正",
 }
+COPY_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "rule": "ルールのみ",
+    "f0": "規則の音素長 + 話者の F0",
+    "warp": "時間伸縮",
+    "copy": "コピー合成",
+}
+COPY_NOTES: dict[str, str] = {
+    "real": "TSP の話者本人",
+    "rule": "CHIMERA 標準",
+    "f0": "話者の音素列と F0 曲線。音素長は CHIMERA の規則",
+    "warp": "規則どおりに発音した制御列を、録音の時間軸へ音素ごとに伸縮（コピー合成の出発点）",
+    "copy": "制御列を録音に近づくよう局所探索で最適化",
+}
 KIND_LABELS: dict[str, str] = {
     "white": "白色ノイズ（フレームごとに独立）",
     "smooth": "ゆっくり変動するノイズ（4 Hz 以下）",
@@ -80,7 +94,8 @@ def esc(s: Any) -> str:
 
 
 def button(clips: dict[str, str], key: str, wav: Path, label: str, heard: str, kind: str = "") -> str:
-    clips[key] = clip_uri(wav)
+    if key not in clips:
+        clips[key] = clip_uri(wav)
     cls = f"clip {kind}".strip()
     return f'<button type="button" class="{cls}" data-clip="{key}" data-heard="{esc(heard)}" aria-pressed="false">{esc(label)}</button>'
 
@@ -122,6 +137,57 @@ def transplant_table(summary: dict[str, Any]) -> str:
 <thead><tr><th scope="col">条件</th><th scope="col">単語誤り率 %</th><th scope="col">女声 %</th><th scope="col">男声 %</th>
 <th scope="col">有声一致 %</th><th scope="col">時間ずれ ms</th><th scope="col">F0 相関</th><th scope="col">ケプストラム距離 dB</th></tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>"""
+
+
+def copy_table(summary: dict[str, Any]) -> str:
+    a = summary["all"]
+    rows = []
+    for v, label in COPY_LABELS.items():
+        w2 = a[v]["wer2"]
+        rows.append(
+            f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(COPY_NOTES[v])}</span></th>'
+            + wer_cell(a[v])
+            + f'<td class="num">{w2[0]:.1f}<span class="ci"> [{w2[1]:.1f}, {w2[2]:.1f}]</span></td>'
+            + num_cell(a[v], "voicing", ".0f", 100.0)
+            + num_cell(a[v], "timing", ".0f")
+            + "</tr>"
+        )
+    return f"""<div class="scroll"><table>
+<caption>コピー合成の評価（{a["n"]} 文）。単語誤り率は、最適化に使っていない 2 つの認識器によるもの。角括弧は 95% 区間。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">Whisper small.en %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">有声一致 %</th><th scope="col">時間ずれ ms</th></tr></thead>
+<tbody>{"".join(rows)}</tbody></table></div>"""
+
+
+def copy_section(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int) -> str:
+    """The copy-synthesis section, or nothing before `pmvc.copysynth` has been run and judged."""
+    path = d / "results_copy.json"
+    if not path.exists():
+        return ""
+    results = json.loads(path.read_text())
+    cards = []
+    for r in results["utterances"][:n]:
+        uid, m = r["id"], metas[r["id"]]
+        buttons = "".join(
+            button(
+                clips, f"{uid}/{v}", d / v / f"{uid}.wav", label,
+                f"{r['variants'][v].get('heard', '')}」／large-v3-turbo「{r['variants'][v].get('heard2', '')}", "ref" if v == "real" else "",
+            )
+            for v, label in COPY_LABELS.items()
+        )  # fmt: skip
+        cards.append(
+            f"""<article class="sentence">
+<p class="meta">{esc(uid)} · {"女性" if m["sex"] == "F" else "男性"}話者 {esc(m["speaker"])}</p>
+<p class="text">{esc(m["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+        )
+    return f"""<section aria-labelledby="h-c"><h2 id="h-c">3. コピー合成</h2>
+<p>制御列そのものを実録音に合わせて最適化します。出発点は「時間伸縮」で、規則どおりに発音した制御列を録音の時間軸へ伸縮したものです。そこから制御列を少しずつ変えては合成し、音声認識モデル wav2vec2 の中間特徴が録音に近づき、かつ文として読める変更だけを残します。エンジンは微分できないので、物理状態のスナップショットから数百ミリ秒だけ再合成する局所探索です。</p>
+{copy_table(results["summary"])}
+<p class="small">探索は 1 文あたり 40 反復（1 反復で 96 個の変更を試す）。Whisper は探索に使っていません。</p>
+<div class="stack">{"".join(cards)}</div>
+</section>"""
 
 
 def perturb_table(summary: dict[str, Any], conds: list[str]) -> str:
@@ -205,6 +271,7 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
         .replace("{{perturb_table}}", perturb_table(presults["summary"], perturb["conditions"]))
         .replace("{{sentences}}", "\n".join(sentences))
         .replace("{{perturbed}}", "\n".join(perturbed))
+        .replace("{{copy_section}}", copy_section(d, metas, clips, n_sentences))
         .replace("{{channels}}", esc(channels))
         .replace("{{clips}}", json.dumps(clips))
     )
@@ -285,6 +352,7 @@ code { font-size: 0.875em; }
 {{perturb_table}}
 <div class="stack">{{perturbed}}</div>
 </section>
+{{copy_section}}
 <footer class="small stack">
 <p>録音は TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。文は Harvard sentences。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。</p>
 </footer>
@@ -306,7 +374,7 @@ document.addEventListener("click", (e) => {
   line.textContent = "";
   const label = document.createElement("b");
   label.textContent = b.textContent + "：";
-  line.append(label, b.dataset.heard ? "「" + b.dataset.heard + "」" : "（聞き取りなし）");
+  line.append(label, b.dataset.heard ? "small.en「" + b.dataset.heard + "」" : "（聞き取りなし）");
   audio.src = CLIPS[b.dataset.clip];
   audio.play().catch(stop);
 });
