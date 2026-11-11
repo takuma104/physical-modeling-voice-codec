@@ -1,0 +1,16 @@
+[package]
+name = "pmvc-engine"
+description = "The CHIMERA voice as a Python module: control tracks in, samples out, with state snapshots"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "pmvc_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+chimera = { path = "../../third-party/chimera-vocal-synth/crates/chimera" }
+numpy = "0.23"
+pyo3 = { version = "0.23", features = ["extension-module"] }
+serde_json = "1"

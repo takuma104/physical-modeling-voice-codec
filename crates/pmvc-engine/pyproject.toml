@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "pmvc-engine"
+version = "0.1.0"
+description = "The CHIMERA voice as a Python module: control tracks in, samples out, with state snapshots"
+requires-python = ">=3.13"
+dependencies = ["numpy"]
+
+[tool.maturin]
+module-name = "pmvc_engine"
+
+# rebuild when the Rust sources change (uv otherwise only watches this file)
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "src/**/*.rs" }]

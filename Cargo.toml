@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pmvc-synth"]
+members = ["crates/pmvc-synth", "crates/pmvc-engine"]
 # the submodules keep their own workspaces; chimera is used as a path dependency
 exclude = ["third-party"]
 
