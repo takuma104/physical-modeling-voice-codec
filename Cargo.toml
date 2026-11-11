@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/pmvc-synth"]
+# the submodules keep their own workspaces; chimera is used as a path dependency
+exclude = ["third-party"]
+
+# as third-party/chimera-vocal-synth builds its engine (panic strategy aside)
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+debug = false

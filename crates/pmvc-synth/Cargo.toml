@@ -1,0 +1,11 @@
+[package]
+name = "pmvc-synth"
+description = "Drives the CHIMERA voice from JSON: phone plans with given durations and pitch, and frame-level control tracks"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+chimera = { path = "../../third-party/chimera-vocal-synth/crates/chimera" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
