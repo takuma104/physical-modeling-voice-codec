@@ -157,6 +157,38 @@ impl Voice {
         serde_json::json!({"openQuotient": g.open_quotient, "skew": g.skew, "closureSharpness": g.closure_sharpness, "amplitude": g.amplitude, "chink": g.chink, "jitter": g.jitter, "shimmer": g.shimmer}).to_string()
     }
 
+    /// How fast a constriction of the tract may close and open, set directly: a JSON object with
+    /// any of `maxAreaRate` (cm²/s, the opening rate, which sets how sharp a burst is),
+    /// `areaRateGain` (1/s per cm² of area), `sealRate` (cm²/s, the closing rate near contact),
+    /// `sealLo`, `sealHi` (cm², between which the closing rate eases from the one to the other)
+    /// and `sealEase` (cm², below which it slows on to the seal). The engine's own values keep a
+    /// closure from clicking at a man's pitch; a voice that lets more air through needs gentler ones.
+    fn set_airway(&mut self, patch: &str) -> PyResult<()> {
+        let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
+        let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
+        let a = &mut self.v.airway;
+        for (k, x) in obj {
+            let x = x.as_f64().ok_or_else(|| bad(format!("{k}: a number is needed")))?;
+            match k.as_str() {
+                "maxAreaRate" => a.max_area_rate = x,
+                "areaRateGain" => a.area_rate_gain = x,
+                "sealRate" => a.seal_rate = x,
+                "sealLo" => a.seal_lo = x,
+                "sealHi" => a.seal_hi = x,
+                "sealEase" => a.seal_ease = x,
+                _ => return Err(bad(format!("unknown airway parameter {k:?}"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// The airway parameters `set_airway` takes, as they are now (a JSON object).
+    #[getter]
+    fn airway(&self) -> String {
+        let a = &self.v.airway;
+        serde_json::json!({"maxAreaRate": a.max_area_rate, "areaRateGain": a.area_rate_gain, "sealRate": a.seal_rate, "sealLo": a.seal_lo, "sealHi": a.seal_hi, "sealEase": a.seal_ease}).to_string()
+    }
+
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
     #[getter]
     fn noise_gains(&self) -> (f64, f64, f64) {

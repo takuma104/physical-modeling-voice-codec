@@ -55,7 +55,7 @@ def main() -> None:
             k, (_, path, w) = job
             track: dict[str, Any] = json.loads(path.read_text())
             # the track as CHIMERA's own voice would play it, whatever voice it was written for
-            track = {**{key: v for key, v in track.items() if key not in ("noise", "glottis")}, "source": {"f0": track["source"]["f0"]}}
+            track = {**{key: v for key, v in track.items() if key not in ("noise", "glottis", "airway")}, "source": {"f0": track["source"]["f0"]}}
             v = make_voice(track, mixed(fitted, w) if w else None)
             frames = np.array(track["frames"])
             v.set_track(frames, 0)

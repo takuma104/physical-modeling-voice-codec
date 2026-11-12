@@ -1,8 +1,8 @@
 """Calibrate the voice's fixed settings for speech: the gains of its three turbulence noise
 sources (glottis, constrictions, teeth), its source's pressure, tension, breathiness,
-brightness and roughness, and two parameters of the glottis the source's settings reach only
+brightness and roughness, two parameters of the glottis the source's settings reach only
 part of the range of: the open quotient (at most 0.78 by `tension`, where a woman's voice is
-nearer 0.9) and the vibration's amplitude.
+nearer 0.9) and the vibration's amplitude; and how fast a constriction of the tract seals.
 
 CHIMERA's settings were tuned by ear and against a singer, under guards that protect singing;
 its own speech judge reports sibilants 10-17 dB too quiet in the female voice and a source short
@@ -11,8 +11,8 @@ are fitted once per body: the control tracks of `pmvc.warp` (the speaker's timin
 under candidate settings and scored by `pmvc.listener` against the recordings.
 
 usage: python -m pmvc.calibrate [dir] --sex F|M [--n 24] [--evals 250] [--tracks warp] [--prefix P]
-                                [--by listener|nisqa] [--start JSON] [--name calibration-<sex>]
-                                [--jobs N]
+                                [--by listener|nisqa] [--clicks 0.3] [--start JSON] [--only a,b]
+                                [--name calibration-<sex>] [--jobs N]
 
 Fits on `n` recordings of that sex (every k-th, so the speakers are mixed; `--prefix` keeps to
 ids that start with it) and writes <dir>/<name>.json: the settings, and the scores before and
@@ -24,11 +24,24 @@ tracks are replayed, an encoder's as well as `pmvc.warp`'s.
             moves little: the listener hears what is said, not how it sounds.
   nisqa     the quality NISQA predicts for the renders (`pmvc.natural`), less GUARD times the
             feature distance to the recordings as a multilingual listener hears it, so that a
-            voice that sounds better does not say something else. This is the one for a voice
-            that is understood but sounds wrong, as CHIMERA's female voice does: the same
-            tracks an octave lower score 4.4, at a woman's pitch 2.9.
+            voice that sounds better does not say something else, and less `--clicks` for
+            every dB by which the renders' clicks outweigh the recordings' (`pmvc.clicks`). This is
+            the one for a voice that is understood but sounds wrong, as CHIMERA's female
+            voice does: the same tracks an octave lower score 4.4, at a woman's pitch 2.9.
+            NISQA alone turns the noise at the teeth up, which it hears as stronger
+            fricatives and the ear as a smacking of the tongue at every stop.
 `pmvc.encoder encode --voice <dir>/<name>.json` then renders the recordings of speakers with a
 high voice with the settings (`pmvc.pitchmix` says from which pitch they help).
+
+Fitted to NISQA with every setting free and `--clicks 0`, the voice gets a long open phase and
+the noise at the teeth 2.2 times CHIMERA's: it scores well and clicks at every stop. With the
+clicks counted the search finds other ways out (twice the amplitude and a short open phase, or
+more breath noise for the clicks to drown in). So the voice in use is the first fit's with four
+settings set by hand against `pmvc.clicks`' counts: the noise at constrictions and at the
+teeth at 0.6 of CHIMERA's, the vibration's amplitude at 1.4 (the voice louder against its
+bursts), and constrictions sealing at half the rate (the click as the tongue closes 10 dB
+quieter). `--evals 0` writes such settings down: it searches nothing and reports what
+`--start`'s score.
 """
 
 import argparse
@@ -46,6 +59,7 @@ import torch
 from scipy.optimize import minimize
 
 from .audio import Array, load
+from .clicks import measure
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
 from .paths import ROOT
 
@@ -63,14 +77,20 @@ PARAMS: tuple[tuple[str, float, float, float], ...] = (
     # source's own defaults make them
     ("openQuotient", 0.6, 0.45, 0.97),
     ("amplitudeScale", 1.0, 0.3, 2.0),
+    # set on the airway directly (`pmvc_engine.Voice.set_airway`): how fast a constriction
+    # closes over its last part (cm²/s)
+    ("sealRate", 5.0, 0.5, 20.0),
 )
-# the source's settings among them, and the glottis's; the rest are the noise gains
+# the source's settings among them, the glottis's and the airway's; the rest are the noise gains
 SOURCE: tuple[str, ...] = ("pressure", "tension", "breathiness", "brightness", "roughness")
 GLOTTIS: tuple[str, ...] = ("openQuotient", "amplitudeScale")
+AIRWAY: tuple[str, ...] = ("sealRate",)
 # with `--by nisqa`: what one unit of the listener's feature distance costs in opinion score,
 # and the listener that hears it (`pmvc.yardstick` chose it)
 GUARD: float = 5.0
 GUARD_LISTENER: tuple[str, int] = ("utter-project/mHuBERT-147", 8)
+# and what each dB of the renders' click load over the recordings' costs
+CLICKS: float = 0.3
 # what one unit of CTC loss per character is worth against one unit of feature distance
 NLL_WEIGHT: float = 0.1
 
@@ -99,13 +119,14 @@ def settings(theta: Array) -> dict[str, float]:
 
 def mixed(fitted: dict[str, float], w: float) -> dict[str, float]:
     """The settings a share `w` of the way from CHIMERA's own to `fitted`, in the fit's own
-    coordinates: each setting's ratio to its default raised to `w`."""
-    return {name: float(np.clip(default * (fitted[name] / default) ** w, lo, hi)) for name, default, lo, hi in PARAMS}
+    coordinates: each setting's ratio to its default raised to `w`. A setting `fitted` does
+    not have (it was fitted before the setting was) stays CHIMERA's."""
+    return {name: float(np.clip(default * (fitted.get(name, default) / default) ** w, lo, hi)) for name, default, lo, hi in PARAMS}
 
 
 def make_voice(track: dict[str, Any], s: dict[str, float] | None) -> pmvc_engine.Voice:
     """A voice for a control track, under these settings (None: the track's own, which are
-    CHIMERA's unless its `source`, `noise` and `glottis` say otherwise)."""
+    CHIMERA's unless its `source`, `noise`, `glottis` and `airway` say otherwise)."""
     source = dict(track["source"])
     if s:
         source.update({k: s[k] for k in SOURCE if k in s})
@@ -117,6 +138,9 @@ def make_voice(track: dict[str, Any], s: dict[str, float] | None) -> pmvc_engine
     glottis = {k: s[k] for k in GLOTTIS if k in s} if s else track.get("glottis")
     if glottis:
         v.set_glottis(json.dumps(glottis))
+    airway = {k: s[k] for k in AIRWAY if k in s} if s else track.get("airway")
+    if airway:
+        v.set_airway(json.dumps(airway))
     return v
 
 
@@ -157,9 +181,9 @@ def evaluate(listener: Listener, items: list[Item], s: dict[str, float] | None, 
     return float(scores[:, 0].mean()), float(scores[:, 1].mean())
 
 
-def heard_quality(listener: Listener, items: list[Item], s: dict[str, float] | None, jobs: int) -> tuple[float, float]:
-    """NISQA's mean quality for `items` rendered under settings `s`, and the listener's mean
-    feature distance to their recordings."""
+def heard_quality(listener: Listener, items: list[Item], s: dict[str, float] | None, jobs: int) -> tuple[float, float, float]:
+    """NISQA's mean quality for `items` rendered under settings `s`, the listener's mean
+    feature distance to their recordings, and the renders' mean click load (dB)."""
     import soundfile as sf
 
     from .natural import score as nisqa
@@ -171,7 +195,17 @@ def heard_quality(listener: Listener, items: list[Item], s: dict[str, float] | N
         for wav, x in zip(wavs, audio):
             sf.write(str(wav), x, pmvc_engine.SAMPLE_RATE, subtype="PCM_16")
         quality = float(np.mean([q["quality"] for q in nisqa(wavs, natural=False)]))
-    return quality, float(np.mean([score(listener, it, x)[0] for it, x in zip(items, audio)]))
+    load = [measure(np.asarray(x[it.shift :], dtype=np.float64), pmvc_engine.SAMPLE_RATE, (it.span[0] / FEATURE_RATE, it.span[1] / FEATURE_RATE))["clickLoad"] for it, x in zip(items, audio)]
+    return quality, float(np.mean([score(listener, it, x)[0] for it, x in zip(items, audio)])), float(np.mean(load))
+
+
+def recorded_load(d: Path, items: list[Item]) -> float:
+    """The mean click load (dB) of the items' recordings."""
+    out: list[float] = []
+    for it in items:
+        x, sr = load(d / "real" / f"{it.uid}.wav")
+        out.append(measure(x, sr, (it.span[0] / FEATURE_RATE, it.span[1] / FEATURE_RATE))["clickLoad"])
+    return float(np.mean(out))
 
 
 def main() -> None:
@@ -185,6 +219,8 @@ def main() -> None:
     ap.add_argument("--by", choices=["listener", "nisqa"], default="listener", help="what the settings are fitted to")
     ap.add_argument("--name", type=str, default="", help="the file to write, without .json (calibration-<sex>)")
     ap.add_argument("--start", type=str, default="{}", help="settings to start the search from, as JSON (CHIMERA's own where it does not say)")
+    ap.add_argument("--clicks", type=float, default=CLICKS, help="with --by nisqa: what each dB of click load over the recordings' costs (0: clicks do not count)")
+    ap.add_argument("--only", type=str, default="", help="fit only these settings, comma-separated; the others stay at --start's")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = ap.parse_args()
     d: Path = a.dir
@@ -196,27 +232,44 @@ def main() -> None:
     listener = Listener(None, *GUARD_LISTENER) if a.by == "nisqa" else Listener()
     fit, held = load_items(d, fit_ids, listener, a.tracks), load_items(d, held_ids, listener, a.tracks)
 
-    def scores(items: list[Item], s: dict[str, float] | None) -> tuple[float, float]:
-        """The two numbers the fit goes by: quality and distance, or distance and CTC loss."""
+    def scores(items: list[Item], s: dict[str, float] | None) -> tuple[float, ...]:
+        """The numbers the fit goes by: quality, distance and click load, or distance and CTC loss."""
         return heard_quality(listener, items, s, a.jobs) if a.by == "nisqa" else evaluate(listener, items, s, a.jobs)
 
-    def objective(theta: Array) -> float:
-        first, second = scores(fit, settings(theta))
-        return GUARD * second - first if a.by == "nisqa" else first + NLL_WEIGHT * second
+    recorded = recorded_load(d, fit) if a.by == "nisqa" else 0.0
 
     start: dict[str, float] = json.loads(a.start)
     x0 = np.array([np.log(start.get(name, default) / default) for name, default, _, _ in PARAMS])
-    # a first simplex that moves every setting by a third
-    simplex = np.vstack([x0, *(x0 + np.eye(len(PARAMS))[i] * 0.3 for i in range(len(PARAMS)))])
-    r = minimize(objective, x0, method="Nelder-Mead", options={"maxfev": a.evals, "initial_simplex": simplex, "xatol": 0.01, "fatol": 1e-4})
-    best = settings(r.x)
-    names = ("quality", "distance") if a.by == "nisqa" else ("distance", "nll")
-    report: dict[str, Any] = {"sex": a.sex, "by": a.by, "tracks": a.tracks, "settings": best, "fitIds": fit_ids, "evals": int(r.nfev)}
+    # the settings the search may move: all of them, or `--only` these (the rest stay at the start)
+    free = [i for i, (name, _, _, _) in enumerate(PARAMS) if not a.only or name in a.only.split(",")]
+
+    def whole(theta: Array) -> Array:
+        x = x0.copy()
+        x[free] = theta
+        return x
+
+    def objective(theta: Array) -> float:
+        got = scores(fit, settings(whole(theta)))
+        if a.by == "nisqa":
+            return GUARD * got[1] - got[0] + a.clicks * max(0.0, got[2] - recorded)
+        return got[0] + NLL_WEIGHT * got[1]
+
+    evals = 0
+    best = settings(x0)
+    if a.evals > 0:
+        # a first simplex that moves every free setting by a third
+        simplex = np.vstack([x0[free], *(x0[free] + np.eye(len(free))[i] * 0.3 for i in range(len(free)))])
+        r = minimize(objective, x0[free], method="Nelder-Mead", options={"maxfev": a.evals, "initial_simplex": simplex, "xatol": 0.01, "fatol": 1e-4})
+        best, evals = settings(whole(r.x)), int(r.nfev)
+    names = ("quality", "distance", "clickLoad") if a.by == "nisqa" else ("distance", "nll")
+    report: dict[str, Any] = {"sex": a.sex, "by": a.by, "tracks": a.tracks, "settings": best, "fitIds": fit_ids, "evals": evals}
     for name, items in (("fit", fit), ("held", held)):
         if items:
             before, after = scores(items, None), scores(items, best)
-            report[name] = {"n": len(items), names[0]: [before[0], after[0]], names[1]: [before[1], after[1]]}
-            print(f"{name:5s} ({len(items)}): {names[0]} {before[0]:.3f} → {after[0]:.3f}   {names[1]} {before[1]:.3f} → {after[1]:.3f}")
+            report[name] = {"n": len(items), **{key: [before[k], after[k]] for k, key in enumerate(names)}}
+            if a.by == "nisqa":
+                report[name]["recordedClickLoad"] = recorded_load(d, items)
+            print(f"{name:5s} ({len(items)}): " + "   ".join(f"{key} {before[k]:.3f} → {after[k]:.3f}" for k, key in enumerate(names)))
     print("settings: " + ", ".join(f"{k} {v:.3g}" for k, v in best.items()))
     (d / f"{a.name or f'calibration-{a.sex}'}.json").write_text(json.dumps(report, indent=1))
 

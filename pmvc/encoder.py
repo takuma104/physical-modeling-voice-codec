@@ -69,7 +69,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
-from .calibrate import GLOTTIS, SOURCE, make_voice, mixed
+from .calibrate import AIRWAY, GLOTTIS, SOURCE, make_voice, mixed
 from .listener import FEATURE_RATE, LAYER, LISTEN_SR, MODEL, Listener, distance, to16k
 from .paths import ROOT
 from .standin import SKIP_HEARD, load_standin
@@ -454,6 +454,7 @@ def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[
         track["source"].update({k: round(s[k], 5) for k in SOURCE})
         track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
         track["glottis"] = {k: round(s[k], 5) for k in GLOTTIS}
+        track["airway"] = {k: round(s[k], 5) for k in AIRWAY}
     return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
