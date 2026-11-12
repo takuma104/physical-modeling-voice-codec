@@ -54,6 +54,22 @@ COPY_NOTES: dict[str, str] = {
     "warp": "規則どおりに発音した制御列を、録音の時間軸へ音素ごとに伸縮（コピー合成の出発点）",
     "copy": "制御列を録音に近づくよう局所探索で最適化",
 }
+CODEC_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "rule": "ルールのみ",
+    "sim": "エンコーダ A",
+    "simcopy": "エンコーダ A + 探索",
+    "enc": "エンコーダ B",
+    "enccopy": "エンコーダ B + 探索",
+}
+CODEC_NOTES: dict[str, str] = {
+    "real": "TSP の話者本人（学習に使っていない話者）",
+    "rule": "CHIMERA 標準。文のテキストから合成（録音は使わない）",
+    "sim": "CHIMERA 自身の合成音と制御列の対だけで学習。録音から 1 回の推論で制御列を出す",
+    "simcopy": "エンコーダ A の制御列を、録音に近づくよう探索で直す。書き起こしは使わない",
+    "enc": "探索で直した制御列を教師にして学習。録音から 1 回の推論",
+    "enccopy": "エンコーダ B の制御列を、同じ探索で直す",
+}
 KIND_LABELS: dict[str, str] = {
     "white": "白色ノイズ（フレームごとに独立）",
     "smooth": "ゆっくり変動するノイズ（4 Hz 以下）",
@@ -190,6 +206,60 @@ def copy_section(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int) 
 </section>"""
 
 
+def codec_section(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int) -> str:
+    """The encoder section, or nothing before `pmvc.encoder`'s renders have been judged."""
+    path = d / "results_codec.json"
+    if not path.exists():
+        return ""
+    results = json.loads(path.read_text())
+    a = results["summary"]["all"]
+    labels = {v: label for v, label in CODEC_LABELS.items() if v in a}
+    rows = []
+    for v, label in labels.items():
+        w2 = a[v]["wer2"]
+        rows.append(
+            f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(CODEC_NOTES[v])}</span></th>'
+            + wer_cell(a[v])
+            + f'<td class="num">{w2[0]:.1f}<span class="ci"> [{w2[1]:.1f}, {w2[2]:.1f}]</span></td>'
+            + num_cell(a[v], "distance", ".2f")
+            + num_cell(a[v], "timing", ".0f")
+            + "</tr>"
+        )
+    table = f"""<div class="scroll"><table>
+<caption>エンコーダの評価（学習に使っていない話者 4 人の {a["n"]} 文。文も学習に出てこない）。角括弧は 95% 区間。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">Whisper small.en %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">リスナー距離</th><th scope="col">時間ずれ ms</th></tr></thead>
+<tbody>{"".join(rows)}</tbody></table></div>"""
+    # the same number of sentences from every speaker
+    by_speaker: dict[str, list[dict[str, Any]]] = {}
+    for r in results["utterances"]:
+        by_speaker.setdefault(metas[r["id"]]["speaker"], []).append(r)
+    per = max(1, n // max(1, len(by_speaker)))
+    cards = []
+    for r in [r for rs in by_speaker.values() for r in rs[:per]]:
+        uid, m = r["id"], metas[r["id"]]
+        buttons = "".join(
+            button(
+                clips, f"{uid}/{v}", d / v / f"{uid}.wav", label,
+                f"{r['variants'][v].get('heard', '')}」／large-v3-turbo「{r['variants'][v].get('heard2', '')}", "ref" if v == "real" else "",
+            )
+            for v, label in labels.items()
+        )  # fmt: skip
+        cards.append(
+            f"""<article class="sentence">
+<p class="meta">{esc(uid)} · {"女性" if m["sex"] == "F" else "男性"}話者 {esc(m["speaker"])}</p>
+<p class="text">{esc(m["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+        )
+    return f"""<section aria-labelledby="h-e"><h2 id="h-e">4. エンコーダ（コーデックの試作）</h2>
+{{{{codec_text}}}}
+{table}
+<p class="small">リスナー距離は、探索が下げようとする量そのもの（wav2vec2 の中間特徴の 1 − コサイン類似度を、録音と合成音のフレームどうしで比べた平均）。同じ文を読んだ別の実話者どうしで約 0.16 です。時間ずれは第 1 節と同じ定義。Whisper は学習にも探索にも使っていません。</p>
+<div class="stack">{"".join(cards)}</div>
+</section>"""
+
+
 def perturb_table(summary: dict[str, Any], conds: list[str]) -> str:
     a = summary["all"]
 
@@ -272,9 +342,15 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
         .replace("{{sentences}}", "\n".join(sentences))
         .replace("{{perturbed}}", "\n".join(perturbed))
         .replace("{{copy_section}}", copy_section(d, metas, clips, n_sentences))
+        .replace("{{codec_section}}", codec_section(d, metas, clips, n_sentences).replace("{{codec_text}}", CODEC_TEXT))
         .replace("{{channels}}", esc(channels))
         .replace("{{clips}}", json.dumps(clips))
     )
+
+
+CODEC_TEXT = """<p>録音を聞いて制御列を書くエンコーダです。デコーダは CHIMERA そのものなので、これで「音声 → 制御列（100 Hz × 21 チャネル）→ 音声」のコーデックになります。文の書き起こしは、学習にも推論にも探索にも使いません。</p>
+<p>エンコーダは、音声認識モデル wav2vec2（凍結）の特徴とピッチ抽出器の出力を入力にする小さな再帰型ネットワーク（280 万パラメータ）です。F0 だけは学習せず、ピッチ抽出器の曲線をそのまま使います。声の体格（女声・男声のプリセット）は話者の性別で選んでいます。</p>
+<p>学習は 2 段です。まず CHIMERA 自身が合成した音とその制御列の対だけで学習します（エンコーダ A）。次に、A が実録音に対して書いた制御列を、合成音が録音に近づくよう探索で直し、直した制御列を教師にして学習し直します（エンコーダ B）。</p>"""
 
 
 PAGE = """<title>CHIMERA 韻律移植と摂動の試聴</title>
@@ -353,6 +429,7 @@ code { font-size: 0.875em; }
 <div class="stack">{{perturbed}}</div>
 </section>
 {{copy_section}}
+{{codec_section}}
 <footer class="small stack">
 <p>録音は TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。文は Harvard sentences。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。</p>
 </footer>

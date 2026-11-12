@@ -6,7 +6,7 @@ drive` plays it back with no planner. Here the tracks of `pmvc.transplant`'s `f0
 most intelligible it makes) are damaged the way a codec or a generative model damages a
 latent, and played back.
 
-usage: python -m pmvc.perturb [dir] [--base f0] [--ids FA01_01,...] [--n 24] [--jobs N]
+usage: python -m pmvc.perturb [dir] [--base f0] [--ids FA01_01,...] [--n 24] [--tag T] [--jobs N]
 
 Writes one directory of <id>.wav per condition under <dir> (default out/transplant):
   drive                  the track unchanged: what the round trip through a track costs
@@ -19,6 +19,9 @@ Noise is scaled per channel to a signal-to-noise ratio: how far the channel move
 utterance (its standard deviation over speech frames, pooled over all the tracks in <dir>),
 over the noise's. Pitch is perturbed on a log
 scale. Channels that never move in these tracks (the epilarynx, glottal closure) get no noise.
+
+`--tag T` keeps a second test apart from the first: the directories are <T>_<condition> and
+the listing <dir>/perturb_<T>.json (else perturb.json).
 """
 
 import argparse
@@ -118,9 +121,14 @@ def main() -> None:
     ap.add_argument("--base", type=str, default="f0", help="the variant whose control tracks are perturbed")
     ap.add_argument("--ids", type=str, default="")
     ap.add_argument("--n", type=int, default=24, help="how many recordings (the first n ids, alternating sexes)")
+    ap.add_argument("--tag", type=str, default="", help="a prefix for the conditions' directories and the listing")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = ap.parse_args()
     d: Path = a.dir
+
+    def name(cond: str) -> str:
+        return f"{a.tag}_{cond}" if a.tag else cond
+
     paths = sorted((d / a.base).glob("*.tracks.json"))
     scale = Scale([json.loads(p.read_text()) for p in paths])
     if a.ids:
@@ -131,7 +139,7 @@ def main() -> None:
         ids = [i for pair in zip(women, men) for i in pair][: a.n]
     conds = conditions()
     for c in conds:
-        (d / c).mkdir(exist_ok=True)
+        (d / name(c)).mkdir(exist_ok=True)
 
     def one(job: tuple[str, str]) -> None:
         uid, cond = job
@@ -140,12 +148,12 @@ def main() -> None:
         rng = np.random.default_rng(zlib.crc32(f"{uid}/{cond.split('_')[0]}".encode()))
         x = perturb(np.array(track["frames"]), cond, scale, rng)
         track["frames"] = np.round(x, 5).tolist()
-        drive(track, d / cond / f"{uid}.wav")
+        drive(track, d / name(cond) / f"{uid}.wav")
 
     with ThreadPoolExecutor(a.jobs) as pool:
         list(pool.map(one, [(uid, c) for uid in ids for c in conds]))
-    (d / "perturb.json").write_text(
-        json.dumps({"ids": ids, "conditions": conds, "keys": scale.keys, "std": scale.std.tolist()}, indent=1)
+    (d / (f"perturb_{a.tag}.json" if a.tag else "perturb.json")).write_text(
+        json.dumps({"ids": ids, "conditions": [name(c) for c in conds], "keys": scale.keys, "std": scale.std.tolist()}, indent=1)
     )
     print(f"{len(ids)} recordings × {len(conds)} conditions → {d}")
     print("channel spread within an utterance, over speech frames (pitch in octaves):")

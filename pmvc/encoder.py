@@ -116,10 +116,12 @@ def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]
 
 
 def real_pair(d: Path, uid: str, target: str) -> Pair:
-    """A recording and the track `target` has for it, which runs meta's `shift` behind."""
+    """A recording and the track `target` has for it, which runs its own `shift` behind the
+    recording, or the meta's if it does not say."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
-    frames = np.array(json.loads((d / target / f"{uid}.tracks.json").read_text())["frames"], dtype=np.float32)
-    audio, aux, _ = hear_recording(d, uid, meta["shift"])
+    track = json.loads((d / target / f"{uid}.tracks.json").read_text())
+    frames = np.array(track["frames"], dtype=np.float32)
+    audio, aux, _ = hear_recording(d, uid, track.get("shift", meta["shift"]))
     n = min(len(frames), len(aux))
     return Pair(uid, audio[: n * HOP], aux[:n], frames[:n])
 
