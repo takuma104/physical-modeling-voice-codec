@@ -26,6 +26,12 @@ For every variant, against the recording:
              recording is silent, before or after its speech (60 ms either side of the speech
              are left out); `outside`, the render's loudest 10 ms there against its level over
              the speech (dB, the median over recordings)
+For the recording and every variant:
+  clicks     `pmvc.clicks`: short bursts in the high band, how many a second; `clickLevel`,
+             their mean level against the speech's (dB), and `clickLoad`, their energy a second;
+             `releases` and `releaseLevel`, those where the recording goes from silence to
+             sound, as a stop's release does; `oddClicks`, those of the kinds recordings hardly
+             have (as the tongue closes, or in the middle of sound)
 Whisper leans on what a sentence is likely to say; the phone recogniser cannot. Neither was
 optimised against. Two more columns make the numbers comparable:
   other      where another speaker in <dir> read the same sentence (one of the same sex, if
@@ -55,6 +61,7 @@ import torch
 from faster_whisper import WhisperModel
 
 from .audio import FRAME_RATE, load, pitch_track
+from .clicks import measure
 from .encoder import ids_in, pick_device
 from .evaluate import edits, wer_interval, words
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
@@ -166,14 +173,29 @@ def pitch_agreement(job: tuple[Path, str, str, str]) -> dict[str, float]:
     return out
 
 
+def clicks_of(job: tuple[Path, str, str]) -> dict[str, float]:
+    """`pmvc.clicks`' measures for a clip, over the recording's speech (a render runs its
+    track's shift behind, or the meta's)."""
+    d, uid, v = job
+    meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+    track = d / v / f"{uid}.tracks.json"
+    shift = 0.0 if v == "real" else json.loads(track.read_text()).get("shift", meta["shift"]) if track.exists() else meta["shift"]
+    x, sr = load(d / v / f"{uid}.wav")
+    return measure(x[round(shift * sr) :], sr, (meta["span"][0], meta["span"][1]), None if v == "real" else load(d / "real" / f"{uid}.wav"))
+
+
 def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) -> None:
     """Adds to the rows what no judge is needed for: the pitch tracker's agreement, another
     speaker's recording of the sentence against this one by the phone recogniser's two
     transcripts, and the errors in letters."""
     todo = [(d, r["id"], v, r["sex"]) for r in rows for v in names if "distance" in r["variants"][v] and "outside" not in r["variants"][v]]
+    by_id = {r["id"]: r for r in rows}
     with ThreadPoolExecutor(jobs) as pool:
         for (_, uid, v, _), m in zip(todo, pool.map(pitch_agreement, todo)):
-            next(r for r in rows if r["id"] == uid)["variants"][v].update(m)
+            by_id[uid]["variants"][v].update(m)
+        clicking = [(d, r["id"], v) for r in rows for v in names if "oddClicks" not in r["variants"][v]]
+        for (_, uid, v), m in zip(clicking, pool.map(clicks_of, clicking)):
+            by_id[uid]["variants"][v].update(m)
     same: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for r in rows:
         same.setdefault((r["lang"], r["text"]), []).append(r)
@@ -212,6 +234,13 @@ def summarise(rows: list[dict[str, Any]], names: list[str]) -> dict[str, Any]:
                 # the share of recordings whose render is voiced for 30 ms or more outside the speech
                 s["stray"] = round(100.0 * float(np.mean([m["strayVoiced"] >= 3 for m in ms])), 1)
                 s["outside"] = round(float(np.median([m["outside"] for m in ms])), 1)
+            if all("oddClicks" in m for m in ms):
+                for key in ("clicks", "releases", "oddClicks"):
+                    s[key] = round(float(np.mean([m[key] for m in ms])), 2)
+                s["clickLoad"] = round(float(np.mean([m["clickLoad"] for m in ms])), 1)
+                for key in ("clickLevel", "releaseLevel"):
+                    if any(key in m for m in ms):
+                        s[key] = round(float(np.mean([m[key] for m in ms if key in m])), 1)
             # what `pmvc.natural` added, if it was run
             for key in ("quality", "noisiness", "coloration", "discontinuity", "loudness", "natural"):
                 if all(key in m for m in ms):
@@ -318,6 +347,7 @@ def finish(d: Path, name: str, rows: list[dict[str, Any]], names: list[str], job
                 cols = [f"{label} {m[key][0]:5.1f} % [{m[key][1]:.1f}, {m[key][2]:.1f}]" for key, label in (("rate", "small"), ("rate2", "large-v3-turbo"), ("letterRate2", "letters"), ("phoneRate", "phones")) if key in m]
                 rest = "".join(f"   {key} {m[key]:.3f}" for key in ("distance", "voicing", "f0Corr") if key in m)
                 rest += f"   stray {m['stray']:.0f} %" if "stray" in m else ""
+                rest += f"   releases {m['releases']:.2f}/s at {m.get('releaseLevel', float('nan')):.0f} dB, odd clicks {m['oddClicks']:.2f}/s" if "oddClicks" in m else ""
                 rest += f"   NISQA {m['quality']:.2f}" if "quality" in m else ""
                 print(f"  {v:8s} " + "   ".join(cols) + rest)
 
