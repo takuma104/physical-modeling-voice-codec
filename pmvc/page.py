@@ -80,12 +80,20 @@ KIND_LABELS: dict[str, str] = {
 }
 
 
+# what a plain code of the 17 channels that move would cost, per bit and frame a second
+CODED_CHANNELS: int = 17
+CODED_LABEL: dict[str, str] = {"coded": "間引きと量子化を同時に（素朴な符号化）"}
+
+
 def level_label(cond: str) -> str:
-    kind, arg = cond.split("_")
+    kind, arg = cond.split("_", 1)
     if kind in ("white", "smooth"):
         return f"SNR {arg[3:]} dB"
     if kind == "quant":
         return f"{arg[:-3]} bit"
+    if kind == "coded":
+        bits, hz = arg.split("_")
+        return f"{bits[:-3]} bit・{hz[:-2]} Hz（{CODED_CHANNELS * int(bits[:-3]) * int(hz[:-2]) / 1000:.1f} kbps）"
     return f"{arg[:-2].replace('p', '.')} Hz"
 
 
@@ -237,7 +245,8 @@ def codec_section(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int)
         by_speaker.setdefault(metas[r["id"]]["speaker"], []).append(r)
     per = max(1, n // max(1, len(by_speaker)))
     cards = []
-    for r in [r for rs in by_speaker.values() for r in rs[:per]]:
+    # each speaker's sentences from a different place in the lists, since pairs of them share lists
+    for r in [r for j, rs in enumerate(by_speaker.values()) for r in rs[j * per : (j + 1) * per]]:
         uid, m = r["id"], metas[r["id"]]
         buttons = "".join(
             button(
@@ -259,28 +268,81 @@ def codec_section(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int)
 {table}
 <p class="small">リスナー距離は、探索が下げようとする量そのもの（wav2vec2 の中間特徴の 1 − コサイン類似度を、録音と合成音のフレームどうしで比べた平均）。同じ文を読んだ別の実話者どうしで約 0.16 です。時間ずれは第 1 節と同じ定義。Whisper は学習にも探索にも使っていません。</p>
 <div class="stack">{"".join(cards)}</div>
+{codec_perturbed(d, metas, clips, 2)}
 </section>"""
 
 
-def perturb_table(summary: dict[str, Any], conds: list[str]) -> str:
+def perturb_table(summary: dict[str, Any], conds: list[str], tag: str = "", kinds: dict[str, str] = KIND_LABELS, drive: str = "100 Hz × 21 チャネルで再駆動（以下の基準）") -> str:
+    """The table of a perturbation test; its conditions are named <tag>_<condition> if tagged."""
     a = summary["all"]
+    pre = f"{tag}_" if tag else ""
 
     def cells(c: str) -> str:
         return wer_cell(a[c]) + num_cell(a[c], "mcdLinear", ".2f") + num_cell(a[c], "voicing", ".0f", 100.0) + num_cell(a[c], "f0Rmse", ".2f")
 
     rows = [
         f'<tr><th scope="row">実録音</th>{cells("real")}</tr>',
-        f'<tr><th scope="row">制御列そのまま<span class="sub">100 Hz × 21 チャネルで再駆動（以下の基準）</span></th>{cells("drive")}</tr>',
+        f'<tr><th scope="row">制御列そのまま<span class="sub">{esc(drive)}</span></th>{cells(pre + "drive")}</tr>',
     ]
-    for kind, label in KIND_LABELS.items():
+    for kind, label in kinds.items():
         rows.append(f'<tr class="group"><th scope="rowgroup" colspan="5">{esc(label)}</th></tr>')
         rows.extend(
-            f'<tr><th scope="row" class="level">{esc(level_label(c))}</th>{cells(c)}</tr>' for c in conds if c.startswith(kind + "_")
+            f'<tr><th scope="row" class="level">{esc(level_label(c[len(pre) :]))}</th>{cells(c)}</tr>' for c in conds if c.startswith(pre + kind + "_")
         )
     return f"""<div class="scroll"><table>
 <caption>摂動テストの評価（{a["n"]} 文）。右 3 列は「制御列そのまま」の音に対する変化です。</caption>
 <thead><tr><th scope="col">条件</th><th scope="col">単語誤り率 %</th><th scope="col">ケプストラム距離 dB</th><th scope="col">有声一致 %</th><th scope="col">F0 ずれ 半音</th></tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>"""
+
+
+def perturbed_cards(d: Path, metas: dict[str, Any], clips: dict[str, str], ids: list[str], rows: dict[str, Any], conds: list[str], tag: str = "", kinds: dict[str, str] = KIND_LABELS) -> list[str]:
+    """One card per recording of a perturbation test: the recording, the track as it is, and
+    every condition by kind."""
+    pre = f"{tag}_" if tag else ""
+    cards = []
+    for uid in ids:
+        m, r = metas[uid], rows[uid]
+
+        def heard(c: str, r: dict[str, Any] = r) -> str:
+            return r["variants"][c].get("heard", "")
+
+        head = button(clips, f"{uid}/real", d / "real" / f"{uid}.wav", "実録音", heard("real"), "ref") + button(
+            clips, f"{uid}/{pre}drive", d / f"{pre}drive" / f"{uid}.wav", "制御列そのまま", heard(pre + "drive")
+        )
+        grid = []
+        for kind, label in kinds.items():
+            cs = [c for c in conds if c.startswith(pre + kind + "_")]
+            cells = "".join(button(clips, f"{uid}/{c}", d / c / f"{uid}.wav", level_label(c[len(pre) :]), heard(c)) for c in cs)
+            grid.append(f'<div class="kind"><p class="kind-label">{esc(label)}</p><div class="clips">{cells}</div></div>')
+        cards.append(
+            f"""<article class="sentence">
+<p class="meta">{esc(uid)} · {"女性" if m["sex"] == "F" else "男性"}話者 {esc(m["speaker"])}</p>
+<p class="text">{esc(m["text"])}</p>
+<div class="clips">{head}</div>
+{"".join(grid)}
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+        )
+    return cards
+
+
+def codec_perturbed(d: Path, metas: dict[str, Any], clips: dict[str, str], n: int) -> str:
+    """The perturbation test of the encoder's own tracks (`pmvc.perturb --tag ec`), if run."""
+    if not (d / "perturb_ec_results.json").exists():
+        return ""
+    results = json.loads((d / "perturb_ec_results.json").read_text())
+    listing = json.loads((d / "perturb_ec.json").read_text())
+    rows = {r["id"]: r for r in results["utterances"]}
+    kinds = {**KIND_LABELS, **CODED_LABEL}
+    # a woman and a man, with different sentences
+    women, men = ([i for i in listing["ids"] if i[0] == sex] for sex in "FM")
+    ids = [women[0], men[len(men) // 2]][:n]
+    cards = perturbed_cards(d, metas, clips, ids, rows, listing["conditions"], "ec", kinds)
+    table = perturb_table(results["summary"], listing["conditions"], "ec", kinds, "エンコーダ C′ が録音から書いた制御列（以下の基準）")
+    return f"""<h3>エンコーダの制御列への摂動</h3>
+<p>第 2 節と同じ摂動を、エンコーダ C′ が実録音から書いた制御列（つまりこのコーデックの潜在表現そのもの）にかけます。最後の群は、間引いた値を一様に丸めるだけの素朴な符号化で、括弧内は動く 17 チャネルぶんのビットレートです。</p>
+{table}
+<div class="stack">{"".join(cards)}</div>"""
 
 
 def build(d: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
@@ -311,30 +373,7 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
 </article>"""
         )
 
-    perturbed = []
-    for uid in ids[:n_perturbed]:
-        m, r = metas[uid], prows[uid]
-
-        def heard(c: str, r: dict[str, Any] = r) -> str:
-            return r["variants"][c].get("heard", "")
-
-        head = button(clips, f"{uid}/real", d / "real" / f"{uid}.wav", "実録音", heard("real"), "ref") + button(
-            clips, f"{uid}/drive", d / "drive" / f"{uid}.wav", "制御列そのまま", heard("drive")
-        )
-        grid = []
-        for kind, label in KIND_LABELS.items():
-            cs = [c for c in perturb["conditions"] if c.startswith(kind + "_")]
-            cells = "".join(button(clips, f"{uid}/{c}", d / c / f"{uid}.wav", level_label(c), heard(c)) for c in cs)
-            grid.append(f'<div class="kind"><p class="kind-label">{esc(label)}</p><div class="clips">{cells}</div></div>')
-        perturbed.append(
-            f"""<article class="sentence">
-<p class="meta">{esc(uid)} · {"女性" if m["sex"] == "F" else "男性"}話者 {esc(m["speaker"])}</p>
-<p class="text">{esc(m["text"])}</p>
-<div class="clips">{head}</div>
-{"".join(grid)}
-<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
-</article>"""
-        )
+    perturbed = perturbed_cards(d, metas, clips, ids[:n_perturbed], prows, perturb["conditions"])
 
     channels = "、".join(perturb["keys"])
     return (
@@ -344,7 +383,7 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
         .replace("{{sentences}}", "\n".join(sentences))
         .replace("{{perturbed}}", "\n".join(perturbed))
         .replace("{{copy_section}}", copy_section(d, metas, clips, n_sentences))
-        .replace("{{codec_section}}", codec_section(d, metas, clips, n_sentences).replace("{{codec_text}}", CODEC_TEXT))
+        .replace("{{codec_section}}", codec_section(d, metas, clips, 8).replace("{{codec_text}}", CODEC_TEXT))
         .replace("{{channels}}", esc(channels))
         .replace("{{clips}}", json.dumps(clips))
     )
@@ -385,6 +424,7 @@ main { max-width: 52rem; margin: 0 auto; display: flex; flex-direction: column; 
 section { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
 h1, h2 { font-family: var(--font-display); font-weight: 600; line-height: 1.3; margin: 0; text-wrap: balance; }
 h1 { font-size: 1.75rem; } h2 { font-size: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+h3 { font-family: var(--font-display); font-weight: 600; font-size: 1.0625rem; line-height: 1.3; margin: 0; padding-top: 0.75rem; text-wrap: balance; }
 p, ul { margin: 0; } ul { padding-left: 1.2rem; } li + li { margin-top: 0.35rem; }
 .lede { color: var(--muted); max-width: 44rem; }
 .notes { display: flex; flex-direction: column; gap: 0.75rem; max-width: 44rem; }
