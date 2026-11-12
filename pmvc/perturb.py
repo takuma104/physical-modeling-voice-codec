@@ -6,7 +6,8 @@ drive` plays it back with no planner. Here the tracks of `pmvc.transplant`'s `f0
 most intelligible it makes) are damaged the way a codec or a generative model damages a
 latent, and played back.
 
-usage: python -m pmvc.perturb [dir] [--base f0] [--ids FA01_01,...] [--n 24] [--tag T] [--jobs N]
+usage: python -m pmvc.perturb [dir] [--base f0] [--ids FA01_01,...] [--n 24] [--tag T]
+                              [--conds drive,coded_4bit_25hz,...] [--jobs N]
 
 Writes one directory of <id>.wav per condition under <dir> (default out/transplant):
   drive                  the track unchanged: what the round trip through a track costs
@@ -14,6 +15,8 @@ Writes one directory of <id>.wav per condition under <dir> (default out/transpla
   smooth_snr<dB>         Gaussian noise that varies slowly (below 4 Hz): an error that drifts
   quant_<bits>bit        each channel rounded to 2^bits levels over its range
   rate_<Hz>hz            the track kept at a lower frame rate, interpolated back
+  coded_<bits>bit_<Hz>hz both: the lower frame rate's values rounded, then interpolated back
+                         (only with `--conds`)
 
 Noise is scaled per channel to a signal-to-noise ratio: how far the channel moves within an
 utterance (its standard deviation over speech frames, pooled over all the tracks in <dir>),
@@ -81,12 +84,26 @@ class Scale:
         return x
 
 
+def at_rate(y: Array, hz: float, levels: int | None, scale: Scale) -> Array:
+    """`y` kept at `hz` values a second (the mean of each block of frames, placed at the block's
+    centre), each rounded to `levels` levels over its channel's range if given, and
+    interpolated back."""
+    step = round(FRAME_RATE / hz)
+    n = len(y)
+    centres = np.arange(0, n, step) + 0.5 * (min(step, n) - 1)
+    means = np.stack([y[i : i + step].mean(axis=0) for i in range(0, n, step)])
+    if levels is not None:
+        span = np.where(scale.hi > scale.lo, scale.hi - scale.lo, 1.0)
+        means = scale.lo + np.round(np.clip((means - scale.lo) / span, 0.0, 1.0) * levels) / levels * span
+    return np.stack([np.interp(np.arange(n), centres, means[:, c]) for c in range(y.shape[1])], axis=1)
+
+
 def perturb(x: Array, cond: str, scale: Scale, rng: np.random.Generator) -> Array:
     """The track `x` (frames × channels) under condition `cond`."""
     if cond == "drive":
         return x
     y = scale.to_domain(x)
-    kind, arg = cond.split("_")
+    kind, arg = cond.split("_", 1)
     if kind in ("white", "smooth"):
         noise = rng.standard_normal(y.shape)
         if kind == "smooth":
@@ -99,12 +116,11 @@ def perturb(x: Array, cond: str, scale: Scale, rng: np.random.Generator) -> Arra
         span = np.where(scale.hi > scale.lo, scale.hi - scale.lo, 1.0)
         y = scale.lo + np.round(np.clip((y - scale.lo) / span, 0.0, 1.0) * levels) / levels * span
     elif kind == "rate":
-        step = round(FRAME_RATE / float(arg[:-2].replace("p", ".")))
-        n = len(y)
-        # one value per `step` frames (their mean), placed at the block's centre
-        centres = np.arange(0, n, step) + 0.5 * (min(step, n) - 1)
-        means = np.stack([y[i : i + step].mean(axis=0) for i in range(0, n, step)])
-        y = np.stack([np.interp(np.arange(n), centres, means[:, c]) for c in range(y.shape[1])], axis=1)
+        y = at_rate(y, float(arg[:-2].replace("p", ".")), None, scale)
+    elif kind == "coded":
+        # what a plain codec would send: `coded_<bits>bit_<Hz>hz`
+        bits, hz = arg.split("_")
+        y = at_rate(y, float(hz[:-2].replace("p", ".")), 2 ** int(bits[:-3]) - 1, scale)
     else:
         raise ValueError(cond)
     out = scale.from_domain(y)
@@ -122,6 +138,7 @@ def main() -> None:
     ap.add_argument("--ids", type=str, default="")
     ap.add_argument("--n", type=int, default=24, help="how many recordings (the first n ids, alternating sexes)")
     ap.add_argument("--tag", type=str, default="", help="a prefix for the conditions' directories and the listing")
+    ap.add_argument("--conds", type=str, default="", help="comma-separated conditions instead of the standard set")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = ap.parse_args()
     d: Path = a.dir
@@ -137,7 +154,7 @@ def main() -> None:
         all_ids = [p.name.split(".")[0] for p in paths]
         women, men = [i for i in all_ids if i[0] == "F"], [i for i in all_ids if i[0] == "M"]
         ids = [i for pair in zip(women, men) for i in pair][: a.n]
-    conds = conditions()
+    conds = a.conds.split(",") if a.conds else conditions()
     for c in conds:
         (d / name(c)).mkdir(exist_ok=True)
 
