@@ -54,7 +54,8 @@ class Item:
     text: str
     track: dict[str, Any]
     frames: Array
-    # samples (48 kHz) the render runs behind the recording
+    # samples (48 kHz) the render runs behind the recording: the track's `shift` if it has one
+    # (`pmvc.encoder`), else the meta's
     shift: int
     # the recording's speech in feature frames
     span: tuple[int, int]
@@ -93,7 +94,7 @@ def load_items(d: Path, ids: list[str], listener: Listener, variant: str = "warp
         real, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
         span = (int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE))
         items.append(
-            Item(uid, meta["text"], track, np.array(track["frames"]), round(meta["shift"] * 48000), span,
+            Item(uid, meta["text"], track, np.array(track["frames"]), round(track.get("shift", meta["shift"]) * 48000), span,
                  listener.hear(real).feats[0], listener.chars(meta["text"]))
         )  # fmt: skip
     return items

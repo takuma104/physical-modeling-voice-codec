@@ -46,7 +46,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-from .audio import FRAME_RATE, Array, load
+from .audio import FRAME_RATE, Array
 from .calibrate import NLL_WEIGHT, Item, load_items, make_voice
 from .listener import Listener, distance
 from .paths import ROOT
@@ -277,8 +277,9 @@ def main() -> None:
     for name in (a.out, f"{a.out}-start") if a.calibrated else (a.out,):
         (d / name).mkdir(exist_ok=True)
     listener = Listener()
-    # how far each channel moves within an utterance, from a sample of the starting tracks
-    sample = sorted((d / a.base).glob("*.tracks.json"))[::5]
+    # how far each channel moves within an utterance of speech by rule (`pmvc.warp`'s tracks,
+    # whatever the search starts from)
+    sample = sorted((d / ("warp" if (d / "warp").exists() else a.base)).glob("*.tracks.json"))[::5]
     sigma = Scale([json.loads(p.read_text()) for p in sample]).std
     for uid in ids:
         (item,) = load_items(d, [uid], listener, a.base)

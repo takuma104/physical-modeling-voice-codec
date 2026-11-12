@@ -115,6 +115,15 @@ def aligned_measures(ref: Array, syn: Array, f_ref: Array, f_syn: Array, span: t
     return out
 
 
+def lag(d: Path, variant: str, meta: dict[str, Any]) -> float:
+    """How far (s) a variant's render runs behind the recording: its track's own `shift` if it
+    has one (`pmvc.encoder`), else the meta's."""
+    track = d / variant / f"{meta['id']}.tracks.json"
+    if track.exists():
+        return float(json.loads(track.read_text()).get("shift", meta["shift"]))
+    return float(meta["shift"])
+
+
 _MODEL: WhisperModel | None = None
 _UTTS: dict[str, Utterance] = {}
 
@@ -154,7 +163,7 @@ def score(job: tuple[Path, dict[str, Any], list[str], str]) -> dict[str, Any]:
                     f_ref = pitch(against)
                 if against == "real":
                     span = (round(meta["span"][0] * FRAME_RATE), round(meta["span"][1] * FRAME_RATE))
-                    m.update(aligned_measures(ref[0], syn[0], f_ref, pitch(v), span, round(meta["shift"] * FRAME_RATE)))
+                    m.update(aligned_measures(ref[0], syn[0], f_ref, pitch(v), span, round(lag(d, v, meta) * FRAME_RATE)))
                 else:
                     m.update(aligned_measures(ref[0], syn[0], f_ref, pitch(v), ref[1], 0))
         row["variants"][v] = m
