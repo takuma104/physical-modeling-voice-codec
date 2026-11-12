@@ -37,7 +37,8 @@ unzip -qo 48k.zip
 別の場所に置いた場合は環境変数 `TSP_DIR` で指定します。
 ffmpeg(試聴ページの音声変換)も必要です。
 
-手順 5 だけは別の録音を使います。Hi-Fi-CAPTAIN(日本語と英語の女声・男声、CC BY-NC-SA 4.0)の `eval` の音声とテキストを `~/datasets/hfc/hi-fi-captain/` に、JSUT の `basic5000` を `~/datasets/jsut/jsut_ver1.1/` に展開しておきます。使うのは各 100 文です。
+手順 5 と 6 は別の録音を使います。Hi-Fi-CAPTAIN(日本語と英語の女声・男声、CC BY-NC-SA 4.0)の `eval` の音声とテキストを `~/datasets/hfc/hi-fi-captain/` に、JSUT の `basic5000` を `~/datasets/jsut/jsut_ver1.1/` に展開しておきます。使うのは各 100 文です。
+手順 6 は JVS(100 話者、再配布不可)の `parallel100` を `~/datasets/jvs/jvs_ver1/` に置いて使います。
 
 ## 実験の流し方
 
@@ -100,12 +101,39 @@ IDS=$(for s in hjf hjm jsut; do for k in 005 017 029 041 053 065 077 089; do pri
 uv run python -m pmvc.copysynth out/ja --ids $IDS --base encn --nll-weight 0 --iters 20 --out encncopy --scale out/transplant/warp
 uv run python -m pmvc.judge --ids $IDS --variants encn,encncopy --name results_search
 
-# 6. 試聴ページ(音声埋め込みの HTML 1 枚)
-uv run python -m pmvc.page --notes notes.html
+# 6. 日本語の録音を閉ループ学習に加える(JVS: 学習 86 話者 × 10 文、検証 6 話者、テスト 8 話者 × 25 文)
+uv run python -m pmvc.jvs                                  # out/jvs に録音を並べる
+uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name sim --out sim --split all
+uv run python -m pmvc.yardstick                            # 物差し(リスナー)の候補を、同じ文を読んだ 2 人の録音で比べる
+M="--listener utter-project/mHuBERT-147 --layer 8"         # 選んだ物差し: 多言語の mHuBERT-147 の第 8 層
+#   D: 日本語の録音を加える(物差しは英語の wav2vec2 のまま)
+uv run python -m pmvc.standin --name standin_j --variants warp,sim --also out/jvs
+uv run python -m pmvc.encoder train --name encd --target sim --synthetic sim --tune 6 --standin standin_j --also out/jvs
+#   E: 録音は英語のまま、物差しを替える
+uv run python -m pmvc.standin --name standin_m0 --variants warp,sim $M
+uv run python -m pmvc.encoder train --name ence --target sim --synthetic sim --tune 6 --standin standin_m0
+#   F: 両方
+uv run python -m pmvc.standin --name standin_m --variants warp,sim --also out/jvs $M
+uv run python -m pmvc.encoder train --name encf --target sim --synthetic sim --tune 6 --standin standin_m --also out/jvs
+#   G: F に加えて、エンコーダが録音を聞く入口も mHuBERT に替える
+uv run python -m pmvc.encoder train --name encg --target sim --synthetic sim --tune 6 --standin standin_m --also out/jvs --ssl utter-project/mHuBERT-147
+#   3 つのテスト(JVS の未使用話者、手順 5 の録音、TSP のテスト話者)で評価する
+for m in encn encd ence encf encg; do
+  uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name $m --out $m --split test
+  uv run python -m pmvc.encoder encode out/ja --models out/transplant/models --name $m --out $m --split all
+  uv run python -m pmvc.encoder encode --name $m --out $m --split test
+done
+uv run python -m pmvc.judge out/jvs --split test --variants encn,encd,ence,encf,encg
+uv run python -m pmvc.judge out/ja --variants encn,encd,ence,encf,encg --name results_taught
+uv run python -m pmvc.judge out/transplant --split test --variants encn,encd,ence,encf,encg --name results_taught
+
+# 7. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
+uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
+日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。
 

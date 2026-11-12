@@ -1,12 +1,15 @@
 """A listening page for the transplant and perturbation renders: one self-contained HTML file
 with the audio embedded, the scores in tables and what Whisper heard under each clip.
 
-usage: python -m pmvc.page [dir] [--abroad out/ja] [--notes notes.html] [--sentences 12] [--perturbed 4]
-                           [--out listening.html]
+usage: python -m pmvc.page [dir] [--abroad out/ja] [--notes notes.html] [--notes-ja notes_ja.html]
+                           [--sentences 12] [--perturbed 4] [--en-url URL] [--ja-url URL]
 
-Reads <dir>/results.json and <dir>/perturb_results.json (`pmvc.evaluate`), <dir>/perturb.json
-(`pmvc.perturb`) and the WAVs; the later sections appear once their results are there, the last
-from `--abroad` (`pmvc.judge`'s results for recordings from outside TSP). `--notes` is an HTML fragment shown at the top (the findings,
+Two pages, since one would be too large to publish: <dir>/listening.html, the experiments on
+TSP's recordings, and <dir>/listening_ja.html, the ones on recordings from outside it (the
+Japanese ones above all). The first reads <dir>/results.json and <dir>/perturb_results.json
+(`pmvc.evaluate`), <dir>/perturb.json (`pmvc.perturb`) and the WAVs, and its later sections
+appear once their results are there; the second reads `pmvc.judge`'s results in `--abroad`.
+Given the pages' published addresses, each points at the other. `--notes` is an HTML fragment shown at the top (the findings,
 written by whoever ran the experiment). The page is written without <html>/<head>/<body>, as
 an Artifact wants it; browsers open it as it is.
 """
@@ -87,6 +90,30 @@ ABROAD_NOTES: dict[str, str] = {
     "enc": "英語の録音で閉ループ学習（探索の結果も使う）",
     "encn": "英語の録音で閉ループ学習（探索なし）",
     "encncopy": "C′ の制御列を、合成音が録音に近づくよう探索で直す（1 文 数分）",
+}
+# the encoders taught with Japanese recordings, a multilingual listener, or both, beside C′
+TAUGHT_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "encn": "エンコーダ C′",
+    "encd": "エンコーダ D",
+    "ence": "エンコーダ E",
+    "encf": "エンコーダ F",
+    "encg": "エンコーダ G",
+}
+TAUGHT_NOTES: dict[str, str] = {
+    "real": "話者本人",
+    "encn": "英語の録音で学習。物差しは英語の wav2vec2",
+    "encd": "英語と日本語の録音で学習。物差しは英語の wav2vec2",
+    "ence": "英語の録音で学習。物差しは多言語の mHuBERT",
+    "encf": "英語と日本語の録音で学習。物差しは多言語の mHuBERT",
+    "encg": "F に加えて、エンコーダの入力も mHuBERT に替える",
+}
+# the listener candidates `pmvc.yardstick` compared, as the page names them
+YARDSTICK_LABELS: dict[str, str] = {
+    "facebook/wav2vec2-base-960h": "wav2vec2-base-960h（英語。これまでの物差し）",
+    "utter-project/mHuBERT-147": "mHuBERT-147（147 言語）",
+    "sarulab-speech/hubert-base-jtube": "hubert-base-jtube（日本語）",
+    "facebook/wav2vec2-large-xlsr-53": "wav2vec2-large-xlsr-53（53 言語）",
 }
 # the sets of recordings `pmvc.recordings` brought in, as the page names them
 ABROAD_SETS: dict[str, str] = {
@@ -339,7 +366,7 @@ def abroad_section(d: Path, ja: Path, clips: dict[str, str]) -> str:
     sets: list[tuple[str, str, dict[str, Any]]] = []
     home = d / "results_judge.json"
     if home.exists():
-        sets.append(("英語・TSP のテスト話者", "学習と同じコーパス。第 4 節の 4 人", json.loads(home.read_text())["summary"]["en"]))
+        sets.append(("英語・TSP のテスト話者", "学習と同じコーパスの、学習に使っていない 4 人", json.loads(home.read_text())["summary"]["en"]))
     sets += [(label, "", summary[name]) for name, label in ABROAD_SETS.items() if name in summary]
     sets.sort(key=lambda x: x[2]["lang"] == "ja")
     rows = []
@@ -417,13 +444,114 @@ def abroad_section(d: Path, ja: Path, clips: dict[str, str]) -> str:
 <p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
 </article>"""
             )
-    return f"""<section aria-labelledby="h-j"><h2 id="h-j">5. 日本語の録音を通す</h2>
+    return f"""<section aria-labelledby="h-j"><h2 id="h-j">1. 英語で学習したエンコーダに日本語の録音を通す</h2>
 {{{{abroad_text}}}}
 {by_encoder}
 {{{{abroad_measures}}}}
 {by_set}
 {by_sound}
 {by_search}
+<div class="stack">{"".join(cards)}</div>
+</section>"""
+
+
+def yardstick_table(ja: Path) -> str:
+    """`pmvc.yardstick`'s comparison: each model at the layer that tells a Japanese render from
+    another speaker best, and the listener in use."""
+    path = ja / "yardstick.json"
+    if not path.exists():
+        return ""
+    best: dict[str, dict[str, Any]] = {}
+    for r in json.loads(path.read_text()):
+        if r["model"] not in best or (r["ja"]["dprime"] > best[r["model"]]["ja"]["dprime"] and r["model"] != "facebook/wav2vec2-base-960h") or (r["model"], r["layer"]) == ("facebook/wav2vec2-base-960h", 9):
+            best[r["model"]] = r
+    rows = []
+    for name, label in YARDSTICK_LABELS.items():
+        if name in best:
+            r = best[name]
+            cells = "".join(f'<td class="num">{r[lang]["other"]:.2f}</td><td class="num">{r[lang]["render"]:.2f}</td><td class="num">{r[lang]["ratio"]:.2f}</td>' for lang in ("en", "ja"))
+            search = f'<td class="num">{r["search"][0]:.2f} → {r["search"][1]:.2f}</td>' if "search" in r else '<td class="num">–</td>'
+            rows.append(f'<tr><th scope="row">{esc(label)}<span class="sub">第 {r["layer"]} 層</span></th>{cells}{search}</tr>')
+    return f"""<div class="scroll"><table>
+<caption>物差しの候補の比較。同じ文を読んだ 2 人の録音どうしの距離（別の話者）と、録音とエンコーダ C′ の合成音の距離（合成音）を、どちらも時間伸縮を許して測ったもの。比が 1 なら、合成音は別人の読み上げと同じ近さです。右端は、英語の物差しに向けた探索の前後の距離です。</caption>
+<thead><tr><th scope="col">モデル</th><th scope="col">英語 別の話者</th><th scope="col">英語 合成音</th><th scope="col">英語 比</th>
+<th scope="col">日本語 別の話者</th><th scope="col">日本語 合成音</th><th scope="col">日本語 比</th><th scope="col">探索の前 → 後</th></tr></thead>
+<tbody>{"".join(rows)}</tbody></table></div>"""
+
+
+def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
+    """Encoders taught with Japanese recordings, a multilingual listener, or both: `pmvc.judge`'s
+    results for them on JVS's held-out speakers (`jvs`), on the recordings of `ja` and on TSP's
+    test speakers (`d`). Nothing before the first of these exists."""
+    if not (jvs / "results.json").exists():
+        return ""
+    files = {"jvs": jvs / "results.json", "ja": ja / "results_taught.json", "tsp": d / "results_taught.json"}
+    results = {k: json.loads(p.read_text()) for k, p in files.items() if p.exists()}
+    sets: list[tuple[str, dict[str, Any]]] = [("JVS 日本語（8 話者）", results["jvs"]["summary"]["ja"])]
+    if "ja" in results:
+        # "日本語・女性（Hi-Fi-CAPTAIN）" as a column's heading: the corpus first, shortened
+        sets += [(("JSUT " if "JSUT" in label else "HFC ") + label.split("（")[0], results["ja"]["summary"][name]) for name, label in ABROAD_SETS.items() if results["ja"]["summary"][name]["lang"] == "ja"]
+    if "tsp" in results:
+        sets.append(("TSP 英語（4 話者）", results["tsp"]["summary"]["en"]))
+    if "ja" in results:
+        sets.append(("HFC 英語（2 話者）", results["ja"]["summary"]["en"]))
+    variants = [v for v in TAUGHT_LABELS if all(v in g for _, g in sets)]
+
+    def grid(caption: str, key: str, other: bool = False) -> str:
+        head = "".join(f'<th scope="col">{esc(label)}<span class="sub">{g["n"]} 文</span></th>' for label, g in sets)
+        rows = [
+            f'<tr><th scope="row">{esc(TAUGHT_LABELS[v])}<span class="sub">{esc(TAUGHT_NOTES[v])}</span></th>' + "".join(rate_cell(g[v], key) for _, g in sets) + "</tr>"
+            for v in variants if key in sets[0][1][v]
+        ]  # fmt: skip
+        if other:
+            rows.append('<tr><th scope="row">別の実話者<span class="sub">同じ文を読んだもう 1 人の録音</span></th>' + "".join(rate_cell(g.get("other", {}), key) for _, g in sets) + "</tr>")
+        return f"""<div class="scroll"><table>
+<caption>{caption}</caption>
+<thead><tr><th scope="col">条件</th>{head}</tr></thead>
+<tbody>{"".join(rows)}</tbody></table></div>"""
+
+    tables = (
+        grid("Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。角括弧は 95% 区間。", "rate2")
+        + grid("Whisper small の誤り率 %（英語の列は small.en）。", "rate")
+        + grid("音声記号の不一致 %。録音と合成音を音声記号認識器に書き取らせて、食い違った記号の割合です。", "phoneRate", other=True)
+    )
+    # the same sentences as the section above, then JVS's test speakers, then English
+    cards = []
+    shown: list[tuple[Path, dict[str, Any], dict[str, Any], str]] = []
+    if "ja" in results:
+        metas = {p.stem: json.loads(p.read_text()) for p in (ja / "meta").glob("*.json")}
+        by_id = {r["id"]: r for r in results["ja"]["utterances"]}
+        searched = sorted(json.loads((ja / "results_search.json").read_text())["utterances"], key=lambda r: r["id"]) if (ja / "results_search.json").exists() else []
+        for name, label in ABROAD_SETS.items():
+            mine = [r["id"] for r in searched if metas[r["id"]]["speaker"] == name][1:3] or sorted(i for i in by_id if metas[i]["speaker"] == name)[:1]
+            shown += [(ja, by_id[uid], metas[uid], label) for uid in mine]
+    rows = sorted(results["jvs"]["utterances"], key=lambda r: r["id"])
+    speakers = sorted({r["speaker"] for r in rows})
+    # two women and two men, each on a different sentence
+    for k, name in enumerate(speakers[:2] + speakers[-2:]):
+        r = [x for x in rows if x["speaker"] == name][3 + 5 * k]
+        shown.insert(k, (jvs, r, json.loads((jvs / "meta" / f"{r['id']}.json").read_text()), f"日本語・{'女性' if r['sex'] == 'F' else '男性'}（JVS {name}）"))
+    for where, r, m, label in shown:
+        buttons = "".join(
+            button(
+                clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", TAUGHT_LABELS[v],
+                f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small" if r["lang"] == "ja" else "small.en",
+            )
+            for v in variants if v in r["variants"]
+        )  # fmt: skip
+        cards.append(
+            f"""<article class="sentence">
+<p class="meta">{esc(r["id"])} · {esc(label)}</p>
+<p class="text">{esc(m["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+        )
+    return f"""<section aria-labelledby="h-k"><h2 id="h-k">2. 日本語の録音を学習に加える</h2>
+{{{{taught_text}}}}
+{yardstick_table(ja)}
+{{{{taught_between}}}}
+{tables}
 <div class="stack">{"".join(cards)}</div>
 </section>"""
 
@@ -501,7 +629,23 @@ def codec_perturbed(d: Path, metas: dict[str, Any], clips: dict[str, str], n: in
 <div class="stack">{"".join(cards)}</div>"""
 
 
-def build(d: Path, ja: Path, notes: str, n_sentences: int, n_perturbed: int) -> str:
+def shell(title: str, lede: str, notes: str, body: str, credits: str, clips: dict[str, str]) -> str:
+    return (
+        PAGE.replace("{{title}}", esc(title)).replace("{{lede}}", esc(lede)).replace("{{notes}}", notes).replace("{{body}}", body)
+        .replace("{{credits}}", esc(credits)).replace("{{clips}}", json.dumps(clips))
+    )  # fmt: skip
+
+
+def pointer(number: int, heading: str, text: str, title: str, url: str) -> str:
+    """A section that only points at the other page, or nothing without its address."""
+    if not url:
+        return ""
+    return f'''<section aria-labelledby="h-more"><h2 id="h-more">{number}. {esc(heading)}</h2>
+<p>{esc(text)}<a href="{esc(url)}">{esc(title)}</a></p></section>'''
+
+
+def build(d: Path, notes: str, n_sentences: int, n_perturbed: int, ja_url: str = "") -> str:
+    """The first page: the experiments on TSP's English recordings."""
     results = json.loads((d / "results.json").read_text())
     presults = json.loads((d / "perturb_results.json").read_text())
     perturb = json.loads((d / "perturb.json").read_text())
@@ -532,18 +676,26 @@ def build(d: Path, ja: Path, notes: str, n_sentences: int, n_perturbed: int) -> 
     perturbed = perturbed_cards(d, metas, clips, ids[:n_perturbed], prows, perturb["conditions"])
 
     channels = "、".join(perturb["keys"])
-    return (
-        PAGE.replace("{{notes}}", notes)
-        .replace("{{transplant_table}}", transplant_table(results["summary"]))
+    body = (
+        BODY_EN.replace("{{transplant_table}}", transplant_table(results["summary"]))
         .replace("{{perturb_table}}", perturb_table(presults["summary"], perturb["conditions"]))
         .replace("{{sentences}}", "\n".join(sentences))
         .replace("{{perturbed}}", "\n".join(perturbed))
         .replace("{{copy_section}}", copy_section(d, metas, clips, n_sentences))
         .replace("{{codec_section}}", codec_section(d, metas, clips, 8).replace("{{codec_text}}", CODEC_TEXT))
-        .replace("{{abroad_section}}", abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES))
         .replace("{{channels}}", esc(channels))
-        .replace("{{clips}}", json.dumps(clips))
+        .replace("{{more}}", pointer(5, "日本語の録音", "日本語の録音を使った実験は別のページにあります: ", TITLE_JA, ja_url))
     )
+    return shell(TITLE_EN, LEDE_EN, notes, body, CREDITS_EN, clips)
+
+
+def build_ja(d: Path, ja: Path, jvs: Path, notes: str, en_url: str = "") -> str:
+    """The second page: recordings from outside TSP, the Japanese ones above all."""
+    clips: dict[str, str] = {}
+    body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
+    body += taught_section(d, ja, jvs, clips).replace("{{taught_text}}", TAUGHT_TEXT).replace("{{taught_between}}", TAUGHT_BETWEEN)
+    body += pointer(3, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
+    return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
 
 CODEC_TEXT = """<p>録音を聞いて制御列を書くエンコーダです。デコーダは CHIMERA そのものなので、これで「音声 → 制御列（100 Hz × 21 チャネル）→ 音声」のコーデックになります。文の書き起こしは、学習にも推論にも探索にも使いません。</p>
@@ -557,12 +709,12 @@ CODEC_TEXT = """<p>録音を聞いて制御列を書くエンコーダです。�
 </ul>"""
 
 
-ABROAD_TEXT = """<p>第 4 節のエンコーダを、そのまま日本語の録音に使います。エンコーダも、その入力に使う wav2vec2 も、学習に使ったのは英語（TSP）だけです。録音は Hi-Fi-CAPTAIN の日本語話者 2 人（女性と男性、同じ 100 文）と、JSUT の女性話者（別の 100 文）です。</p>
+ABROAD_TEXT = """<p>英語の録音で作ったエンコーダ A・C・C′ を、そのまま日本語の録音に使います。エンコーダも、その入力に使う wav2vec2 も、学習に使ったのは英語（TSP）だけです。録音は Hi-Fi-CAPTAIN の日本語話者 2 人（女性と男性、同じ 100 文）と、JSUT の女性話者（別の 100 文）です。</p>
 <p>比較のため、Hi-Fi-CAPTAIN の英語話者 2 人（各 100 文）にも同じことをしています。収録条件が日本語と同じなので、コーパスの違いと言語の違いを分けて見られます。</p>"""
-ABROAD_MEASURES = """<p class="small">音声記号の不一致は、テキストも言語も仮定しない物差しです。多言語の音声記号認識器（wav2vec2 XLSR-53 を国際音声記号の書き取りに調整したもの）に録音と合成音を書き取らせ、録音側の記号のうち合成音側で違っていた割合を数えます。この認識器は日本語では書き取りが安定しないので、同じ文を読んだ別の実話者の録音を同じように比べた値を基準に置きます。リスナー距離は第 4 節と同じです。Whisper と音声記号認識器は、学習にも探索にも使っていません。</p>"""
+ABROAD_MEASURES = """<p class="small">音声記号の不一致は、テキストも言語も仮定しない物差しです。多言語の音声記号認識器（wav2vec2 XLSR-53 を国際音声記号の書き取りに調整したもの）に録音と合成音を書き取らせ、録音側の記号のうち合成音側で違っていた割合を数えます。この認識器は日本語では書き取りが安定しないので、同じ文を読んだ別の実話者の録音を同じように比べた値を基準に置きます。リスナー距離は、学習と探索が下げようとする量そのものです（英語の音声認識モデル wav2vec2 の中間特徴の 1 − コサイン類似度を、録音と合成音のフレームどうしで比べた平均）。Whisper と音声記号認識器は、学習にも探索にも使っていません。</p>"""
 
 
-PAGE = """<title>CHIMERA 韻律移植と摂動の試聴</title>
+PAGE = """<title>{{title}}</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans:wght@400&family=Space+Grotesk:wght@500;600&display=swap">
 <style>
@@ -620,29 +772,17 @@ button.clip.ref[aria-pressed="true"] { background: var(--ref); color: var(--acce
 .small { font-size: 0.8125rem; color: var(--muted); }
 .stack { display: flex; flex-direction: column; gap: 0.75rem; }
 code { font-size: 0.875em; }
+a { color: var(--accent); }
 </style>
 <main>
 <header class="stack">
-<h1>CHIMERA 韻律移植と摂動の試聴</h1>
-<p class="lede">物理モデル音声合成 CHIMERA を、実際の話者の録音に合わせて動かした結果です。合成エンジンは無改造で、変えたのは制御だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。</p>
+<h1>{{title}}</h1>
+<p class="lede">{{lede}}</p>
 </header>
 <section aria-labelledby="h-notes"><h2 id="h-notes">わかったこと</h2><div class="notes">{{notes}}</div></section>
-<section aria-labelledby="h-t"><h2 id="h-t">1. 韻律移植</h2>
-<p>同じ文について、CHIMERA 標準の読み上げと、話者の F0 や音素長を移した読み上げを比べます。調音（舌や唇の動き）はどれも規則のままです。</p>
-{{transplant_table}}
-<p class="small">有声一致は、発話区間の 10 ms フレームのうち有声／無声の判定が実録音と同じだった割合。時間ずれは、スペクトルの時間伸縮対応が対角線から外れた量の平均。この 3 列は録音と同じ時間軸の条件だけに出ます。ケプストラム距離は別の実話者どうしでも同程度に大きく、条件の優劣を分ける力は弱い指標です。</p>
-<div class="stack">{{sentences}}</div>
-</section>
-<section aria-labelledby="h-p"><h2 id="h-p">2. 制御列への摂動</h2>
-<p>「規則の音素長 + 話者の F0」の発話を、100 Hz × 21 チャネルの制御列（{{channels}}）に書き出し、プランナなしで再駆動します。そこにノイズや量子化を加えて、音がどう崩れるかを聴きます。ノイズの大きさは、各チャネルが 1 発話の中で動く幅（標準偏差）に対する比です。</p>
-{{perturb_table}}
-<div class="stack">{{perturbed}}</div>
-</section>
-{{copy_section}}
-{{codec_section}}
-{{abroad_section}}
+{{body}}
 <footer class="small stack">
-<p>録音は TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。文は Harvard sentences。第 5 節の録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）と JSUT（東京大学 猿渡研究室）。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。</p>
+<p>{{credits}}</p>
 </footer>
 </main>
 <script>
@@ -670,20 +810,65 @@ document.addEventListener("click", (e) => {
 """
 
 
+TITLE_EN = "CHIMERA 韻律移植と摂動の試聴"
+LEDE_EN = "物理モデル音声合成 CHIMERA を、実際の話者の録音に合わせて動かした結果です。合成エンジンは無改造で、変えたのは制御だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
+CREDITS_EN = "録音は TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。文は Harvard sentences。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+BODY_EN = """<section aria-labelledby="h-t"><h2 id="h-t">1. 韻律移植</h2>
+<p>同じ文について、CHIMERA 標準の読み上げと、話者の F0 や音素長を移した読み上げを比べます。調音（舌や唇の動き）はどれも規則のままです。</p>
+{{transplant_table}}
+<p class="small">有声一致は、発話区間の 10 ms フレームのうち有声／無声の判定が実録音と同じだった割合。時間ずれは、スペクトルの時間伸縮対応が対角線から外れた量の平均。この 3 列は録音と同じ時間軸の条件だけに出ます。ケプストラム距離は別の実話者どうしでも同程度に大きく、条件の優劣を分ける力は弱い指標です。</p>
+<div class="stack">{{sentences}}</div>
+</section>
+<section aria-labelledby="h-p"><h2 id="h-p">2. 制御列への摂動</h2>
+<p>「規則の音素長 + 話者の F0」の発話を、100 Hz × 21 チャネルの制御列（{{channels}}）に書き出し、プランナなしで再駆動します。そこにノイズや量子化を加えて、音がどう崩れるかを聴きます。ノイズの大きさは、各チャネルが 1 発話の中で動く幅（標準偏差）に対する比です。</p>
+{{perturb_table}}
+<div class="stack">{{perturbed}}</div>
+</section>
+{{copy_section}}
+{{codec_section}}
+{{more}}
+"""
+
+TAUGHT_TEXT = """<p>日本語の録音を学習に加えます。JVS の 86 話者から 10 文ずつ（860 文、約 1.9 時間）を、英語の TSP（1,012 文）と合わせて閉ループ学習に入れました。テストは 3 種類です。JVS のうち学習にも検証にも使っていない 8 話者（女性 4・男性 4）が読む、学習に出てこない 25 文。第 1 節の録音（Hi-Fi-CAPTAIN と JSUT。学習には使っていない別のコーパス）。そして英語です。</p>
+<p>もう 1 つ替えたのが「物差し」です。閉ループ学習は、合成音が録音と同じに聞こえるかを音声モデルの特徴で測ります。これまでの物差しは英語専用の wav2vec2 でした。下の表のとおり、この物差しは日本語の合成音を「別人の読み上げより録音に近い」と聞いてしまいます（比 0.89）。147 言語で学習した mHuBERT は「別人より遠い」と聞き分け（比 1.27）、第 1 節の音声記号認識器と同じ向きの判定になります。英語では、どちらも合成音を別人と同程度かそれより近いと聞きます。</p>
+<ul>
+<li><b>D</b>: 日本語の録音を加える（物差しは英語の wav2vec2 のまま）</li>
+<li><b>E</b>: 物差しを mHuBERT に替える（録音は英語のまま）</li>
+<li><b>F</b>: その両方</li>
+<li><b>G</b>: F に加えて、エンコーダが録音を聞く入口も wav2vec2 から mHuBERT に替える</li>
+</ul>
+<p>作り方はどれも C′ と同じで、探索も文の書き起こしも使いません。</p>"""
+TAUGHT_BETWEEN = """<p class="small">表の層は、モデルごとに日本語の合成音と別の話者を最もよく分けた層です（英語の wav2vec2 だけは、これまで使ってきた第 9 層）。物差しには mHuBERT の第 8 層を選びました。以下の Whisper と音声記号認識器は、どのエンコーダの学習にも使っていません。</p>"""
+
+TITLE_JA = "CHIMERA 日本語エンコーダの試聴"
+LEDE_JA = "物理モデル音声合成 CHIMERA をデコーダにしたコーデックを、日本語の録音で試した結果です。合成エンジンは無改造で、変えたのはエンコーダの学習だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
+CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS（東京大学 猿渡研究室。JVS は一部の音声だけを載せています）、TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
     ap.add_argument("--abroad", type=Path, default=ROOT / "out" / "ja", help="recordings from outside TSP, judged by pmvc.judge")
+    ap.add_argument("--jvs", type=Path, default=ROOT / "out" / "jvs", help="JVS's recordings, laid out by pmvc.jvs and judged")
     ap.add_argument("--notes", type=Path, default=None)
+    ap.add_argument("--notes-ja", type=Path, default=None)
     ap.add_argument("--sentences", type=int, default=12)
     ap.add_argument("--perturbed", type=int, default=4)
     ap.add_argument("--out", type=str, default="listening.html")
+    ap.add_argument("--out-ja", type=str, default="listening_ja.html")
+    ap.add_argument("--en-url", type=str, default="", help="where the first page is published, for the second to point at")
+    ap.add_argument("--ja-url", type=str, default="", help="where the second page is published")
     a = ap.parse_args()
-    notes = a.notes.read_text() if a.notes else "<p>（所見は未記入）</p>"
-    page = build(a.dir, a.abroad, notes, a.sentences, a.perturbed)
-    out = a.dir / a.out
-    out.write_text(page)
-    print(f"{out}: {len(page) / 1e6:.1f} MB")
+
+    def notes(path: Path | None) -> str:
+        return path.read_text() if path else "<p>（所見は未記入）</p>"
+
+    pages = [(a.dir / a.out, build(a.dir, notes(a.notes), a.sentences, a.perturbed, a.ja_url))]
+    if (a.abroad / "results.json").exists():
+        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, notes(a.notes_ja), a.en_url)))
+    for out, page in pages:
+        out.write_text(page)
+        print(f"{out}: {len(page) / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":
