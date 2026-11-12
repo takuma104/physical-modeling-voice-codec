@@ -37,6 +37,8 @@ unzip -qo 48k.zip
 別の場所に置いた場合は環境変数 `TSP_DIR` で指定します。
 ffmpeg(試聴ページの音声変換)も必要です。
 
+手順 5 だけは別の録音を使います。Hi-Fi-CAPTAIN(日本語と英語の女声・男声、CC BY-NC-SA 4.0)の `eval` の音声とテキストを `~/datasets/hfc/hi-fi-captain/` に、JSUT の `basic5000` を `~/datasets/jsut/jsut_ver1.1/` に展開しておきます。使うのは各 100 文です。
+
 ## 実験の流し方
 
 出力はすべて `out/`(git 管理外)に出ます。
@@ -83,7 +85,22 @@ uv run python -m pmvc.perturb --base encn --tag ec --ids "$(ls out/transplant/en
 uv run python -m pmvc.evaluate --against ec_drive --name perturb_ec_results \
   --variants "$(uv run python -c "import json; print(','.join(c for c in json.load(open('out/transplant/perturb_ec.json'))['conditions'] if c != 'ec_drive'))")"
 
-# 5. 試聴ページ(音声埋め込みの HTML 1 枚)
+# 5. 英語(TSP)で学習したエンコーダに、ほかの録音を通す(日本語 300 文と英語 200 文。出力は out/ja)
+H=~/datasets/hfc/hi-fi-captain; J=~/datasets/jsut/jsut_ver1.1/basic5000
+uv run python -m pmvc.recordings --set hjf --lang ja --sex F --wavs $H/ja-JP/female/wav/eval --text $H/ja-JP/female/text/eval.txt
+uv run python -m pmvc.recordings --set hjm --lang ja --sex M --wavs $H/ja-JP/male/wav/eval --text $H/ja-JP/male/text/eval.txt
+uv run python -m pmvc.recordings --set jsut --lang ja --sex F --wavs $J/wav --text $J/transcript_utf8.txt
+uv run python -m pmvc.recordings --set hef --lang en --sex F --wavs $H/en-US/female/wav/eval --text $H/en-US/female/text/eval.txt
+uv run python -m pmvc.recordings --set hem --lang en --sex M --wavs $H/en-US/male/wav/eval --text $H/en-US/male/text/eval.txt
+for m in sim enc encn; do uv run python -m pmvc.encoder encode out/ja --models out/transplant/models --name $m --out $m --split all; done
+uv run python -m pmvc.judge                                                   # Whisper 2 種、音声記号の認識器、リスナー距離
+uv run python -m pmvc.judge out/transplant --split test --name results_judge  # 同じ物差しで TSP のテスト話者
+#   診断: C′ の制御列を、書き起こしなしの探索で録音に近づける(日本語 24 文)
+IDS=$(for s in hjf hjm jsut; do for k in 005 017 029 041 053 065 077 089; do printf "%s_%s," $s $k; done; done | sed 's/,$//')
+uv run python -m pmvc.copysynth out/ja --ids $IDS --base encn --nll-weight 0 --iters 20 --out encncopy --scale out/transplant/warp
+uv run python -m pmvc.judge --ids $IDS --variants encn,encncopy --name results_search
+
+# 6. 試聴ページ(音声埋め込みの HTML 1 枚)
 uv run python -m pmvc.page --notes notes.html
 ```
 
