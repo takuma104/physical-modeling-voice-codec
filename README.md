@@ -12,7 +12,7 @@
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` と、声門のパラメータを直接指定する `Voice.set_glottis()` を持つ |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` と、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()` を持つ |
 | `pmvc/` | 実験スクリプト(Python) |
 | `docs/` | 企画メモと関連論文 |
 
@@ -135,17 +135,28 @@ T=("out/jvs --split test" "out/ja --split all" "out/transplant --split test")
 for t in "${T[@]}"; do uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out ench; done
 #   声の設定: Hi-Fi-CAPTAIN の女性話者の dev 100 文のうち 16 文に合わせ、残り 84 文で確かめる
 uv run python -m pmvc.recordings out/fit --set hjfd --lang ja --sex F --wavs $H/ja-JP/female/wav/dev --text $H/ja-JP/female/text/dev.txt
-uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name encg --out encg --split all
-uv run python -m pmvc.calibrate out/fit --sex F --tracks encg --prefix hjfd --by nisqa --n 16 --evals 220 --name voice-F \
+for m in encg ench; do uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name $m --out $m --split all; done
+#   NISQA だけに合わせる(--clicks 0)。声門は長く開く設定になるが、歯の雑音源も 2.2 倍になり、破裂音のたびにクリック音が出る
+uv run python -m pmvc.calibrate out/fit --sex F --tracks encg --prefix hjfd --by nisqa --clicks 0 --n 16 --evals 220 --name voice-F1 \
+  --only noiseGlottis,noiseConstriction,noiseTeeth,pressure,tension,breathiness,brightness,roughness,openQuotient,amplitudeScale \
   --start '{"tension": 0.0745, "brightness": 0.0264, "breathiness": 0.0465, "roughness": 0.0084, "noiseGlottis": 1.18, "noiseConstriction": 1.55, "noiseTeeth": 1.87, "openQuotient": 0.88}'
+#   使う声は、その声門の開き方に、クリック音(pmvc.clicks)が出にくい 4 つの設定を手で組み合わせたもの:
+#   狭めと歯の雑音源 0.6 倍、振動の振幅 1.4 倍、狭めが閉じきる速さ半分(--evals 0 は探索せず、--start の設定の点数を測って書き出す)
+with() { python3 -c "
+import json, sys; s = json.load(open('out/fit/voice-F1.json'))['settings']; s.update(noiseGlottis=1, amplitudeScale=1.4, sealRate=2.5)
+s.update(noiseConstriction=float(sys.argv[1]), noiseTeeth=float(sys.argv[1])); print(json.dumps(s))" $1; }
+uv run python -m pmvc.calibrate out/fit --sex F --tracks ench --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F --start "$(with 0.6)"
+uv run python -m pmvc.calibrate out/fit --sex F --tracks ench --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F-mid --start "$(with 1.0)"   # 比較用: 雑音源は既定値
 #   その設定がどの高さの話者に効くか(17 話者)。encode --voice はこの結果に従い、話者の声の高さで設定を切り替える
 uv run python -m pmvc.pitchmix $(for s in ML MK FL FK; do echo out/transplant:ench:$s; done) \
   $(for s in hem hef hjm hjf jsut; do echo out/ja:ench:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:ench:jvs$n; done)
-#   3 つのテストで、H と「H + 高い声の調整」を評価する。pmvc.natural が NISQA の点数を足す
+#   3 つのテストで、H と、3 通りの声(NISQA だけに合わせた voice-F1、中間の voice-F-mid、使う声 voice-F)で鳴らした H を評価する
 for t in "${T[@]}"; do
-  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchv --voice out/fit/voice-F.json
-  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchv --name results_tuned
-  uv run python -m pmvc.natural ${t%% *} --name results_tuned
+  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchv --voice out/fit/voice-F1.json
+  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchx --voice out/fit/voice-F-mid.json
+  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchw --voice out/fit/voice-F.json
+  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchv,enchx,enchw --name results_tuned
+  uv run python -m pmvc.natural ${t%% *} --name results_tuned       # NISQA の点数を足す
 done
 
 # 8. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
@@ -155,7 +166,7 @@ uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
 日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
-声の設定の調整は CPU で 15 分ほどです。手順 7 の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。
+声の設定の調整は CPU で 15 分ほどです。手順 7 の最初の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。クリック音(`pmvc.clicks`)を減点に入れて当てはめ直すこともできますが(`--clicks`、既定 0.3)、開放率を下げて振幅を倍にする、息の雑音を増やして紛らわせる、といった別の逃げ道に行くので、クリック音に効く 4 つの設定は指標を見ながら手で決めています。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。
 
