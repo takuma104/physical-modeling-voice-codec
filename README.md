@@ -10,8 +10,9 @@
 |---|---|
 | `third-party/chimera-vocal-synth` | 物理モデル音声合成 CHIMERA(サブモジュール、無改造で使う) |
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
+| `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` を持つ |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` と、声門のパラメータを直接指定する `Voice.set_glottis()` を持つ |
 | `pmvc/` | 実験スクリプト(Python) |
 | `docs/` | 企画メモと関連論文 |
 
@@ -37,7 +38,7 @@ unzip -qo 48k.zip
 別の場所に置いた場合は環境変数 `TSP_DIR` で指定します。
 ffmpeg(試聴ページの音声変換)も必要です。
 
-手順 5 と 6 は別の録音を使います。Hi-Fi-CAPTAIN(日本語と英語の女声・男声、CC BY-NC-SA 4.0)の `eval` の音声とテキストを `~/datasets/hfc/hi-fi-captain/` に、JSUT の `basic5000` を `~/datasets/jsut/jsut_ver1.1/` に展開しておきます。使うのは各 100 文です。
+手順 5 以降は別の録音を使います。Hi-Fi-CAPTAIN(日本語と英語の女声・男声、CC BY-NC-SA 4.0)の `eval` の音声とテキストを `~/datasets/hfc/hi-fi-captain/` に、JSUT の `basic5000` を `~/datasets/jsut/jsut_ver1.1/` に展開しておきます。使うのは各 100 文です。手順 7 では、Hi-Fi-CAPTAIN の日本語女性の `dev` も使います。
 手順 6 は JVS(100 話者、再配布不可)の `parallel100` を `~/datasets/jvs/jvs_ver1/` に置いて使います。
 
 ## 実験の流し方
@@ -127,13 +128,34 @@ uv run python -m pmvc.judge out/jvs --split test --variants encn,encd,ence,encf,
 uv run python -m pmvc.judge out/ja --variants encn,encd,ence,encf,encg --name results_taught
 uv run python -m pmvc.judge out/transplant --split test --variants encn,encd,ence,encf,encg --name results_taught
 
-# 7. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
+# 7. 発話の外の余計な音を直し(エンコーダ H)、高い声の設定を NISQA に合わせて調整する
+#   H: G と同じ作り方で、発話の外では「息なし」を手本にする
+uv run python -m pmvc.encoder train --name ench --target sim --synthetic sim --tune 6 --standin standin_m --also out/jvs --ssl utter-project/mHuBERT-147 --silences
+T=("out/jvs --split test" "out/ja --split all" "out/transplant --split test")
+for t in "${T[@]}"; do uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out ench; done
+#   声の設定: Hi-Fi-CAPTAIN の女性話者の dev 100 文のうち 16 文に合わせ、残り 84 文で確かめる
+uv run python -m pmvc.recordings out/fit --set hjfd --lang ja --sex F --wavs $H/ja-JP/female/wav/dev --text $H/ja-JP/female/text/dev.txt
+uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name encg --out encg --split all
+uv run python -m pmvc.calibrate out/fit --sex F --tracks encg --prefix hjfd --by nisqa --n 16 --evals 220 --name voice-F \
+  --start '{"tension": 0.0745, "brightness": 0.0264, "breathiness": 0.0465, "roughness": 0.0084, "noiseGlottis": 1.18, "noiseConstriction": 1.55, "noiseTeeth": 1.87, "openQuotient": 0.88}'
+#   その設定がどの高さの話者に効くか(17 話者)。encode --voice はこの結果に従い、話者の声の高さで設定を切り替える
+uv run python -m pmvc.pitchmix $(for s in ML MK FL FK; do echo out/transplant:ench:$s; done) \
+  $(for s in hem hef hjm hjf jsut; do echo out/ja:ench:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:ench:jvs$n; done)
+#   3 つのテストで、H と「H + 高い声の調整」を評価する。pmvc.natural が NISQA の点数を足す
+for t in "${T[@]}"; do
+  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchv --voice out/fit/voice-F.json
+  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchv --name results_tuned
+  uv run python -m pmvc.natural ${t%% *} --name results_tuned
+done
+
+# 8. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
 日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
+声の設定の調整は CPU で 15 分ほどです。手順 7 の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。
 

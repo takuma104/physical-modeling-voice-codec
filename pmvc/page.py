@@ -108,6 +108,41 @@ TAUGHT_NOTES: dict[str, str] = {
     "encf": "英語と日本語の録音で学習。物差しは多言語の mHuBERT",
     "encg": "F に加えて、エンコーダの入力も mHuBERT に替える",
 }
+# encoder H, and the female voice refitted
+TUNED_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "encn": "エンコーダ C′",
+    "encg": "エンコーダ G",
+    "ench": "エンコーダ H",
+    "enchv": "H + 高い声の調整",
+}
+TUNED_NOTES: dict[str, str] = {
+    "real": "話者本人",
+    "encn": "英語の録音だけで学習",
+    "encg": "日本語の録音、多言語の物差しと入口（第 2 節）",
+    "ench": "G と同じ。ただし発話の外では「息なし」を手本にする",
+    "enchv": "H の制御列を、声の高い話者では声門の設定を調整して鳴らす",
+}
+# the settings `pmvc.calibrate` fits, as the page names them
+VOICE_LABELS: dict[str, str] = {
+    "noiseGlottis": "雑音源のゲイン（声門）",
+    "noiseConstriction": "雑音源のゲイン（狭め）",
+    "noiseTeeth": "雑音源のゲイン（歯）",
+    "pressure": "肺圧 cmH₂O",
+    "tension": "声門の張り（0 ゆるい 〜 1 強い）",
+    "breathiness": "息漏れ（0〜1）",
+    "brightness": "明るさ（閉じ方の急さ、0〜1）",
+    "roughness": "ゆらぎ（周期と振幅の乱れ、0〜1）",
+    "openQuotient": "開放率（1 周期のうち声門が開いている割合）",
+    "amplitudeScale": "振動の振幅（倍率）",
+}
+# the speakers `pmvc.pitchmix` was run on, as the page names them
+PITCH_SPEAKERS: dict[str, str] = {
+    "ML": "TSP 男性 ML", "MK": "TSP 男性 MK", "FL": "TSP 女性 FL", "FK": "TSP 女性 FK",
+    "hem": "HFC 英語 男性", "hef": "HFC 英語 女性", "hjm": "HFC 日本語 男性", "hjf": "HFC 日本語 女性", "jsut": "JSUT 女性",
+    "jvs093": "JVS 女性 jvs093", "jvs094": "JVS 女性 jvs094", "jvs095": "JVS 女性 jvs095", "jvs096": "JVS 女性 jvs096",
+    "jvs097": "JVS 男性 jvs097", "jvs098": "JVS 男性 jvs098", "jvs099": "JVS 男性 jvs099", "jvs100": "JVS 男性 jvs100",
+}  # fmt: skip
 # the listener candidates `pmvc.yardstick` compared, as the page names them
 YARDSTICK_LABELS: dict[str, str] = {
     "facebook/wav2vec2-base-960h": "wav2vec2-base-960h（英語。これまでの物差し）",
@@ -479,13 +514,13 @@ def yardstick_table(ja: Path) -> str:
 <tbody>{"".join(rows)}</tbody></table></div>"""
 
 
-def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
-    """Encoders taught with Japanese recordings, a multilingual listener, or both: `pmvc.judge`'s
-    results for them on JVS's held-out speakers (`jvs`), on the recordings of `ja` and on TSP's
-    test speakers (`d`). Nothing before the first of these exists."""
-    if not (jvs / "results.json").exists():
-        return ""
-    files = {"jvs": jvs / "results.json", "ja": ja / "results_taught.json", "tsp": d / "results_taught.json"}
+Tests = tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]
+
+
+def three_tests(d: Path, ja: Path, jvs: Path, name_jvs: str, name: str) -> Tests:
+    """`pmvc.judge`'s results on JVS's held-out speakers (`jvs`), on the recordings of `ja` and on
+    TSP's test speakers (`d`), and their summaries as a table's columns: (heading, summary)."""
+    files = {"jvs": jvs / f"{name_jvs}.json", "ja": ja / f"{name}.json", "tsp": d / f"{name}.json"}
     results = {k: json.loads(p.read_text()) for k, p in files.items() if p.exists()}
     sets: list[tuple[str, dict[str, Any]]] = [("JVS 日本語（8 話者）", results["jvs"]["summary"]["ja"])]
     if "ja" in results:
@@ -495,28 +530,37 @@ def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
         sets.append(("TSP 英語（4 話者）", results["tsp"]["summary"]["en"]))
     if "ja" in results:
         sets.append(("HFC 英語（2 話者）", results["ja"]["summary"]["en"]))
-    variants = [v for v in TAUGHT_LABELS if all(v in g for _, g in sets)]
+    return results, sets
 
-    def grid(caption: str, key: str, other: bool = False) -> str:
-        head = "".join(f'<th scope="col">{esc(label)}<span class="sub">{g["n"]} 文</span></th>' for label, g in sets)
-        rows = [
-            f'<tr><th scope="row">{esc(TAUGHT_LABELS[v])}<span class="sub">{esc(TAUGHT_NOTES[v])}</span></th>' + "".join(rate_cell(g[v], key) for _, g in sets) + "</tr>"
-            for v in variants if key in sets[0][1][v]
-        ]  # fmt: skip
-        if other:
-            rows.append('<tr><th scope="row">別の実話者<span class="sub">同じ文を読んだもう 1 人の録音</span></th>' + "".join(rate_cell(g.get("other", {}), key) for _, g in sets) + "</tr>")
-        return f"""<div class="scroll"><table>
+
+def grid(sets: list[tuple[str, dict[str, Any]]], variants: list[str], labels: dict[str, str], notes: dict[str, str], caption: str, key: str, other: bool = False) -> str:
+    """A table of one measure: a row for each variant that has it, a column for each test."""
+    head = "".join(f'<th scope="col">{esc(label)}<span class="sub">{g["n"]} 文</span></th>' for label, g in sets)
+
+    def cell(m: dict[str, Any]) -> str:
+        return rate_cell(m, key) if isinstance(m.get(key), list) else num_cell(m, key, ".2f" if key == "quality" else ".0f")
+
+    rows = [
+        f'<tr><th scope="row">{esc(labels[v])}<span class="sub">{esc(notes[v])}</span></th>' + "".join(cell(g[v]) for _, g in sets) + "</tr>"
+        for v in variants if key in sets[0][1][v]
+    ]  # fmt: skip
+    if other:
+        rows.append('<tr><th scope="row">別の実話者<span class="sub">同じ文を読んだもう 1 人の録音</span></th>' + "".join(rate_cell(g.get("other", {}), key) for _, g in sets) + "</tr>")
+    return f"""<div class="scroll"><table>
 <caption>{caption}</caption>
 <thead><tr><th scope="col">条件</th>{head}</tr></thead>
 <tbody>{"".join(rows)}</tbody></table></div>"""
 
-    tables = (
-        grid("Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。角括弧は 95% 区間。", "rate2")
-        + grid("Whisper small の誤り率 %（英語の列は small.en）。", "rate")
-        + grid("音声記号の不一致 %。録音と合成音を音声記号認識器に書き取らせて、食い違った記号の割合です。", "phoneRate", other=True)
-    )
-    # the same sentences as the section above, then JVS's test speakers, then English
-    cards = []
+
+def sentence_cards(clips: dict[str, str], ja: Path, jvs: Path, results: dict[str, Any], variants: list[str], labels: dict[str, str], voiced: tuple[str, ...] = ()) -> str:
+    """The cards of the three tests: one sentence each of four JVS speakers, then the sentences
+    of the first section's cards, then English. `voiced`: variants rendered with a fitted
+    voice, left out where the speaker's pitch leaves the voice as it was."""
+
+    def unchanged(where: Path, v: str, uid: str) -> bool:
+        glottis = json.loads((where / v / f"{uid}.tracks.json").read_text()).get("glottis")
+        return glottis is None or abs(glottis["openQuotient"] - 0.6) < 0.03
+
     shown: list[tuple[Path, dict[str, Any], dict[str, Any], str]] = []
     if "ja" in results:
         metas = {p.stem: json.loads(p.read_text()) for p in (ja / "meta").glob("*.json")}
@@ -531,13 +575,14 @@ def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
     for k, name in enumerate(speakers[:2] + speakers[-2:]):
         r = [x for x in rows if x["speaker"] == name][3 + 5 * k]
         shown.insert(k, (jvs, r, json.loads((jvs / "meta" / f"{r['id']}.json").read_text()), f"日本語・{'女性' if r['sex'] == 'F' else '男性'}（JVS {name}）"))
+    cards = []
     for where, r, m, label in shown:
         buttons = "".join(
             button(
-                clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", TAUGHT_LABELS[v],
+                clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", labels[v],
                 f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small" if r["lang"] == "ja" else "small.en",
             )
-            for v in variants if v in r["variants"]
+            for v in variants if v in r["variants"] and not (v in voiced and unchanged(where, v, r["id"]))
         )  # fmt: skip
         cards.append(
             f"""<article class="sentence">
@@ -547,12 +592,88 @@ def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
 <p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
 </article>"""
         )
+    return "".join(cards)
+
+
+def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
+    """Encoders taught with Japanese recordings, a multilingual listener, or both. Nothing
+    before `pmvc.judge`'s results for them on JVS's held-out speakers exist."""
+    if not (jvs / "results.json").exists():
+        return ""
+    results, sets = three_tests(d, ja, jvs, "results", "results_taught")
+    variants = [v for v in TAUGHT_LABELS if all(v in g for _, g in sets)]
+    tables = (
+        grid(sets, variants, TAUGHT_LABELS, TAUGHT_NOTES, "Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。角括弧は 95% 区間。", "rate2")
+        + grid(sets, variants, TAUGHT_LABELS, TAUGHT_NOTES, "Whisper small の誤り率 %（英語の列は small.en）。", "rate")
+        + grid(sets, variants, TAUGHT_LABELS, TAUGHT_NOTES, "音声記号の不一致 %。録音と合成音を音声記号認識器に書き取らせて、食い違った記号の割合です。", "phoneRate", other=True)
+    )
     return f"""<section aria-labelledby="h-k"><h2 id="h-k">2. 日本語の録音を学習に加える</h2>
 {{{{taught_text}}}}
 {yardstick_table(ja)}
 {{{{taught_between}}}}
 {tables}
-<div class="stack">{"".join(cards)}</div>
+<div class="stack">{sentence_cards(clips, ja, jvs, results, variants, TAUGHT_LABELS)}</div>
+</section>"""
+
+
+def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]) -> str:
+    """The sounds before the speech taken out (encoder H), and the female voice refitted
+    (`pmvc.calibrate --by nisqa`'s settings in `fit`). Nothing before `pmvc.judge`'s and
+    `pmvc.natural`'s results for them on JVS's held-out speakers exist."""
+    if not (jvs / "results_tuned.json").exists():
+        return ""
+    results, sets = three_tests(d, ja, jvs, "results_tuned", "results_tuned")
+    variants = [v for v in TUNED_LABELS if all(v in g for _, g in sets)]
+    stray = grid(sets, [v for v in variants if v not in ("real", "enchv")], TUNED_LABELS, TUNED_NOTES,
+                 "発話の外（録音が無音のところ）で、合成音が 30 ms 以上有声になった録音の割合 %。発話の前後 60 ms は除いています。TSP と JSUT の録音は、発話の前にほとんど無音がありません。", "stray")  # fmt: skip
+    # NISQA by sex: the same files' summaries by language and sex
+    by_sex: list[tuple[str, dict[str, Any]]] = []
+    for key, heading in (("jvs", "JVS"), ("ja", "HFC・JSUT"), ("tsp", "TSP 英語"), ("ja", "HFC 英語")):
+        if key in results:
+            lang = "en" if "英語" in heading else "ja"
+            by_sex += [(f"{heading} {'女性' if sex == 'F' else '男性'}", results[key]["summary"][f"{lang}-{sex}"]) for sex in "FM" if f"{lang}-{sex}" in results[key]["summary"]]
+    quality = grid(by_sex, variants, TUNED_LABELS, TUNED_NOTES, "NISQA が予測する品質（1〜5 の平均オピニオン評点）。女性の列と男性の列を分けています。JVS の男性 4 人のうち 3 人は声が高く（中央値 172〜200 Hz）、調整の対象です。", "quality")
+    by_pitch = ""
+    if (fit / "voice-F.pitchmix.json").exists():
+        mix = json.loads((fit / "voice-F.pitchmix.json").read_text())
+        head = "".join(f'<th scope="col">{w:g}</th>' for w in mix["shares"])
+        rows = "".join(
+            f'<tr><th scope="row">{esc(PITCH_SPEAKERS.get(r["speaker"], r["speaker"]))}</th><td class="num">{r["pitch"]:.0f}</td>' + "".join(f'<td class="num">{r["quality"][str(w)]:.2f}</td>' for w in mix["shares"]) + "</tr>"
+            for r in mix["speakers"]
+        )
+        by_pitch = f"""<div class="scroll"><table>
+<caption>調整した設定をどの程度使うと NISQA の点数がどうなるか（話者ごとに {mix["n"]} 文、エンコーダ H の制御列）。0 は CHIMERA の既定、1 は調整後、その間は設定を混ぜたもの。話者は声の高さの順です。</caption>
+<thead><tr><th scope="col">話者</th><th scope="col">声の高さ Hz</th>{head}</tr></thead>
+<tbody>{rows}</tbody></table></div>"""
+    tables = (
+        grid(sets, variants, TUNED_LABELS, TUNED_NOTES, "Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。角括弧は 95% 区間。", "rate2")
+        + grid(sets, variants, TUNED_LABELS, TUNED_NOTES, "Whisper small の誤り率 %（英語の列は small.en）。", "rate")
+        + grid(sets, variants, TUNED_LABELS, TUNED_NOTES, "音声記号の不一致 %。", "phoneRate", other=True)
+    )
+    settings = ""
+    if (fit / "voice-F.json").exists():
+        from .calibrate import PARAMS
+
+        fitted = json.loads((fit / "voice-F.json").read_text())
+        rows = "".join(
+            f'<tr><th scope="row">{esc(VOICE_LABELS[name])}</th><td class="num">{default:.3g}</td><td class="num">{fitted["settings"][name]:.3g}</td></tr>'
+            for name, default, _, _ in PARAMS
+        )
+        settings = f"""<div class="scroll"><table>
+<caption>声の設定。CHIMERA の既定値と、Hi-Fi-CAPTAIN の女性話者の録音 16 文に合わせて調整した値。雑音源のゲインは既定値に対する倍率です。</caption>
+<thead><tr><th scope="col">設定</th><th scope="col">既定</th><th scope="col">調整後</th></tr></thead>
+<tbody>{rows}</tbody></table></div>"""
+    return f"""<section aria-labelledby="h-u"><h2 id="h-u">3. 発話の前の余計な音と、女声の声色</h2>
+{{{{tuned_text}}}}
+{stray}
+{{{{tuned_voice}}}}
+{by_pitch}
+{settings}
+{{{{tuned_rule}}}}
+{quality}
+{{{{tuned_check}}}}
+{tables}
+<div class="stack">{sentence_cards(clips, ja, jvs, results, variants, TUNED_LABELS, ("enchv",))}</div>
 </section>"""
 
 
@@ -689,12 +810,13 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int, ja_url: str =
     return shell(TITLE_EN, LEDE_EN, notes, body, CREDITS_EN, clips)
 
 
-def build_ja(d: Path, ja: Path, jvs: Path, notes: str, en_url: str = "") -> str:
+def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = "") -> str:
     """The second page: recordings from outside TSP, the Japanese ones above all."""
     clips: dict[str, str] = {}
     body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
     body += taught_section(d, ja, jvs, clips).replace("{{taught_text}}", TAUGHT_TEXT).replace("{{taught_between}}", TAUGHT_BETWEEN)
-    body += pointer(3, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
+    body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_check}}", TUNED_CHECK)
+    body += pointer(4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
 
@@ -840,6 +962,13 @@ TAUGHT_TEXT = """<p>日本語の録音を学習に加えます。JVS の 86 話�
 <p>作り方はどれも C′ と同じで、探索も文の書き起こしも使いません。</p>"""
 TAUGHT_BETWEEN = """<p class="small">表の層は、モデルごとに日本語の合成音と別の話者を最もよく分けた層です（英語の wav2vec2 だけは、これまで使ってきた第 9 層）。物差しには mHuBERT の第 8 層を選びました。以下の Whisper と音声記号認識器は、どのエンコーダの学習にも使っていません。</p>"""
 
+TUNED_TEXT = """<p>第 2 節のエンコーダ G には、発話の前に余計な音が出る癖がありました。原因は学習の手本です。JVS の録音は発話の前に 0.5 秒ほど無音がありますが、学習で録音と聞き比べているのは発話の区間だけで、その外では「合成音だけで学習したエンコーダ A の出力」を手本にしていました。A は録音の部屋ノイズが始まった時点で息を出し始めるので、それを真似ていました。</p>
+<p>エンコーダ H は、G と同じ作り方で、発話の外では「息なし」を手本にします。あわせて、エンコーダ自身が足している先頭 0.2 秒の無音では、制御列を落ち着いた値から始めます。</p>"""
+TUNED_VOICE = """<p>女声の声色には、NISQA（音声だけから主観品質の評点を予測するモデル）を物差しに使いました。男性の合成音は実録音に近い点数になるのに、女性の合成音は大きく下がります。調べると、点数は性別ではなく声の高さに従っていました。話者ごとの声の高さ（中央値）と点数の相関は −0.9 で、声の高い男性も下がります。原因はエンコーダではなく、CHIMERA のエンジンが高い声を鳴らすときの声門の動かし方にありました。エンジンの声門は、1 周期のうち開いている割合（開放率）が声の高さによらず約 0.6 で、設定で動かせるのも 0.78 までです。実際の声は、高いほど、また女声のほうが、開放率が大きいことが知られています。</p>
+<p>そこで、Hi-Fi-CAPTAIN の女性話者の録音 16 文（テストとは別の文）を手本に、声門と雑音源の設定を調整しました。NISQA の点数が上がり、かつ多言語の物差しで録音から離れないように合わせています。エンジンのコードは変えておらず、声門のパラメータを外から直接指定しています。</p>"""
+TUNED_RULE = """<p>上の 2 つの表から、調整した設定は声の高さが 175 Hz 以上の話者に使い、150 Hz 以下の話者は既定のまま、その間は混ぜることにしました。「H + 高い声の調整」は、エンコーダ H の制御列をこの規則で鳴らしたものです。声の高さは、その話者の録音全体の中央値で決めています。制御列は H と同じです。</p>"""
+TUNED_CHECK = """<p class="small">声の設定を変えても言葉が保たれているかを、第 2 節と同じ物差しで確かめたのが以下の表です。Whisper と音声記号認識器は、学習にも調整にも使っていません。NISQA は女声の設定の調整にだけ使いました（表の点数は、調整に使っていない録音のものです）。</p>"""
+
 TITLE_JA = "CHIMERA 日本語エンコーダの試聴"
 LEDE_JA = "物理モデル音声合成 CHIMERA をデコーダにしたコーデックを、日本語の録音で試した結果です。合成エンジンは無改造で、変えたのはエンコーダの学習だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
 CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS（東京大学 猿渡研究室。JVS は一部の音声だけを載せています）、TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
@@ -850,6 +979,7 @@ def main() -> None:
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
     ap.add_argument("--abroad", type=Path, default=ROOT / "out" / "ja", help="recordings from outside TSP, judged by pmvc.judge")
     ap.add_argument("--jvs", type=Path, default=ROOT / "out" / "jvs", help="JVS's recordings, laid out by pmvc.jvs and judged")
+    ap.add_argument("--fit", type=Path, default=ROOT / "out" / "fit", help="where pmvc.calibrate wrote the female voice's settings")
     ap.add_argument("--notes", type=Path, default=None)
     ap.add_argument("--notes-ja", type=Path, default=None)
     ap.add_argument("--sentences", type=int, default=12)
@@ -865,7 +995,7 @@ def main() -> None:
 
     pages = [(a.dir / a.out, build(a.dir, notes(a.notes), a.sentences, a.perturbed, a.ja_url))]
     if (a.abroad / "results.json").exists():
-        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, notes(a.notes_ja), a.en_url)))
+        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url)))
     for out, page in pages:
         out.write_text(page)
         print(f"{out}: {len(page) / 1e6:.1f} MB")
