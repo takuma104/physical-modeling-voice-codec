@@ -5,7 +5,8 @@ that needed the sentence's phones. Its tracks are what an encoder can be taught 
 voice as the decoder that makes a codec whose latent is the control track.
 
 usage: python -m pmvc.encoder train [dir] [--name encoder] [--target copy] [--synthetic copy,warp]
-                                    [--epochs 120] [--hidden 256] [--seed 0]
+                                    [--no-real] [--select listener|loss|last] [--epochs 120]
+                                    [--hidden 256] [--seed 0]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
 
 The network hears the recording through wav2vec2 (frozen, a learned mix of its layers: the model
@@ -21,6 +22,15 @@ validation leaves out their sentences too.
 `train` fits on the training speakers that have a `--target` track. Besides the recording →
 track pairs, each `--synthetic` variant adds its render → its own track: pairs that are exact,
 in the voice's own timbre. Writes <dir>/models/<name>.pt and <name>.json (the loss by epoch).
+Which epoch's weights are kept is `--select`:
+  listener  the epoch after which the voice, driven by the tracks the encoder writes for
+            validation recordings, comes closest to those recordings for `pmvc.listener` (its
+            feature distance, checked every `--every` epochs on every `--stride`-th recording).
+            This closes the loop through the voice, and asks for no track to compare with.
+  loss      the epoch with the least error against the validation recordings' `--target`
+            tracks. A fit on renders alone does not aim at those tracks, and its error against
+            them is least long before its renders are closest.
+  last      the last epoch.
 
 `encode` writes <dir>/<out>/<id>.tracks.json and <id>.wav for a split's recordings. The voice
 needs time before the first sound, so the recording is heard after `LEAD` seconds of silence and
@@ -44,7 +54,7 @@ from torch import nn
 
 from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
 from .calibrate import make_voice
-from .listener import LISTEN_SR, MODEL
+from .listener import FEATURE_RATE, LISTEN_SR, MODEL, Listener, distance, to16k
 from .paths import ROOT
 from .transplant import F0_ADVANCE, START_MIN
 
@@ -204,7 +214,7 @@ def train(a: argparse.Namespace) -> None:
     rng = np.random.default_rng(a.seed)
     device = pick_device()
     with ThreadPoolExecutor(a.jobs) as pool:
-        fit = list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "train")))
+        fit = [] if a.no_real else list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "train")))
         held = list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "valid")))
         n_real = len(fit)
         for v in filter(None, a.synthetic.split(",")):
@@ -213,7 +223,7 @@ def train(a: argparse.Namespace) -> None:
     f0 = keys.index("f0")
     # every channel but pitch, on its spread over the tracks to learn; a channel that never
     # moves is written as its constant
-    pooled = np.concatenate([p.frames for p in fit[:n_real] if p.frames is not None])
+    pooled = np.concatenate([p.frames for p in fit[: n_real or None] if p.frames is not None])
     mean, std = pooled.mean(axis=0), pooled.std(axis=0)
     learned = [c for c in range(len(keys)) if c != f0 and std[c] > 1e-6]
     stats = {"keys": keys, "mean": mean.tolist(), "std": std.tolist(), "learned": learned,
@@ -239,6 +249,7 @@ def train(a: argparse.Namespace) -> None:
             parts = [(float(loss_of(b)), sum(len(p.aux) for p in b)) for b in batches(held, a.batch, None)]
         return sum(v * n for v, n in parts) / max(1, sum(n for _, n in parts))
 
+    loop = ClosedLoop(d, ids_with(d, "warp", "valid")[:: a.stride], device, a.jobs) if a.select == "listener" else None
     out = d / "models"
     out.mkdir(exist_ok=True)
     log: list[dict[str, float]] = []
@@ -255,15 +266,18 @@ def train(a: argparse.Namespace) -> None:
             sched.step()
             total, count = total + loss.item(), count + 1
         row = {"epoch": epoch, "fit": total / count, "held": held_loss() if held else float("nan")}
+        if loop is not None and (epoch % a.every == a.every - 1 or epoch == a.epochs - 1):
+            row["listener"] = loop(model, stats)
         log.append(row)
-        # the last epoch's weights when nothing is held out
-        if not held or row["held"] < best:
-            best = row["held"]
+        score = row.get("listener") if loop is not None else row["held"] if a.select == "loss" and held else -float(epoch)
+        if score is not None and score < best:
+            best = score
             state = {k: v for k, v in model.state_dict().items() if not k.startswith("ssl.")}
             torch.save({"state": state, "stats": stats, "hidden": a.hidden, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out / f"{a.name}.pt")
-        if epoch % 5 == 0 or epoch == a.epochs - 1:
-            print(f"epoch {epoch:3d}  fit {row['fit']:.4f}  held {row['held']:.4f}  (best {best:.4f})", flush=True)
-    (out / f"{a.name}.json").write_text(json.dumps({"best": best, "epochs": log}, indent=1))
+        if "listener" in row or (loop is None and (epoch % 5 == 0 or epoch == a.epochs - 1)):
+            heard = f"  listener {row['listener']:.4f}" if "listener" in row else ""
+            print(f"epoch {epoch:3d}  fit {row['fit']:.4f}  held {row['held']:.4f}{heard}{'  *' if score == best else ''}", flush=True)
+    (out / f"{a.name}.json").write_text(json.dumps({"select": a.select, "best": best, "epochs": log}, indent=1))
 
 
 def load_model(path: Path, device: str) -> tuple[Encoder, dict[str, Any]]:
@@ -289,32 +303,63 @@ def write_track(model: Encoder, stats: dict[str, Any], audio: Audio, aux: Audio,
     return frames
 
 
+def voice_track(d: Path, uid: str, frames: Array) -> dict[str, Any]:
+    """`frames` as a track for the voice of a recording's speaker: the body and the source's
+    settings `pmvc.transplant` gave them by sex and median pitch."""
+    voice = json.loads((d / "f0" / f"{uid}.tracks.json").read_text())
+    return {**{k: voice[k] for k in ("rate", "body", "source", "keys")}, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
+
+
+def render_track(track: dict[str, Any]) -> Array:
+    v = make_voice(track, None)
+    frames = np.array(track["frames"])
+    v.set_track(frames, 0)
+    return np.asarray(v.render((len(frames) - 1) * (48000 // FRAME_RATE)))
+
+
+class ClosedLoop:
+    """How close the voice comes to recordings when the encoder drives it: `pmvc.listener`'s
+    feature distance between each recording and the render of the track written for it, over
+    the recording's speech. It needs no track to compare with and no text."""
+
+    def __init__(self, d: Path, ids: list[str], device: str, jobs: int) -> None:
+        self.d, self.ids, self.device, self.jobs = d, ids, device, jobs
+        self.listener = Listener(device)
+        self.inputs = [hear_recording(d, uid, LEAD) for uid in ids]
+        self.feats: list[torch.Tensor] = []
+        self.spans: list[tuple[int, int]] = []
+        for uid in ids:
+            x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
+            span = json.loads((d / "meta" / f"{uid}.json").read_text())["span"]
+            self.feats.append(self.listener.hear(x).feats[0])
+            self.spans.append((int(span[0] * FEATURE_RATE), int(span[1] * FEATURE_RATE)))
+
+    def __call__(self, model: "Encoder", stats: dict[str, Any]) -> float:
+        model.eval()
+        tracks = [voice_track(self.d, uid, write_track(model, stats, *inp, self.device)) for uid, inp in zip(self.ids, self.inputs)]
+        with ThreadPoolExecutor(self.jobs) as pool:
+            renders = list(pool.map(render_track, tracks))
+        out: list[float] = []
+        for x, feats, (a, b) in zip(renders, self.feats, self.spans):
+            heard = self.listener.hear(to16k(x[round(LEAD * 48000) :])).feats[0]
+            out.append(float(distance(feats[a:b], heard[a:b]).mean()))
+        return float(np.mean(out))
+
+
 def encode(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
     model, stats = load_model(d / "models" / f"{a.name}.pt", device)
     ids = a.ids.split(",") if a.ids else [p.stem for p in sorted((d / "meta").glob("*.json")) if a.split in ("all", split_of(p.stem))]
     (d / a.out).mkdir(exist_ok=True)
-    tracks: list[tuple[str, dict[str, Any]]] = []
+    tracks: list[dict[str, Any]] = []
     for uid in ids:
         audio, aux, f0 = hear_recording(d, uid, LEAD)
-        frames = write_track(model, stats, audio, aux, f0, device)
-        # the body and the source's settings the speaker was given by sex and median pitch
-        voice = json.loads((d / "f0" / f"{uid}.tracks.json").read_text())
-        track = {**{k: voice[k] for k in ("rate", "body", "source", "keys")}, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
-        (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(track))
-        tracks.append((uid, track))
-
-    def render(job: tuple[str, dict[str, Any]]) -> None:
-        uid, track = job
-        v = make_voice(track, None)
-        frames = np.array(track["frames"])
-        v.set_track(frames, 0)
-        x = np.asarray(v.render((len(frames) - 1) * (48000 // FRAME_RATE)))
-        sf.write(str(d / a.out / f"{uid}.wav"), x, 48000, subtype="PCM_16")
-
+        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device)))
+        (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
-        list(pool.map(render, tracks))
+        for uid, x in zip(ids, pool.map(render_track, tracks)):
+            sf.write(str(d / a.out / f"{uid}.wav"), x, 48000, subtype="PCM_16")
     print(f"{len(tracks)} recordings → {d / a.out}")
 
 
@@ -329,6 +374,10 @@ def main() -> None:
     t = sub.choices["train"]
     t.add_argument("--target", type=str, default="copy")
     t.add_argument("--synthetic", type=str, default="copy,warp", help="variants whose render → track pairs are added")
+    t.add_argument("--no-real", action="store_true", help="fit on the renders alone")
+    t.add_argument("--select", choices=["listener", "loss", "last"], default="listener", help="which epoch's weights to keep")
+    t.add_argument("--every", type=int, default=5, help="epochs between the listener's checks")
+    t.add_argument("--stride", type=int, default=4, help="the listener checks every so-many-th validation recording")
     t.add_argument("--epochs", type=int, default=120)
     t.add_argument("--batch", type=int, default=16)
     t.add_argument("--hidden", type=int, default=256)

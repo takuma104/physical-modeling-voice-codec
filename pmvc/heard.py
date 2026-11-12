@@ -2,11 +2,12 @@
 
 usage: python -m pmvc.heard [dir] [--name results]
 
-For every variant of <dir>/<name>.json that has control tracks (so a render on the recording's
-timeline), adds to each recording `distance`, the listener's feature distance to the recording
-over its speech (1 − cosine, frame against frame), and `ctc`, the CTC loss of the sentence per
-character; and their means to the summary. Whisper's word errors say whether a render can be
-understood; these say how close it is to what the speaker did, and when.
+For every variant of <dir>/<name>.json that was rendered from a control track on the
+recording's timeline (one with tracks, but for `f0`, which keeps the rule's timing), adds to
+each recording `distance`, the listener's feature distance to the recording over its speech
+(1 − cosine, frame against frame), and `ctc`, the CTC loss of the sentence per character; and
+their means to the summary. Whisper's word errors say whether a render can be understood; these
+say how close it is to what the speaker did, and when.
 """
 
 import argparse
@@ -21,6 +22,9 @@ from .calibrate import load_items, score
 from .listener import Listener
 from .paths import ROOT
 
+# variants with tracks that are not on the recording's timeline
+OWN_TIMING: tuple[str, ...] = ("f0",)
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -33,7 +37,7 @@ def main() -> None:
     listener = Listener()
     for row in results["utterances"]:
         for v, m in row["variants"].items():
-            if (d / v / f"{row['id']}.tracks.json").exists():
+            if v not in OWN_TIMING and (d / v / f"{row['id']}.tracks.json").exists():
                 (item,) = load_items(d, [row["id"]], listener, v)
                 x, _ = load(d / v / f"{row['id']}.wav")
                 m["distance"], m["ctc"] = score(listener, item, x)
