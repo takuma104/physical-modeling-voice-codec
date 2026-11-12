@@ -1,7 +1,7 @@
 """Judge renders of recordings in any language Whisper reads and the sentences' text is known in.
 
 usage: python -m pmvc.judge [dir] [--variants sim,enc,encn] [--split all] [--ids ...] [--name results]
-                            [--again] [--jobs N]
+                            [--again] [--add] [--jobs N]
 
 `pmvc.evaluate` is tied to TSP (its alignment, its other speakers, an English-only Whisper).
 This scores what `pmvc.recordings` brought in, and TSP's recordings the same way, so that the
@@ -24,15 +24,17 @@ For every variant, against the recording:
              of their log pitch where both are voiced
 Whisper leans on what a sentence is likely to say; the phone recogniser cannot. Neither was
 optimised against. Two more columns make the numbers comparable:
-  other      where another speaker in <dir> read the same sentence, the phoneRate of that
-             recording against this one: what the phone recogniser makes of a different person
+  other      where another speaker in <dir> read the same sentence (one of the same sex, if
+             there is one), the phoneRate of that recording against this one: what the phone
+             recogniser makes of a different person
   letterRate, letterRate2   for a language scored by word, the same errors counted in letters,
              a unit about as fine as a phoneme
 
 Writes <dir>/<name>.json: the rows, their summary by speaker and by language, and under
 `sounds`, for each language whose units are phonemes, how often each phoneme of the sentences
 was lost (replaced or left out in the best alignment with what large-v3-turbo heard).
-`--again` redoes the summary of a file that is already there, judging nothing.
+`--again` redoes the summary of a file that is already there, judging nothing; `--add` judges
+only the variants the file does not have yet (and drops the ones not asked for).
 """
 
 import argparse
@@ -48,7 +50,7 @@ import torch
 from faster_whisper import WhisperModel
 
 from .audio import FRAME_RATE, load, pitch_track
-from .encoder import pick_device, split_of
+from .encoder import ids_in, pick_device
 from .evaluate import edits, wer_interval, words
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
 from .paths import ROOT, WHISPER_CACHE
@@ -157,7 +159,8 @@ def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) ->
         same.setdefault((r["lang"], r["text"]), []).append(r)
     for r in rows:
         said = r["variants"]["real"]["phones"].split()
-        others = [o for o in same[(r["lang"], r["text"])] if o["speaker"] != r["speaker"]]
+        # of the same sex, where there is one
+        others = sorted((o for o in same[(r["lang"], r["text"])] if o["speaker"] != r["speaker"]), key=lambda o: o["sex"] != r["sex"])
         if others:
             r["other"] = {"id": others[0]["id"], "phoneErrors": edits(said, others[0]["variants"]["real"]["phones"].split()), "phoneUnits": len(said)}
         if r["lang"] not in BY_PHONEME:
@@ -216,6 +219,7 @@ def main() -> None:
     ap.add_argument("--name", type=str, default="results")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) // 2))
     ap.add_argument("--again", action="store_true", help="redo the summary of <name>.json, judging nothing")
+    ap.add_argument("--add", action="store_true", help="keep what <name>.json already has of these variants and judge the rest")
     a = ap.parse_args()
     d: Path = a.dir
     if a.again:
@@ -224,14 +228,21 @@ def main() -> None:
         return
     variants: list[str] = a.variants.split(",")
     names = ["real", *variants]
-    metas = [json.loads(p.read_text()) for p in sorted((d / "meta").glob("*.json")) if a.split in ("all", split_of(p.stem))]
+    metas = [json.loads((d / "meta" / f"{i}.json").read_text()) for i in ids_in(d, a.split)]
     metas = [m for m in metas if not a.ids or m["id"] in a.ids.split(",")]
     metas = [m for m in metas if all((d / v / f"{m['id']}.wav").exists() for v in names)]
-    rows: list[dict[str, Any]] = [{"id": m["id"], "speaker": m["speaker"], "sex": m["sex"], "lang": m.get("lang", "en"), "text": m["text"], "variants": {v: {} for v in names}} for m in metas]
+    path = d / f"{a.name}.json"
+    prior: dict[str, dict[str, Any]] = {r["id"]: r["variants"] for r in json.loads(path.read_text())["utterances"]} if a.add and path.exists() else {}
+    rows: list[dict[str, Any]] = [
+        {"id": m["id"], "speaker": m["speaker"], "sex": m["sex"], "lang": m.get("lang", "en"), "text": m["text"],
+         "variants": {v: prior.get(m["id"], {}).get(v, {}) for v in names}}
+        for m in metas
+    ]  # fmt: skip
 
-    jobs = [(d / v / f"{r['id']}.wav", r["lang"]) for r in rows for v in names]
-    cells = [r["variants"][v] for r in rows for v in names]
-    refs = [units(r["text"], r["lang"]) for r in rows for _ in names]
+    todo = [(r, v) for r in rows for v in names if "heard" not in r["variants"][v]]
+    jobs = [(d / v / f"{r['id']}.wav", r["lang"]) for r, v in todo]
+    cells = [r["variants"][v] for r, v in todo]
+    refs = [units(r["text"], r["lang"]) for r, _ in todo]
     with ProcessPoolExecutor(a.jobs) as pool:
         for cell, ref, (_, lang), heard in zip(cells, refs, jobs, pool.map(_small, jobs, chunksize=4)):
             cell["heard"], cell["errors"], cell["units"] = heard, edits(ref, units(heard, lang)), len(ref)
@@ -243,11 +254,13 @@ def main() -> None:
     for r, meta in zip(rows, metas):
         ref = units(r["text"], r["lang"])
         real, _ = load(d / "real" / f"{r['id']}.wav", LISTEN_SR)
-        said = reader.read(real)
+        said = r["variants"]["real"]["phones"].split() if "phones" in r["variants"]["real"] else reader.read(real)
         feats = listener.hear(real).feats[0]
         a0, a1 = int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE)
         for v in names:
             cell, wav = r["variants"][v], d / v / f"{r['id']}.wav"
+            if "heard2" in cell:
+                continue
             cell["heard2"] = big.transcribe(wav, r["lang"])
             cell["errors2"] = edits(ref, units(cell["heard2"], r["lang"]))
             if v == "real":
