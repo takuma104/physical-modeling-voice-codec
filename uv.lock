@@ -813,6 +813,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pmvc-engine" },
     { name = "praat-parselmouth" },
+    { name = "pyopenjtalk-plus" },
     { name = "scipy" },
     { name = "soundfile" },
     { name = "torch" },
@@ -825,6 +826,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.4" },
     { name = "pmvc-engine", directory = "crates/pmvc-engine" },
     { name = "praat-parselmouth", specifier = ">=0.4.7" },
+    { name = "pyopenjtalk-plus", specifier = ">=0.4.1.post10" },
     { name = "scipy", specifier = ">=1.18.1" },
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "torch", specifier = ">=2.15.0" },
@@ -1003,6 +1005,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/49/2e/ced460408999b33da6b31b0021b0f37d329e202d4169aeb164493778f25b/pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c", size = 5005329 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/46/17f022dd3e953bf20a04a028a21ec746d942f8d2af30fa0f124fa0e6a684/pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9", size = 1250147 },
+]
+
+[[package]]
+name = "pyopenjtalk-plus"
+version = "0.4.1.post10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "sudachidict-core" },
+    { name = "sudachipy" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/29/5d/966296aac74e8fa5c9c586f82df920b9d629da5968f5a86a27b286688f6c/pyopenjtalk_plus-0.4.1.post10.tar.gz", hash = "sha256:cda6a562a9cb80fbc21d151f0f0264ecd368afa3dfee51dbd7bcfdcb57df5e40", size = 25495232 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/d8/d4b9a6cfcab6fd58e038fd6fe77bfbea857a1069ec6f862d08b44a3f9d97/pyopenjtalk_plus-0.4.1.post10-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:822b3ed9c1ac77b9917b23e40c291e5f5339c65457b9b97f1d8b017cc3324511", size = 26339899 },
+    { url = "https://files.pythonhosted.org/packages/f6/4d/4e91f4c4e2ddd0d35892cf91bcf72290d5454e00c6a2ac956ea4cdebc7e1/pyopenjtalk_plus-0.4.1.post10-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8bb35980a2ea023b3bc3a795e103baef98df51ca61ab636822ac0ab8d230567d", size = 32400851 },
+    { url = "https://files.pythonhosted.org/packages/9f/64/57f37fe2fdf11edd9e074948c81f444113a72e6b92a21e77a8616c89b78c/pyopenjtalk_plus-0.4.1.post10-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5dfdbca536a7eacd0dce62de8885a0743869aebaa3db92470538e107b93ef865", size = 32525663 },
+    { url = "https://files.pythonhosted.org/packages/96/cd/56bc0ec02dc3c10b22bc4849eac61bc494c712d7b1335c3e96f42dfddf16/pyopenjtalk_plus-0.4.1.post10-cp313-cp313-win_amd64.whl", hash = "sha256:c5c71610746acebeba3fd4bff595a0a7066128e5a18c53fdfe3f8ea0dea6530f", size = 25587982 },
+    { url = "https://files.pythonhosted.org/packages/a4/c0/c1545a33de124c7b311312d1dd49909c7ac045dd37d16c22cb23019fb87c/pyopenjtalk_plus-0.4.1.post10-cp314-cp314-macosx_10_15_universal2.whl", hash = "sha256:9b3ca60aa9c1058fdb30eed332b1e998b82235dca6e4423d69ed6a912bae52ef", size = 26355287 },
+    { url = "https://files.pythonhosted.org/packages/bc/42/858c1aa95bcc68952958e1630d95f709749f426a7a9f513a13cf4f4b8a6c/pyopenjtalk_plus-0.4.1.post10-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:121b96178d4f290112652f57954f86611dbedda337f35ce73f535d4b54d2bb58", size = 32401275 },
+    { url = "https://files.pythonhosted.org/packages/95/af/fa2def1f89ca3641f9cde10057a7b963e0b3a53c98354a6723e5c28197e8/pyopenjtalk_plus-0.4.1.post10-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ae4f09c9063ba9209ed05e0703d878b42e20d54af397293050f62502b64e9cc7", size = 32503704 },
+    { url = "https://files.pythonhosted.org/packages/d8/e9/dce1c859e228c91683dacbbf20735374859ffc0486afb705146dc9477201/pyopenjtalk_plus-0.4.1.post10-cp314-cp314-win_amd64.whl", hash = "sha256:5e40a2fa9bf8c63009873d3ab392b4dac34e0d54c15026660b1e1abbe8b574e9", size = 26278090 },
 ]
 
 [[package]]
@@ -1264,6 +1289,37 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d9/34/c9e80783d83eab739a9531fdee03675d53e0bf1b2ccb4bb3af5844675046/soundfile-0.14.0-py2.py3-none-win32.whl", hash = "sha256:0a6ae43c50c71b4e020cc55382925cb89451c1ed1a0c3d0f5d802da269226849", size = 902199 },
     { url = "https://files.pythonhosted.org/packages/ed/97/b39c18ac1df45e755ca22b8b00e872929da5d107998a207a5e4ac831bfda/soundfile-0.14.0-py2.py3-none-win_amd64.whl", hash = "sha256:299491d3499460fb1b74bb4bd78b57ffc2d243a5fafa7b6ec1b264875c78453e", size = 1021480 },
     { url = "https://files.pythonhosted.org/packages/f4/83/55c65e61cf457805ce2ec157c1c6ae17715d0851aa2374422de0538838ca/soundfile-0.14.0-py2.py3-none-win_arm64.whl", hash = "sha256:e090704718e124e7c844695236f1fce8d18a5e761eaf7c82dfcd124620805f98", size = 888858 },
+]
+
+[[package]]
+name = "sudachidict-core"
+version = "20261015"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sudachipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/70/04/4e8698fcb26999fc9381911aea95a4c861e219c098476b784f54a0cd5c36/sudachidict_core-20261015.tar.gz", hash = "sha256:32d2bfc1491b82659959d28f79eb7c034d3a57d77f7610c3d2ea834151d15d23", size = 9157 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/6a/9dddc36e33ff7f86e394315a77b90d0f41bfd161e011d77a8397662d53e0/sudachidict_core-20261015-py3-none-any.whl", hash = "sha256:6d7774b518e64c88a0578975d569590b3dae3b3c834f166486aa611879ee9d98", size = 76937301 },
+]
+
+[[package]]
+name = "sudachipy"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/1d/b34702f38a8bd34972836538d222209095d5aba7faff79d56bce3fb2640c/sudachipy-0.7.0.tar.gz", hash = "sha256:14a2505e7d086fe9da64c0048d8e2de13cdded3aac4f1e047929cef51dba338c", size = 304664 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/aa/47edbec02618803ac8ef8f1561b233760bbd266fb040ba9d4d577a5f1773/sudachipy-0.7.0-cp310-abi3-macosx_10_12_universal2.whl", hash = "sha256:6be34e856c99498e990904f7155e1a102f675cf5edfdaf7a396f26d71ce4b333", size = 3147103 },
+    { url = "https://files.pythonhosted.org/packages/d7/b3/2117420a05b2785ce561912baff01dd7872f5bca6b60dce49dc592a9f600/sudachipy-0.7.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:907eadc1db305f9bc6e502a9acf9ff1ac871cd8d4ac3a2e0aaba3ddc60e93b2a", size = 1622350 },
+    { url = "https://files.pythonhosted.org/packages/88/11/3b740eea1796d1ce6f7bdaa1f5470685dbcbfcacf751f3aa06d9da72856f/sudachipy-0.7.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:0e60cefd3a7a9680206ae160bf86d266d0d60e434adac2384f8c7a6dfb0f3ba7", size = 1561984 },
+    { url = "https://files.pythonhosted.org/packages/9f/12/5455c3e4afea272c1ef0995c489dc9c2a6ead2a6d980822a53ae879a2042/sudachipy-0.7.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:68be139f5d7f053eba16fd3f792e4ef0c6bfed81a1b63e68b4544c7159296034", size = 1720464 },
+    { url = "https://files.pythonhosted.org/packages/1d/2d/b2c2511b3627032e81ef1626d6bce4506efacc7b698ca0e70cf6b4345e86/sudachipy-0.7.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:dfc90631aa2276d2165e1995bc94b56c9f5bc27b875f43fb7d67e4a3b7346d4f", size = 1758941 },
+    { url = "https://files.pythonhosted.org/packages/e9/a1/03e40b0eadbdd48ed47aef7aaf27d4703f5cc225750872af1a26de08ec2b/sudachipy-0.7.0-cp310-abi3-win_amd64.whl", hash = "sha256:8d0429db2d02d408daa7dccd062a6d8c2984a07f8e448b49a3ea694377617658", size = 1515929 },
+    { url = "https://files.pythonhosted.org/packages/f2/f7/580ece6a559e0cad8a9a3fff36bbd478e335e125c96c1910abe20f3b6bc2/sudachipy-0.7.0-cp314-cp314t-macosx_10_15_universal2.whl", hash = "sha256:1bf2254ee6357e0defa498630f188fefa8a543b82887077cfb1596bc3e8d4840", size = 3139240 },
+    { url = "https://files.pythonhosted.org/packages/62/20/4475da1e0393bef7d136f91214d560730006d2a4792e585003b17f2779e1/sudachipy-0.7.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:efd56375584dec9523fe9a26daa69da02a70ae2f2c22d25248e65a4998cae8e1", size = 1626313 },
+    { url = "https://files.pythonhosted.org/packages/8b/75/952595fe7fa84a8f90cbe8f94a7cb5210642f166ec0ec1d7d808abef978e/sudachipy-0.7.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:9446eba17985b1d14926afc6312fb0367687ab1b5397fa65d7e2cdd1745451c9", size = 1549814 },
+    { url = "https://files.pythonhosted.org/packages/cf/39/5e138a2f949bf3af45951980382adc69d0d975448e604dc1801325f0008a/sudachipy-0.7.0-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:f1e24f71a71816dcbc6fb759a5819cca5d603a4d49b7ade63dd0fe49468ed22c", size = 1712756 },
+    { url = "https://files.pythonhosted.org/packages/2d/f4/2df0f7a5dce327d82c451be96151afa8f7e3324a3a8d71845eec5be26f3e/sudachipy-0.7.0-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:c8306eab503d891e394fb21156e417c2f9f54cc39f56dddb8cf2b40620d470fa", size = 1750689 },
 ]
 
 [[package]]

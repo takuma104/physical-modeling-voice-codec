@@ -6,6 +6,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [--no-real] [--standin NAME] [--closed 1.0] [--tune 0]
                                     [--select listener|loss|last] [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
+                                     [--models DIR]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with; its last `--tune` layers learn too, the rest is frozen), and is
@@ -43,8 +44,10 @@ kept is `--select`:
 
 `encode` writes <dir>/<out>/<id>.tracks.json and <id>.wav for a split's recordings. The voice
 needs time before the first sound, so the recording is heard after `LEAD` seconds of silence and
-the render runs that far behind it (the track's `shift`). The body and the source's settings
-are the ones `pmvc.transplant` gave the speaker by sex and median pitch.
+the render runs that far behind it (the track's `shift`). Of the speaker the voice is told the
+sex (its body) and the median pitch. A recording needs its real/<id>.wav, pitch/<id>.npy and
+meta/<id>.json and nothing else, so `--split all` on a directory `pmvc.recordings` made, with
+`--models` saying where the encoder is, encodes recordings from outside TSP.
 """
 
 import argparse
@@ -368,11 +371,13 @@ def write_track(model: Encoder, stats: dict[str, Any], audio: Audio, aux: Audio,
     return frames
 
 
-def voice_track(d: Path, uid: str, frames: Array) -> dict[str, Any]:
-    """`frames` as a track for the voice of a recording's speaker: the body and the source's
-    settings `pmvc.transplant` gave them by sex and median pitch."""
-    voice = json.loads((d / "f0" / f"{uid}.tracks.json").read_text())
-    return {**{k: voice[k] for k in ("rate", "body", "source", "keys")}, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
+def voice_track(d: Path, uid: str, frames: Array, keys: list[str]) -> dict[str, Any]:
+    """`frames` as a track for the voice of a recording's speaker. All the voice is told of the
+    speaker is in the recording's meta: the sex picks the body, and the source idles at the
+    median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample)."""
+    meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+    body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
+    return {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
 def render_track(track: dict[str, Any]) -> Array:
@@ -401,7 +406,7 @@ class ClosedLoop:
 
     def __call__(self, model: "Encoder", stats: dict[str, Any]) -> float:
         model.eval()
-        tracks = [voice_track(self.d, uid, write_track(model, stats, *inp, self.device)) for uid, inp in zip(self.ids, self.inputs)]
+        tracks = [voice_track(self.d, uid, write_track(model, stats, *inp, self.device), stats["keys"]) for uid, inp in zip(self.ids, self.inputs)]
         with ThreadPoolExecutor(self.jobs) as pool:
             renders = list(pool.map(render_track, tracks))
         out: list[float] = []
@@ -414,13 +419,13 @@ class ClosedLoop:
 def encode(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
-    model, stats = load_model(d / "models" / f"{a.name}.pt", device)
+    model, stats = load_model((a.models or d / "models") / f"{a.name}.pt", device)
     ids = a.ids.split(",") if a.ids else [p.stem for p in sorted((d / "meta").glob("*.json")) if a.split in ("all", split_of(p.stem))]
     (d / a.out).mkdir(exist_ok=True)
     tracks: list[dict[str, Any]] = []
     for uid in ids:
         audio, aux, f0 = hear_recording(d, uid, LEAD)
-        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device)))
+        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"]))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -456,6 +461,7 @@ def main() -> None:
     e.add_argument("--out", type=str, default="enc")
     e.add_argument("--split", choices=["test", "valid", "train", "all"], default="test")
     e.add_argument("--ids", type=str, default="")
+    e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
     a = ap.parse_args()
     train(a) if a.command == "train" else encode(a)
 

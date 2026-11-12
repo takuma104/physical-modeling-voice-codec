@@ -71,7 +71,10 @@ class Listener:
         return Heard(feats.cpu(), torch.log_softmax(out.logits.float(), dim=-1).cpu())
 
     def nll(self, logp: torch.Tensor, chars: list[int]) -> float:
-        """CTC negative log-likelihood of the text per character, for one clip's (frames, 32)."""
+        """CTC negative log-likelihood of the text per character, for one clip's (frames, 32);
+        nothing for a sentence with no character the recogniser writes (another script)."""
+        if not chars:
+            return 0.0
         loss = torch.nn.functional.ctc_loss(
             logp[:, None, :], torch.tensor([chars]), torch.tensor([logp.shape[0]]), torch.tensor([len(chars)]),
             blank=0, reduction="sum", zero_infinity=True,

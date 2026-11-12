@@ -39,12 +39,12 @@ class BigWhisper:
             self.model = WhisperForConditionalGeneration.from_pretrained(MODEL, torch_dtype=self.dtype).to(self.device).eval()
 
     @torch.no_grad()
-    def transcribe(self, wav: Path) -> str:
+    def transcribe(self, wav: Path, language: str = "en") -> str:
         x, _ = load(wav, 16000)
         feats = self.processor(x, sampling_rate=16000, return_tensors="pt").input_features.to(self.device, self.dtype)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            out = self.model.generate(feats, language="en", task="transcribe", num_beams=1, do_sample=False, max_new_tokens=96)
+            out = self.model.generate(feats, language=language, task="transcribe", num_beams=1, do_sample=False, max_new_tokens=96)
         return str(self.processor.batch_decode(out, skip_special_tokens=True)[0]).strip()
 
 

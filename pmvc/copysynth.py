@@ -10,7 +10,7 @@ a few hundred milliseconds and splicing that into the render.
 
 usage: python -m pmvc.copysynth [dir] [--ids ... | --n 40 | --all] [--iters 40] [--proposals 96]
                                 [--base warp] [--out copy] [--calibrated] [--nll-weight 0.1]
-                                [--shard K/N] [--resume] [--jobs N]
+                                [--scale DIR] [--shard K/N] [--resume] [--jobs N]
 
 The objective is the listener's feature distance to the recording over its speech, plus
 `NLL_WEIGHT` × the CTC loss of the sentence's text per character. Each iteration draws
@@ -32,6 +32,10 @@ A search takes about a minute and only a third of it uses every core (the rest i
 and one sequential render per iteration), so a corpus is best split over processes: `--all`
 takes every recording with a starting track, speaker after speaker in turn, `--shard K/N`
 every N-th of them from the K-th, and `--resume` leaves alone the ones already written.
+
+The steps a search takes are sized by how far each channel moves in <dir>/warp's tracks. For
+recordings from elsewhere (`pmvc.recordings`), which have no such tracks, `--scale` names a
+directory that does; and with `--nll-weight 0` nothing here reads the sentence's text.
 """
 
 import argparse
@@ -258,6 +262,7 @@ def main() -> None:
     ap.add_argument("--out", type=str, default="copy")
     ap.add_argument("--calibrated", action="store_true", help="run the voice under pmvc.calibrate's settings")
     ap.add_argument("--nll-weight", type=float, default=NLL_WEIGHT)
+    ap.add_argument("--scale", type=Path, default=None, help="tracks whose spread sets the step sizes, if not <dir>/warp")
     ap.add_argument("--all", action="store_true", help="every recording with a starting track")
     ap.add_argument("--shard", type=str, default="0/1", help="K/N: every N-th recording from the K-th")
     ap.add_argument("--resume", action="store_true", help="skip the recordings already written")
@@ -279,7 +284,7 @@ def main() -> None:
     listener = Listener()
     # how far each channel moves within an utterance of speech by rule (`pmvc.warp`'s tracks,
     # whatever the search starts from)
-    sample = sorted((d / ("warp" if (d / "warp").exists() else a.base)).glob("*.tracks.json"))[::5]
+    sample = sorted((a.scale or d / ("warp" if (d / "warp").exists() else a.base)).glob("*.tracks.json"))[::5]
     sigma = Scale([json.loads(p.read_text()) for p in sample]).std
     for uid in ids:
         (item,) = load_items(d, [uid], listener, a.base)
