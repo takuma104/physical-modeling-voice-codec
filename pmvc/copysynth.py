@@ -8,8 +8,9 @@ voice can be forked (`pmvc_engine`): the track is rendered once with a snapshot 
 physical state every 50 ms, and a change is tried by continuing from the snapshot before it for
 a few hundred milliseconds and splicing that into the render.
 
-usage: python -m pmvc.copysynth [dir] [--ids ...] [--n 40] [--iters 40] [--proposals 96]
-                                [--base warp] [--out copy] [--calibrated] [--jobs N]
+usage: python -m pmvc.copysynth [dir] [--ids ... | --n 40 | --all] [--iters 40] [--proposals 96]
+                                [--base warp] [--out copy] [--calibrated] [--nll-weight 0.1]
+                                [--shard K/N] [--resume] [--jobs N]
 
 The objective is the listener's feature distance to the recording over its speech, plus
 `NLL_WEIGHT` × the CTC loss of the sentence's text per character. Each iteration draws
@@ -22,10 +23,15 @@ with all of them; if together they do not lower the objective, only the best one
 none.
 
 Writes <dir>/<out>/<id>.wav, <id>.tracks.json (with the settings it was rendered under) and
-<id>.log.json (the objective by iteration), and <dir>/<out>.json, a summary. With
-`--calibrated` the voice runs under `pmvc.calibrate`'s settings for its body, and
-<dir>/<out>-start/<id>.wav is the starting track rendered under them, so that the search's own
-gain can be told from the calibration's.
+<id>.log.json (the objective before and after, and by iteration), and <dir>/<out>.json, the
+logs' summaries. With `--calibrated` the voice runs under `pmvc.calibrate`'s settings for its
+body, and <dir>/<out>-start/<id>.wav is the starting track rendered under them, so that the
+search's own gain can be told from the calibration's.
+
+A search takes about a minute and only a third of it uses every core (the rest is the listener
+and one sequential render per iteration), so a corpus is best split over processes: `--all`
+takes every recording with a starting track, speaker after speaker in turn, `--shard K/N`
+every N-th of them from the K-th, and `--resume` leaves alone the ones already written.
 """
 
 import argparse
@@ -208,11 +214,27 @@ def copy(item: Item, settings: dict[str, float] | None, listener: Listener, sigm
     stem = d / a.out / item.uid
     sf.write(f"{stem}.wav", s.audio, 48000, subtype="PCM_16")
     track = {**item.track, "frames": np.round(s.x, 5).tolist(), "settings": settings}
-    Path(f"{stem}.tracks.json").write_text(json.dumps(track))
-    Path(f"{stem}.log.json").write_text(json.dumps(log))
     row = {"id": item.uid, "objective": [start[0], end[0]], "distance": [start[1], end[1]], "nll": [start[2], end[2]], "kept": int(sum(r["kept"] for r in log))}
+    Path(f"{stem}.log.json").write_text(json.dumps({**row, "iterations": log}))
+    # the track last and at once: it is what says the recording is done
+    tmp = Path(f"{stem}.tracks.json.tmp")
+    tmp.write_text(json.dumps(track))
+    tmp.replace(f"{stem}.tracks.json")
     print(f"{item.uid}: objective {start[0]:.3f} → {end[0]:.3f}  distance {start[1]:.3f} → {end[1]:.3f}  CTC loss {start[2]:.2f} → {end[2]:.2f}  ({row['kept']} changes)", flush=True)
     return row
+
+
+def summarise(d: Path, out: str) -> list[dict[str, Any]]:
+    """<dir>/<out>.json: every finished search's objective before and after, from its log."""
+    rows: list[dict[str, Any]] = []
+    for p in sorted((d / out).glob("*.log.json")):
+        if p.with_name(p.name.replace(".log.json", ".tracks.json")).exists():
+            log = json.loads(p.read_text())
+            rows.append({k: v for k, v in log.items() if k != "iterations"})
+    tmp = d / f"{out}.json.{os.getpid()}"
+    tmp.write_text(json.dumps(rows, indent=1))
+    tmp.replace(d / f"{out}.json")
+    return rows
 
 
 def main() -> None:
@@ -226,22 +248,34 @@ def main() -> None:
     ap.add_argument("--out", type=str, default="copy")
     ap.add_argument("--calibrated", action="store_true", help="run the voice under pmvc.calibrate's settings")
     ap.add_argument("--nll-weight", type=float, default=NLL_WEIGHT)
+    ap.add_argument("--all", action="store_true", help="every recording with a starting track")
+    ap.add_argument("--shard", type=str, default="0/1", help="K/N: every N-th recording from the K-th")
+    ap.add_argument("--resume", action="store_true", help="skip the recordings already written")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = ap.parse_args()
     d: Path = a.dir
-    ids = a.ids.split(",") if a.ids else json.loads((d / "perturb.json").read_text())["ids"][: a.n]
+    if a.ids:
+        ids = a.ids.split(",")
+    elif a.all:
+        # sentence by sentence over the speakers, so that a part of the corpus has them all
+        ids = sorted((p.name.split(".")[0] for p in (d / a.base).glob("*.tracks.json")), key=lambda i: (i[2:], i[:2]))
+    else:
+        ids = json.loads((d / "perturb.json").read_text())["ids"][: a.n]
+    k, n = (int(v) for v in a.shard.split("/"))
+    ids = ids[k::n]
+    if a.resume:
+        ids = [i for i in ids if not (d / a.out / f"{i}.tracks.json").exists()]
     for name in (a.out, f"{a.out}-start") if a.calibrated else (a.out,):
         (d / name).mkdir(exist_ok=True)
     listener = Listener()
-    items = load_items(d, ids, listener, a.base)
     # how far each channel moves within an utterance, from a sample of the starting tracks
     sample = sorted((d / a.base).glob("*.tracks.json"))[::5]
     sigma = Scale([json.loads(p.read_text()) for p in sample]).std
-    rows = []
-    for item in items:
-        settings = json.loads((d / f"calibration-{item.uid[0]}.json").read_text())["settings"] if a.calibrated else None
-        rows.append(copy(item, settings, listener, sigma, a, d))
-    (d / f"{a.out}.json").write_text(json.dumps(rows, indent=1))
+    for uid in ids:
+        (item,) = load_items(d, [uid], listener, a.base)
+        settings = json.loads((d / f"calibration-{uid[0]}.json").read_text())["settings"] if a.calibrated else None
+        copy(item, settings, listener, sigma, a, d)
+    rows = summarise(d, a.out)
     r = np.array([[x["objective"], x["distance"], x["nll"]] for x in rows])
     print(f"{len(rows)} recordings: objective {r[:, 0, 0].mean():.3f} → {r[:, 0, 1].mean():.3f}, distance {r[:, 1, 0].mean():.3f} → {r[:, 1, 1].mean():.3f}, CTC loss {r[:, 2, 0].mean():.2f} → {r[:, 2, 1].mean():.2f}")
 

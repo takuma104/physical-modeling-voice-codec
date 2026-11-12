@@ -7,7 +7,7 @@ warped in time, phone by phone, onto the recording's timeline and driven with no
 closure and release still happens, only faster or slower. The pitch channel is the speaker's
 contour.
 
-usage: python -m pmvc.warp [dir] [--rounds 3] [--jobs N] [--ids FA01_01,...]
+usage: python -m pmvc.warp [dir] [--rounds 3] [--jobs N] [--ids FA01_01,...] [--resume]
 
 Writes <dir>/warp/<id>.wav and <id>.tracks.json (dir defaults to out/transplant, as
 `pmvc.transplant` left it). The render runs on the recording's timeline, `shift` behind it.
@@ -154,15 +154,21 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--ids", type=str, default="")
+    ap.add_argument("--resume", action="store_true", help="skip the recordings that already have a warped track")
     a = ap.parse_args()
     d: Path = a.dir
     ids = a.ids.split(",") if a.ids else sorted(p.stem for p in (d / "meta").glob("*.json"))
     (d / "warp").mkdir(exist_ok=True)
+    summary = d / "warp.json"
+    done: dict[str, dict[str, Any]] = {}
+    if a.resume and summary.exists():
+        done = {r["id"]: r for r in json.loads(summary.read_text()) if (d / "warp" / f"{r['id']}.tracks.json").exists()}
     with ThreadPoolExecutor(a.jobs) as pool:
-        rows = list(pool.map(lambda uid: warp(uid, d, a.rounds), ids))
+        new = list(pool.map(lambda uid: warp(uid, d, a.rounds), [i for i in ids if i not in done]))
+    rows = sorted([*done.values(), *new], key=lambda r: r["id"])
     err = np.array([r["landmarkError"] for r in rows])
-    (d / "warp.json").write_text(json.dumps(rows, indent=1))
-    print(f"{len(rows)} recordings → {d / 'warp'}; landmark error {err[:, 0].mean():.1f} → {err[:, 1].mean():.1f} ms")
+    summary.write_text(json.dumps(rows, indent=1))
+    print(f"{len(new)} recordings → {d / 'warp'}; landmark error over all {len(rows)}: {err[:, 0].mean():.1f} → {err[:, 1].mean():.1f} ms")
 
 
 if __name__ == "__main__":

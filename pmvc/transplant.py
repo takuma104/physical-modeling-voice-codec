@@ -1,7 +1,8 @@
 """Prosody transplant: CHIMERA says a real recording's sentence with the speaker's phones and
 some or all of the speaker's prosody, its articulation still planned by rule.
 
-usage: python -m pmvc.transplant [--n 200] [--seed 0] [--out out/transplant] [--jobs N] [--ids FA01_01,...]
+usage: python -m pmvc.transplant [--n 200 | --all] [--seed 0] [--out out/transplant] [--jobs N]
+                                 [--ids FA01_01,...] [--resume]
 
 For each chosen TSP recording it writes, under <out>:
   real/<id>.wav     the recording
@@ -18,6 +19,9 @@ For each chosen TSP recording it writes, under <out>:
 
 `durf0` and `fit` run on the recording's timeline, `shift` seconds (in meta) behind it, since
 the planner needs room before the first phone. The others have their own timing.
+
+`--all` takes every recording the aligner found all the words of, `--resume` leaves alone the
+ones that already have their meta.
 """
 
 import argparse
@@ -59,10 +63,15 @@ VARIANTS: tuple[str, ...] = ("real", "rule", "f0", "floor", "durf0", "fit")
 ALIGNED: tuple[str, ...] = ("durf0", "fit")
 
 
+def usable(utts: dict[str, Utterance]) -> list[Utterance]:
+    """The recordings whose every word the aligner found, by id."""
+    return sorted((u for u in utts.values() if all(p.label not in ("spn", "sil", "") for p in u.phones)), key=lambda u: u.id)
+
+
 def choose(utts: dict[str, Utterance], n: int, seed: int) -> list[Utterance]:
     """`n` recordings, half from women and half from men, spread over the speakers."""
     rng = random.Random(seed)
-    ok = [u for u in utts.values() if all(p.label not in ("spn", "sil", "") for p in u.phones)]
+    ok = usable(utts)
     out: list[Utterance] = []
     for sex in ("F", "M"):
         by_speaker: dict[str, list[Utterance]] = {}
@@ -196,9 +205,13 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "out" / "transplant")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--ids", type=str, default="", help="comma-separated recording ids instead of a random choice")
+    ap.add_argument("--all", action="store_true", help="every usable recording")
+    ap.add_argument("--resume", action="store_true", help="skip the recordings that already have their meta")
     a = ap.parse_args()
     utts = load_utterances()
-    chosen = [utts[i] for i in a.ids.split(",")] if a.ids else choose(utts, a.n, a.seed)
+    chosen = [utts[i] for i in a.ids.split(",")] if a.ids else usable(utts) if a.all else choose(utts, a.n, a.seed)
+    if a.resume:
+        chosen = [u for u in chosen if not (a.out / "meta" / f"{u.id}.json").exists()]
     for d in (*VARIANTS, "meta", "pitch"):
         (a.out / d).mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(a.jobs) as pool:
