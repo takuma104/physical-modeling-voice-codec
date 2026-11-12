@@ -1,32 +1,41 @@
 """The encoder: a recording in, a control track out, in one pass, with no text and no search.
 
-`pmvc.copysynth` finds a recording's control track by search: a minute a sentence, from a start
-that needed the sentence's phones. Its tracks are what an encoder can be taught from. With the
-voice as the decoder that makes a codec whose latent is the control track.
+With the voice as the decoder this is a codec whose latent is the control track.
 
-usage: python -m pmvc.encoder train [dir] [--name encoder] [--target copy] [--synthetic copy,warp]
-                                    [--no-real] [--select listener|loss|last] [--epochs 120]
-                                    [--hidden 256] [--seed 0]
+usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [--synthetic simcopy]
+                                    [--no-real] [--standin NAME] [--closed 1.0] [--tune 0]
+                                    [--select listener|loss|last] [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
 
-The network hears the recording through wav2vec2 (frozen, a learned mix of its layers: the model
-`pmvc.listener` scores with), and is told what a pitch tracker makes of it and how loud it is,
-frame by frame; two recurrent layers read that in both directions and write every channel but
-pitch, 100 frames a second. Pitch is not learned: the track's pitch channel is the tracker's
-contour, as it is in the tracks the search started from.
+The network hears the recording through wav2vec2 (a learned mix of its layers: the model
+`pmvc.listener` scores with; its last `--tune` layers learn too, the rest is frozen), and is
+told what a pitch tracker makes of the recording and how loud it is, frame by frame; two
+recurrent layers read that in both directions and write every channel but pitch, 100 frames a
+second. Pitch is not learned: the track's pitch channel is the tracker's contour.
 
 Speakers are held out in pairs. In TSP a woman and a man read the same six lists of sentences
 (FA and MA lists 1-6, ...), so leaving out FK, MK, FL and ML for the test and FJ and MJ for
 validation leaves out their sentences too.
 
-`train` fits on the training speakers that have a `--target` track. Besides the recording →
-track pairs, each `--synthetic` variant adds its render → its own track: pairs that are exact,
-in the voice's own timbre. Writes <dir>/models/<name>.pt and <name>.json (the loss by epoch).
-Which epoch's weights are kept is `--select`:
-  listener  the epoch after which the voice, driven by the tracks the encoder writes for
+`train` has three things to learn from, and the encoders this repository reports are these:
+  renders     `--synthetic`: each variant's renders → the tracks they were rendered from, pairs
+              that are exact, in the voice's own timbre. Alone (`--no-real --synthetic warp`,
+              the rule's tracks) they already teach an encoder that hears recordings: "A".
+  tracks      `--target`: the training speakers' recordings → the tracks that variant has for
+              them. With `simcopy`, tracks `pmvc.copysynth` searched from A's: "B". An encoder
+              taught this way averages over tracks that each sound right.
+  the voice   `--standin`: for each recording, the distance between what a `pmvc.standin`
+              model says the listener would hear of the track the encoder writes, and what
+              the listener hears in the recording, times `--closed`. This closes the loop
+              through (a model of) the voice, and any track that sounds right will do: "C".
+              The tracks of `--target` then only anchor it, and A's own (`--target sim
+              --synthetic sim`) serve as well as searched ones: "C′", with no search at all.
+Writes <dir>/models/<name>.pt and <name>.json (the losses by epoch). Which epoch's weights are
+kept is `--select`:
+  listener  the epoch after which the voice itself, driven by the tracks the encoder writes for
             validation recordings, comes closest to those recordings for `pmvc.listener` (its
             feature distance, checked every `--every` epochs on every `--stride`-th recording).
-            This closes the loop through the voice, and asks for no track to compare with.
+            It asks for no track to compare with.
   loss      the epoch with the least error against the validation recordings' `--target`
             tracks. A fit on renders alone does not aim at those tracks, and its error against
             them is least long before its renders are closest.
@@ -428,13 +437,13 @@ def main() -> None:
         p.add_argument("--name", type=str, default="encoder")
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     t = sub.choices["train"]
-    t.add_argument("--target", type=str, default="copy")
-    t.add_argument("--synthetic", type=str, default="copy,warp", help="variants whose render → track pairs are added")
+    t.add_argument("--target", type=str, default="simcopy")
+    t.add_argument("--synthetic", type=str, default="simcopy", help="variants whose render → track pairs are added")
     t.add_argument("--no-real", action="store_true", help="fit on the renders alone")
     t.add_argument("--select", choices=["listener", "loss", "last"], default="listener", help="which epoch's weights to keep")
     t.add_argument("--every", type=int, default=5, help="epochs between the listener's checks")
-    t.add_argument("--stride", type=int, default=4, help="the listener checks every so-many-th validation recording")
-    t.add_argument("--epochs", type=int, default=120)
+    t.add_argument("--stride", type=int, default=2, help="the listener checks every so-many-th validation recording")
+    t.add_argument("--epochs", type=int, default=40)
     t.add_argument("--batch", type=int, default=16)
     t.add_argument("--hidden", type=int, default=256)
     t.add_argument("--lr", type=float, default=1e-3)

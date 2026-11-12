@@ -9,7 +9,7 @@ that sounds right is as good as any other. CHIMERA cannot be differentiated, but
 are unlimited and exact, so a network can learn the track → listener's features map from them
 and stand in for it.
 
-usage: python -m pmvc.standin [dir] [--name standin] [--variants warp,sim,simcopy] [--epochs 60]
+usage: python -m pmvc.standin [dir] [--name standin] [--variants warp,sim,simcopy] [--epochs 30]
 
 Fits on the training speakers' renders of `--variants` (their tracks and what `pmvc.listener`
 hears of them, from `LEAD` seconds in, as the search hears a render against its recording) and
@@ -87,7 +87,7 @@ def main() -> None:
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
     ap.add_argument("--name", type=str, default="standin")
     ap.add_argument("--variants", type=str, default="warp,sim,simcopy")
-    ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=512)
     ap.add_argument("--lr", type=float, default=1e-3)
