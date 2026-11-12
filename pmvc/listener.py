@@ -39,22 +39,31 @@ def to16k(x48: NDArray[np.floating]) -> Audio:
 class Heard:
     """What the listener makes of a batch of equally long clips."""
 
-    # unit-length layer-9 features, (clips, frames, 768)
+    # unit-length features of one layer, (clips, frames, the model's width)
     feats: torch.Tensor
-    # log posteriors over characters, (clips, frames, 32)
+    # log posteriors over characters, (clips, frames, 32); only the default model writes characters
     logp: torch.Tensor
 
 
 class Listener:
-    def __init__(self, device: str | None = None) -> None:
-        from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor, logging
+    """`model` and `layer` say whose features are heard: by default the English recogniser
+    above. Any other wav2vec2 or HuBERT model on the Hugging Face hub will do for the features
+    (`pmvc.yardstick` compares some); such a listener has no characters, so no `nll` or `read`."""
+
+    def __init__(self, device: str | None = None, model: str = MODEL, layer: int = LAYER) -> None:
+        from transformers import AutoFeatureExtractor, AutoModel, Wav2Vec2ForCTC, Wav2Vec2Processor, logging
 
         logging.set_verbosity_error()
+        self.name, self.layer = model, layer
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             self.device = device or ("mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu")
-            self.model = Wav2Vec2ForCTC.from_pretrained(MODEL).to(self.device).eval()
-            self.vocab: dict[str, int] = Wav2Vec2Processor.from_pretrained(MODEL).tokenizer.get_vocab()
+            self.ctc = model == MODEL
+            self.model = (Wav2Vec2ForCTC if self.ctc else AutoModel).from_pretrained(model).to(self.device).eval()
+            self.vocab: dict[str, int] = Wav2Vec2Processor.from_pretrained(MODEL).tokenizer.get_vocab() if self.ctc else {}
+            # whether the model was trained on clips brought to zero mean and unit variance
+            self.normalise: bool = bool(AutoFeatureExtractor.from_pretrained(model).do_normalize)
+        self.width: int = int(self.model.config.hidden_size)
 
     def chars(self, text: str) -> list[int]:
         """The sentence as the recogniser's character ids."""
@@ -63,12 +72,15 @@ class Listener:
 
     @torch.no_grad()
     def hear(self, clips: NDArray[np.floating]) -> Heard:
-        """`clips`: (n, samples) at 16 kHz, or one clip. Each is normalised on its own."""
+        """`clips`: (n, samples) at 16 kHz, or one clip. Each is normalised on its own, if the
+        model was trained that way."""
         x = torch.as_tensor(np.atleast_2d(clips), dtype=torch.float32, device=self.device)
-        x = (x - x.mean(dim=1, keepdim=True)) / (x.std(dim=1, keepdim=True) + 1e-7)
+        if self.normalise:
+            x = (x - x.mean(dim=1, keepdim=True)) / (x.std(dim=1, keepdim=True) + 1e-7)
         out = self.model(x, output_hidden_states=True)
-        feats = torch.nn.functional.normalize(out.hidden_states[LAYER].float(), dim=-1)
-        return Heard(feats.cpu(), torch.log_softmax(out.logits.float(), dim=-1).cpu())
+        feats = torch.nn.functional.normalize(out.hidden_states[self.layer].float(), dim=-1)
+        logp = torch.log_softmax(out.logits.float(), dim=-1).cpu() if self.ctc else torch.zeros(len(x), feats.shape[1], 0)
+        return Heard(feats.cpu(), logp)
 
     def nll(self, logp: torch.Tensor, chars: list[int]) -> float:
         """CTC negative log-likelihood of the text per character, for one clip's (frames, 32);

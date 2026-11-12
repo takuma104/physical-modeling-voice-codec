@@ -44,7 +44,7 @@ class BigWhisper:
         feats = self.processor(x, sampling_rate=16000, return_tensors="pt").input_features.to(self.device, self.dtype)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            out = self.model.generate(feats, language=language, task="transcribe", num_beams=1, do_sample=False, max_new_tokens=96)
+            out = self.model.generate(feats, language=language, task="transcribe", num_beams=1, do_sample=False, max_new_tokens=200)
         return str(self.processor.batch_decode(out, skip_special_tokens=True)[0]).strip()
 
 

@@ -37,7 +37,9 @@ def sentences(path: Path) -> list[tuple[str, str]]:
     return out
 
 
-def take(d: Path, uid: str, wav: Path, name: str, lang: str, sex: str, text: str) -> dict[str, Any]:
+def take(d: Path, uid: str, wav: Path, name: str, lang: str, sex: str, text: str, split: str = "") -> dict[str, Any]:
+    """Lays out one recording. `split` (train, valid or test) is written to its meta when a
+    corpus is to be learned from; without it `pmvc.encoder` goes by TSP's speakers."""
     x, sr = load(wav)
     f0 = pitch_track(x, sr, sex)
     a, b = speech_span(load(wav, MEL_SR)[0])
@@ -57,6 +59,8 @@ def take(d: Path, uid: str, wav: Path, name: str, lang: str, sex: str, text: str
         "f0Median": float(np.median(f0[f0 > 0])),
         "span": [a / FRAME_RATE, min(b / FRAME_RATE, len(x) / sr)],
     }
+    if split:
+        meta["split"] = split
     (d / "meta" / f"{uid}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
     return meta
 

@@ -4,19 +4,23 @@ With the voice as the decoder this is a codec whose latent is the control track.
 
 usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [--synthetic simcopy]
                                     [--no-real] [--standin NAME] [--closed 1.0] [--tune 0]
-                                    [--select listener|loss|last] [--epochs 40] [--hidden 256]
+                                    [--also DIR,...] [--ssl MODEL] [--select listener|loss|last]
+                                    [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
                                      [--models DIR]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
-`pmvc.listener` scores with; its last `--tune` layers learn too, the rest is frozen), and is
+`pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
 told what a pitch tracker makes of the recording and how loud it is, frame by frame; two
 recurrent layers read that in both directions and write every channel but pitch, 100 frames a
 second. Pitch is not learned: the track's pitch channel is the tracker's contour.
 
 Speakers are held out in pairs. In TSP a woman and a man read the same six lists of sentences
 (FA and MA lists 1-6, ...), so leaving out FK, MK, FL and ML for the test and FJ and MJ for
-validation leaves out their sentences too.
+validation leaves out their sentences too. A recording from another corpus is in the split its
+meta names (`pmvc.jvs`), and `--also` adds such directories' recordings and renders to what is
+learned from and to the validation; the listener's check then averages over the directories,
+each counting the same.
 
 `train` has three things to learn from, and the encoders this repository reports are these:
   renders     `--synthetic`: each variant's renders → the tracks they were rendered from, pairs
@@ -66,7 +70,7 @@ from torch import nn
 
 from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
 from .calibrate import make_voice
-from .listener import FEATURE_RATE, LISTEN_SR, MODEL, Listener, distance, to16k
+from .listener import FEATURE_RATE, LAYER, LISTEN_SR, MODEL, Listener, distance, to16k
 from .paths import ROOT
 from .standin import SKIP_HEARD, load_standin
 from .transplant import F0_ADVANCE, START_MIN
@@ -86,7 +90,19 @@ Audio = NDArray[np.float32]
 
 
 def split_of(uid: str) -> str:
+    """A TSP recording's split, by its speaker."""
     return "test" if uid[:2] in TEST else "valid" if uid[:2] in VALID else "train"
+
+
+def split_in(d: Path, uid: str) -> str:
+    """A recording's split: the one its meta names, or else TSP's by speaker."""
+    return str(json.loads((d / "meta" / f"{uid}.json").read_text()).get("split") or split_of(uid))
+
+
+def ids_in(d: Path, split: str) -> list[str]:
+    """The recordings of a split, or all of them."""
+    ids = sorted(p.stem for p in (d / "meta").glob("*.json"))
+    return [i for i in ids if split in ("all", split_in(d, i))]
 
 
 def aux_features(audio: Audio, f0: Array, n: int) -> Audio:
@@ -117,6 +133,8 @@ class Pair:
     # recording (frames, 768) and the span of its speech in those frames
     heard: torch.Tensor | None = None
     span: tuple[int, int] = (0, 0)
+    # the speaker's body, for the stand-in
+    female: bool = False
 
 
 def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]:
@@ -141,7 +159,7 @@ def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None) 
     frames = np.array(track["frames"], dtype=np.float32)
     audio, aux, _ = hear_recording(d, uid, track.get("shift", meta["shift"]))
     n = min(len(frames), len(aux))
-    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n])
+    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=meta["sex"] == "F")
     if listener is not None and track.get("shift") == LEAD:
         x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
         pair.heard = listener.hear(x).feats[0].half()
@@ -157,18 +175,20 @@ def synthetic_pair(d: Path, uid: str, variant: str) -> Pair:
     x, _ = load(d / variant / f"{uid}.wav", LISTEN_SR)
     n = min(len(frames), len(x) // HOP)
     audio = x[: n * HOP].astype(np.float32)
-    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n])
+    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n], female=meta["sex"] == "F")
 
 
 class Encoder(nn.Module):
     """wav2vec2's layers mixed, then the side features, then recurrent layers both ways."""
 
-    def __init__(self, channels: int, hidden: int = 256, layers: int = 2, dropout: float = 0.3, tune: int = 0) -> None:
+    def __init__(self, channels: int, hidden: int = 256, layers: int = 2, dropout: float = 0.3, tune: int = 0, ssl: str = MODEL) -> None:
+        """`ssl`: the model the recording is heard through, any wav2vec2 or HuBERT on the hub."""
         super().__init__()
-        from transformers import Wav2Vec2Model, logging
+        from transformers import AutoModel, Wav2Vec2Model, logging
 
         logging.set_verbosity_error()
-        self.ssl = Wav2Vec2Model.from_pretrained(MODEL).eval().requires_grad_(False)
+        # the default by its own class, which leaves the recogniser's character head behind
+        self.ssl = (Wav2Vec2Model if ssl == MODEL else AutoModel).from_pretrained(ssl).eval().requires_grad_(False)
         # wav2vec2's last `tune` layers learn too
         self.tune = tune
         for layer in self.ssl.encoder.layers[len(self.ssl.encoder.layers) - tune :]:
@@ -240,7 +260,7 @@ def pick_device() -> str:
 
 def ids_with(d: Path, variant: str, split: str) -> list[str]:
     ids = sorted(p.name.split(".")[0] for p in (d / variant).glob("*.tracks.json"))
-    return [i for i in ids if split_of(i) == split]
+    return [i for i in ids if split_in(d, i) == split]
 
 
 def train(a: argparse.Namespace) -> None:
@@ -248,16 +268,24 @@ def train(a: argparse.Namespace) -> None:
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
     device = pick_device()
-    listener = Listener(device) if a.standin or a.select == "listener" else None
-    standin = load_standin(d / "models" / f"{a.standin}.pt", device).train() if a.standin else None
+    dirs = [d, *(Path(p) for p in filter(None, a.also.split(",")))]
+    standin, heard_by = load_standin(d / "models" / f"{a.standin}.pt", device) if a.standin else (None, (MODEL, LAYER))
+    if standin is not None:
+        standin.train()
+    # the listener the stand-in is for: the closed-loop term and the check both go by it
+    listener = Listener(device, *heard_by) if a.standin or a.select == "listener" else None
+
+    def every(variant: str, split: str) -> list[tuple[Path, str]]:
+        return [(dd, i) for dd in dirs for i in ids_with(dd, variant, split)]
+
     with ThreadPoolExecutor(a.jobs) as pool:
         # the listener's own features are computed one recording at a time, in this thread
-        fit = [] if a.no_real else [real_pair(d, i, a.target, listener if standin is not None else None) for i in ids_with(d, a.target, "train")]
-        held = list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "valid")))
+        fit = [] if a.no_real else [real_pair(dd, i, a.target, listener if standin is not None else None) for dd, i in every(a.target, "train")]
+        held = list(pool.map(lambda j: real_pair(j[0], j[1], a.target), every(a.target, "valid")))
         n_real = len(fit)
         for v in filter(None, a.synthetic.split(",")):
-            fit += list(pool.map(lambda i, v=v: synthetic_pair(d, i, v), [i for i in ids_with(d, v, "train") if (d / v / f"{i}.wav").exists()]))
-    keys: list[str] = json.loads((d / a.target / f"{fit[0].uid}.tracks.json").read_text())["keys"]
+            fit += list(pool.map(lambda j, v=v: synthetic_pair(j[0], j[1], v), [j for j in every(v, "train") if (j[0] / v / f"{j[1]}.wav").exists()]))
+    keys: list[str] = json.loads(next(dd / a.target / f"{fit[0].uid}.tracks.json" for dd in dirs if (dd / a.target / f"{fit[0].uid}.tracks.json").exists()).read_text())["keys"]
     f0 = keys.index("f0")
     # every channel but pitch, on its spread over the tracks to learn; a channel that never
     # moves is written as its constant
@@ -268,7 +296,7 @@ def train(a: argparse.Namespace) -> None:
              "lo": pooled.min(axis=0).tolist(), "hi": pooled.max(axis=0).tolist()}  # fmt: skip
     mu = torch.tensor(mean[learned], device=device)
     sd = torch.tensor(std[learned], device=device)
-    model = Encoder(len(learned), a.hidden, tune=a.tune).to(device)
+    model = Encoder(len(learned), a.hidden, tune=a.tune, ssl=a.ssl).to(device)
     tuned = [p for p in model.ssl.parameters() if p.requires_grad]
     own = [p for name, p in model.named_parameters() if p.requires_grad and not name.startswith("ssl.")]
     params = own + tuned
@@ -297,7 +325,7 @@ def train(a: argparse.Namespace) -> None:
             track = track.index_copy(-1, torch.tensor(learned, device=device), torch.minimum(torch.maximum(out[real] * sd + mu, lo), hi))
             # past a clip's end, its first frame: the voice at rest
             track = torch.where(mask[real][..., None], track, track[:, :1])
-            female = torch.tensor([[[1.0 if batch[i].uid[0] == "F" else 0.0]] for i in real], device=device)
+            female = torch.tensor([[[1.0 if batch[i].female else 0.0]] for i in real], device=device)
             said = standin(torch.cat([track, female.expand(-1, track.shape[1], -1)], dim=-1))[:, SKIP_HEARD:]
             total = out.new_zeros(())
             for row, i in enumerate(real):
@@ -315,7 +343,7 @@ def train(a: argparse.Namespace) -> None:
             parts = [(float(loss_of(b)), sum(len(p.aux) for p in b)) for b in batches(held, a.batch, None)]
         return sum(v * n for v, n in parts) / max(1, sum(n for _, n in parts))
 
-    loop = ClosedLoop(d, ids_with(d, "warp", "valid")[:: a.stride], device, a.jobs, listener) if a.select == "listener" else None
+    loop = ClosedLoop([(dd, i) for dd in dirs for i in ids_in(dd, "valid")[:: a.stride]], device, a.jobs, listener) if a.select == "listener" else None
     out = d / "models"
     out.mkdir(exist_ok=True)
     log: list[dict[str, float]] = []
@@ -336,21 +364,25 @@ def train(a: argparse.Namespace) -> None:
             row["standin"] = float(np.mean(closed))
             closed.clear()
         if loop is not None and (epoch % a.every == a.every - 1 or epoch == a.epochs - 1):
-            row["listener"] = loop(model, stats)
+            by_dir = loop(model, stats)
+            row["listener"] = float(np.mean(list(by_dir.values())))
+            if len(by_dir) > 1:
+                row.update({f"listener:{name}": v for name, v in by_dir.items()})
         log.append(row)
         score = row.get("listener") if loop is not None else row["held"] if a.select == "loss" and held else -float(epoch)
         if score is not None and score < best:
             best = score
-            torch.save({"state": model.learned_state(), "stats": stats, "hidden": a.hidden, "tune": a.tune, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out / f"{a.name}.pt")
+            torch.save({"state": model.learned_state(), "stats": stats, "hidden": a.hidden, "tune": a.tune, "ssl": a.ssl, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out / f"{a.name}.pt")
         if "listener" in row or (loop is None and (epoch % 5 == 0 or epoch == a.epochs - 1)):
             heard = (f"  stand-in {row['standin']:.4f}" if "standin" in row else "") + (f"  listener {row['listener']:.4f}" if "listener" in row else "")
+            heard += "".join(f"  {k[9:]} {v:.4f}" for k, v in row.items() if k.startswith("listener:"))
             print(f"epoch {epoch:3d}  fit {row['fit']:.4f}  held {row['held']:.4f}{heard}{'  *' if score == best else ''}", flush=True)
     (out / f"{a.name}.json").write_text(json.dumps({"select": a.select, "best": best, "epochs": log}, indent=1))
 
 
 def load_model(path: Path, device: str) -> tuple[Encoder, dict[str, Any]]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    model = Encoder(len(ck["stats"]["learned"]), ck["hidden"], tune=ck.get("tune", 0))
+    model = Encoder(len(ck["stats"]["learned"]), ck["hidden"], tune=ck.get("tune", 0), ssl=ck.get("ssl", MODEL))
     model.load_state_dict(ck["state"], strict=False)
     return model.to(device).eval(), ck["stats"]
 
@@ -392,35 +424,37 @@ class ClosedLoop:
     feature distance between each recording and the render of the track written for it, over
     the recording's speech. It needs no track to compare with and no text."""
 
-    def __init__(self, d: Path, ids: list[str], device: str, jobs: int, listener: Listener | None = None) -> None:
-        self.d, self.ids, self.device, self.jobs = d, ids, device, jobs
+    def __init__(self, items: list[tuple[Path, str]], device: str, jobs: int, listener: Listener | None = None) -> None:
+        """`items`: (directory, id) of the recordings to check on."""
+        self.items, self.device, self.jobs = items, device, jobs
         self.listener = listener or Listener(device)
-        self.inputs = [hear_recording(d, uid, LEAD) for uid in ids]
+        self.inputs = [hear_recording(d, uid, LEAD) for d, uid in items]
         self.feats: list[torch.Tensor] = []
         self.spans: list[tuple[int, int]] = []
-        for uid in ids:
+        for d, uid in items:
             x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
             span = json.loads((d / "meta" / f"{uid}.json").read_text())["span"]
             self.feats.append(self.listener.hear(x).feats[0])
             self.spans.append((int(span[0] * FEATURE_RATE), int(span[1] * FEATURE_RATE)))
 
-    def __call__(self, model: "Encoder", stats: dict[str, Any]) -> float:
+    def __call__(self, model: "Encoder", stats: dict[str, Any]) -> dict[str, float]:
+        """The mean distance over each directory's recordings, by the directory's name."""
         model.eval()
-        tracks = [voice_track(self.d, uid, write_track(model, stats, *inp, self.device), stats["keys"]) for uid, inp in zip(self.ids, self.inputs)]
+        tracks = [voice_track(d, uid, write_track(model, stats, *inp, self.device), stats["keys"]) for (d, uid), inp in zip(self.items, self.inputs)]
         with ThreadPoolExecutor(self.jobs) as pool:
             renders = list(pool.map(render_track, tracks))
-        out: list[float] = []
-        for x, feats, (a, b) in zip(renders, self.feats, self.spans):
+        out: dict[str, list[float]] = {}
+        for (d, _), x, feats, (a, b) in zip(self.items, renders, self.feats, self.spans):
             heard = self.listener.hear(to16k(x[round(LEAD * 48000) :])).feats[0]
-            out.append(float(distance(feats[a:b], heard[a:b]).mean()))
-        return float(np.mean(out))
+            out.setdefault(d.name, []).append(float(distance(feats[a:b], heard[a:b]).mean()))
+        return {name: float(np.mean(v)) for name, v in out.items()}
 
 
 def encode(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
     model, stats = load_model((a.models or d / "models") / f"{a.name}.pt", device)
-    ids = a.ids.split(",") if a.ids else [p.stem for p in sorted((d / "meta").glob("*.json")) if a.split in ("all", split_of(p.stem))]
+    ids = a.ids.split(",") if a.ids else ids_in(d, a.split)
     (d / a.out).mkdir(exist_ok=True)
     tracks: list[dict[str, Any]] = []
     for uid in ids:
@@ -445,6 +479,7 @@ def main() -> None:
     t.add_argument("--target", type=str, default="simcopy")
     t.add_argument("--synthetic", type=str, default="simcopy", help="variants whose render → track pairs are added")
     t.add_argument("--no-real", action="store_true", help="fit on the renders alone")
+    t.add_argument("--also", type=str, default="", help="more directories of recordings and renders, comma-separated")
     t.add_argument("--select", choices=["listener", "loss", "last"], default="listener", help="which epoch's weights to keep")
     t.add_argument("--every", type=int, default=5, help="epochs between the listener's checks")
     t.add_argument("--stride", type=int, default=2, help="the listener checks every so-many-th validation recording")
@@ -456,6 +491,7 @@ def main() -> None:
     t.add_argument("--closed", type=float, default=1.0, help="the weight of the closed-loop term")
     t.add_argument("--tune", type=int, default=0, help="how many of wav2vec2's last layers learn too")
     t.add_argument("--tune-lr", type=float, default=2e-5)
+    t.add_argument("--ssl", type=str, default=MODEL, help="the model the encoder hears through, if not the listener's own")
     t.add_argument("--seed", type=int, default=0)
     e = sub.choices["encode"]
     e.add_argument("--out", type=str, default="enc")

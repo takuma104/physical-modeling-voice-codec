@@ -10,10 +10,14 @@ are unlimited and exact, so a network can learn the track → listener's feature
 and stand in for it.
 
 usage: python -m pmvc.standin [dir] [--name standin] [--variants warp,sim,simcopy] [--epochs 30]
+                              [--also DIR,...] [--listener MODEL] [--layer N]
 
 Fits on the training speakers' renders of `--variants` (their tracks and what `pmvc.listener`
 hears of them, from `LEAD` seconds in, as the search hears a render against its recording) and
 writes <dir>/models/<name>.pt; the validation speakers' renders say how far off it is.
+`--also` adds the renders of those variants in other directories (`pmvc.jvs`'s), and
+`--listener` and `--layer` name another model for the listener: the stand-in is for that
+listener, and remembers which.
 """
 
 import argparse
@@ -30,7 +34,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from .audio import FRAME_RATE, Array, load
-from .listener import LISTEN_SR, Listener
+from .listener import LAYER, LISTEN_SR, MODEL, Listener
 from .paths import ROOT
 
 # track frames before the listener's first: a render is heard from this far in (`pmvc.encoder`'s LEAD)
@@ -73,20 +77,25 @@ class Render:
     feats: torch.Tensor
 
 
-def load_standin(path: Path, device: str) -> Standin:
+def load_standin(path: Path, device: str) -> tuple[Standin, tuple[str, int]]:
+    """The stand-in, and the listener it stands in front of: its model and layer."""
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    model = Standin(ck["channels"], ck["hidden"])
+    model = Standin(ck["channels"], ck["hidden"], out=ck.get("out", 768))
     model.load_state_dict(ck["state"])
-    return model.to(device).requires_grad_(False)
+    heard_by = ck.get("listener", {"model": MODEL, "layer": LAYER})
+    return model.to(device).requires_grad_(False), (heard_by["model"], heard_by["layer"])
 
 
 def main() -> None:
-    from .encoder import pick_device, split_of
+    from .encoder import pick_device, split_in
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
     ap.add_argument("--name", type=str, default="standin")
     ap.add_argument("--variants", type=str, default="warp,sim,simcopy")
+    ap.add_argument("--also", type=str, default="", help="more directories with renders of those variants")
+    ap.add_argument("--listener", type=str, default=MODEL, help="the listener's model, if not pmvc.listener's own")
+    ap.add_argument("--layer", type=int, default=LAYER)
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=512)
@@ -98,23 +107,24 @@ def main() -> None:
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
     device = pick_device()
-    listener = Listener(device)
+    listener = Listener(device, a.listener, a.layer)
 
-    def read(job: tuple[str, str]) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
-        v, uid = job
-        track = json.loads((d / v / f"{uid}.tracks.json").read_text())
-        x, _ = load(d / v / f"{uid}.wav", LISTEN_SR)
+    def read(job: tuple[Path, str, str]) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+        dd, v, uid = job
+        track = json.loads((dd / v / f"{uid}.tracks.json").read_text())
+        x, _ = load(dd / v / f"{uid}.wav", LISTEN_SR)
         return track_input(np.array(track["frames"]), track["keys"], float(track["body"]["female"])), x[SKIP * (LISTEN_SR // FRAME_RATE) :].astype(np.float32)
 
     sets: dict[str, list[Render]] = {"train": [], "valid": []}
-    jobs = [(v, p.name.split(".")[0]) for v in a.variants.split(",") for p in sorted((d / v).glob("*.tracks.json")) if (d / v / p.name.replace(".tracks.json", ".wav")).exists()]
-    jobs = [j for j in jobs if split_of(j[1]) in sets]
+    dirs = [d, *(Path(p) for p in filter(None, a.also.split(",")))]
+    jobs = [(dd, v, p.name.split(".")[0]) for dd in dirs for v in a.variants.split(",") for p in sorted((dd / v).glob("*.tracks.json")) if (dd / v / p.name.replace(".tracks.json", ".wav")).exists()]
+    jobs = [j for j in jobs if split_in(j[0], j[2]) in sets]
     with ThreadPoolExecutor(a.jobs) as pool:
-        for (_, uid), (x, audio) in zip(jobs, pool.map(read, jobs)):
-            sets[split_of(uid)].append(Render(x, listener.hear(audio).feats[0].half()))
+        for (dd, _, uid), (x, audio) in zip(jobs, pool.map(read, jobs)):
+            sets[split_in(dd, uid)].append(Render(x, listener.hear(audio).feats[0].half()))
     fit, held = sets["train"], sets["valid"]
     pooled = np.concatenate([r.x for r in fit])
-    model = Standin(pooled.shape[1], a.hidden).to(device)
+    model = Standin(pooled.shape[1], a.hidden, out=listener.width).to(device)
     model.mean.copy_(torch.from_numpy(pooled.mean(axis=0)))
     model.std.copy_(torch.from_numpy(np.where(pooled.std(axis=0) > 1e-6, pooled.std(axis=0), 1.0)))
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
@@ -165,7 +175,8 @@ def main() -> None:
         log.append({"epoch": epoch, "fit": total / count, "held": heldout})
         if epoch % 5 == 0 or epoch == a.epochs - 1:
             print(f"epoch {epoch:3d}  fit {total / count:.4f}  held {heldout:.4f}", flush=True)
-    state: dict[str, Any] = {"state": model.state_dict(), "channels": pooled.shape[1], "hidden": a.hidden, "args": {k: str(v) for k, v in vars(a).items()}}
+    state: dict[str, Any] = {"state": model.state_dict(), "channels": pooled.shape[1], "hidden": a.hidden, "out": listener.width,
+                             "listener": {"model": a.listener, "layer": a.layer}, "args": {k: str(v) for k, v in vars(a).items()}}  # fmt: skip
     torch.save(state, out / f"{a.name}.pt")
     (out / f"{a.name}.json").write_text(json.dumps({"epochs": log}, indent=1))
 
