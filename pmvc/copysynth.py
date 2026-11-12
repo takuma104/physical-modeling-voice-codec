@@ -224,6 +224,16 @@ def copy(item: Item, settings: dict[str, float] | None, listener: Listener, sigm
     return row
 
 
+def in_turns(ids: list[str]) -> list[str]:
+    """Recording ids (speaker, list, sentence: `FA01_03`) with the speakers taking turns: each
+    speaker's first, then each one's second, ... so that any part of a corpus has them all."""
+    place: dict[str, int] = {}
+    turn: dict[str, int] = {}
+    for i in sorted(ids):
+        place[i] = turn[i[:2]] = turn.get(i[:2], -1) + 1
+    return sorted(ids, key=lambda i: (place[i], i[:2]))
+
+
 def summarise(d: Path, out: str) -> list[dict[str, Any]]:
     """<dir>/<out>.json: every finished search's objective before and after, from its log."""
     rows: list[dict[str, Any]] = []
@@ -257,8 +267,7 @@ def main() -> None:
     if a.ids:
         ids = a.ids.split(",")
     elif a.all:
-        # sentence by sentence over the speakers, so that a part of the corpus has them all
-        ids = sorted((p.name.split(".")[0] for p in (d / a.base).glob("*.tracks.json")), key=lambda i: (i[2:], i[:2]))
+        ids = in_turns(sorted(p.name.split(".")[0] for p in (d / a.base).glob("*.tracks.json")))
     else:
         ids = json.loads((d / "perturb.json").read_text())["ids"][: a.n]
     k, n = (int(v) for v in a.shard.split("/"))
