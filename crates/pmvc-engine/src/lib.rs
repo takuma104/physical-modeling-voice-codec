@@ -123,6 +123,40 @@ impl Voice {
         Ok(())
     }
 
+    /// Glottis parameters set directly, over what the source's settings made of them: a JSON
+    /// object with any of `openQuotient`, `skew`, `closureSharpness`, `amplitude` (cm²),
+    /// `amplitudeScale` (times the present amplitude), `chink` (cm²), `jitter`, `shimmer`.
+    /// The source's settings reach these only through `tension`, `brightness`, `breathiness` and
+    /// `roughness`, each over a limited range; this is for a voice outside it (a softer one than
+    /// tension 0 gives, say). They hold until the source is set again.
+    fn set_glottis(&mut self, patch: &str) -> PyResult<()> {
+        let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
+        let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
+        let g = &mut self.v.glottis.params;
+        for (k, x) in obj {
+            let x = x.as_f64().ok_or_else(|| bad(format!("{k}: a number is needed")))?;
+            match k.as_str() {
+                "openQuotient" => g.open_quotient = x,
+                "skew" => g.skew = x,
+                "closureSharpness" => g.closure_sharpness = x,
+                "amplitude" => g.amplitude = x,
+                "amplitudeScale" => g.amplitude *= x,
+                "chink" => g.chink = x,
+                "jitter" => g.jitter = x,
+                "shimmer" => g.shimmer = x,
+                _ => return Err(bad(format!("unknown glottis parameter {k:?}"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// The glottis parameters `set_glottis` takes, as they are now (a JSON object).
+    #[getter]
+    fn glottis(&self) -> String {
+        let g = &self.v.glottis.params;
+        serde_json::json!({"openQuotient": g.open_quotient, "skew": g.skew, "closureSharpness": g.closure_sharpness, "amplitude": g.amplitude, "chink": g.chink, "jitter": g.jitter, "shimmer": g.shimmer}).to_string()
+    }
+
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
     #[getter]
     fn noise_gains(&self) -> (f64, f64, f64) {

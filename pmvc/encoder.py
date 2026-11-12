@@ -4,10 +4,10 @@ With the voice as the decoder this is a codec whose latent is the control track.
 
 usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [--synthetic simcopy]
                                     [--no-real] [--standin NAME] [--closed 1.0] [--tune 0]
-                                    [--also DIR,...] [--ssl MODEL] [--select listener|loss|last]
-                                    [--epochs 40] [--hidden 256]
+                                    [--also DIR,...] [--ssl MODEL] [--silences]
+                                    [--select listener|loss|last] [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
-                                     [--models DIR]
+                                     [--models DIR] [--voice FILE]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -69,7 +69,7 @@ from numpy.typing import NDArray
 from torch import nn
 
 from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
-from .calibrate import make_voice
+from .calibrate import GLOTTIS, SOURCE, make_voice, mixed
 from .listener import FEATURE_RATE, LAYER, LISTEN_SR, MODEL, Listener, distance, to16k
 from .paths import ROOT
 from .standin import SKIP_HEARD, load_standin
@@ -85,6 +85,15 @@ TAIL: float = 0.2
 HOP: int = LISTEN_SR // FRAME_RATE
 # the pitch tracker's voicing, its pitch against the speaker's median (octaves), the level
 AUX: int = 3
+# with `--silences`: frames next to a recording's speech where the breath may already (or still) run
+RUN_UP: int = 8
+# and the frame by which the network's output for the lead has settled
+SETTLED: int = 4
+# with `encode --voice`: the speaker's median pitch (Hz) up to which the voice has CHIMERA's own
+# settings, and from which it has the fitted ones. NISQA's score for the renders falls with the
+# speaker's pitch whatever the sex, and `pmvc.pitchmix` finds the fitted settings to help from
+# about 175 Hz up and to harm at 150 Hz and below.
+VOICE_PITCH: tuple[float, float] = (150.0, 175.0)
 
 Audio = NDArray[np.float32]
 
@@ -150,14 +159,27 @@ def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]
     return audio, aux_features(audio, f0, n), f0
 
 
-def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None) -> Pair:
+def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, silences: bool = False) -> Pair:
     """A recording and the track `target` has for it, which runs its own `shift` behind the
     recording, or the meta's if it does not say. With a listener, also what it hears in the
-    recording (for the closed-loop term, which needs the track to run LEAD behind)."""
+    recording (for the closed-loop term, which needs the track to run LEAD behind).
+
+    `silences`: the recording's silences are taught too: the track to copy has no breath
+    outside the recording's speech (but for RUN_UP frames either side of it). Without this
+    nothing says what a track should do where the recording is silent but the track of
+    `target`, and an encoder that has only heard renders (A) starts to breathe as soon as a
+    recording's room noise begins. The closed loop still compares over the speech alone: over
+    the whole recording it has the encoder imitate the room's noise with a faint breath."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     track = json.loads((d / target / f"{uid}.tracks.json").read_text())
     frames = np.array(track["frames"], dtype=np.float32)
-    audio, aux, _ = hear_recording(d, uid, track.get("shift", meta["shift"]))
+    lead = track.get("shift", meta["shift"])
+    if silences:
+        k0, k1 = (round((lead + t) * FRAME_RATE) for t in meta["span"])
+        breath = track["keys"].index("breath")
+        frames[: max(0, k0 - RUN_UP), breath] = 0.0
+        frames[k1 + RUN_UP :, breath] = 0.0
+    audio, aux, _ = hear_recording(d, uid, lead)
     n = min(len(frames), len(aux))
     pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=meta["sex"] == "F")
     if listener is not None and track.get("shift") == LEAD:
@@ -280,8 +302,8 @@ def train(a: argparse.Namespace) -> None:
 
     with ThreadPoolExecutor(a.jobs) as pool:
         # the listener's own features are computed one recording at a time, in this thread
-        fit = [] if a.no_real else [real_pair(dd, i, a.target, listener if standin is not None else None) for dd, i in every(a.target, "train")]
-        held = list(pool.map(lambda j: real_pair(j[0], j[1], a.target), every(a.target, "valid")))
+        fit = [] if a.no_real else [real_pair(dd, i, a.target, listener if standin is not None else None, a.silences) for dd, i in every(a.target, "train")]
+        held = list(pool.map(lambda j: real_pair(j[0], j[1], a.target, None, a.silences), every(a.target, "valid")))
         n_real = len(fit)
         for v in filter(None, a.synthetic.split(",")):
             fit += list(pool.map(lambda j, v=v: synthetic_pair(j[0], j[1], v), [j for j in every(v, "train") if (j[0] / v / f"{j[1]}.wav").exists()]))
@@ -384,7 +406,9 @@ def load_model(path: Path, device: str) -> tuple[Encoder, dict[str, Any]]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     model = Encoder(len(ck["stats"]["learned"]), ck["hidden"], tune=ck.get("tune", 0), ssl=ck.get("ssl", MODEL))
     model.load_state_dict(ck["state"], strict=False)
-    return model.to(device).eval(), ck["stats"]
+    # whether it was taught the silences: its tracks then have no breath in the lead either
+    stats = {**ck["stats"], "silences": ck.get("args", {}).get("silences") == "True"}
+    return model.to(device).eval(), stats
 
 
 @torch.no_grad()
@@ -397,19 +421,40 @@ def write_track(model: Encoder, stats: dict[str, Any], audio: Audio, aux: Audio,
     frames = np.tile(mean, (n, 1))
     frames[:, learned] = model(a, x)[0].cpu().numpy() * std[learned] + mean[learned]
     frames = np.clip(frames, np.array(stats["lo"]), np.array(stats["hi"]))
+    if stats.get("silences"):
+        # the lead is silence this encoder put there itself. The network's first frames, with
+        # nothing before them to go by, stray from what it then settles to, and the jump from
+        # the voice's rest to them is heard as a faint puff: the track starts settled, and
+        # without breath up to the run-up
+        frames[:SETTLED] = frames[SETTLED]
+        frames[: round(LEAD * FRAME_RATE) - RUN_UP, stats["keys"].index("breath")] = 0.0
     # the tracker's contour, given early by the voice's glide, as in `pmvc.warp`
     contour = fill_pitch(f0)
     frames[:, stats["keys"].index("f0")] = np.interp(np.arange(n) / FRAME_RATE + F0_ADVANCE, np.arange(len(contour)) / FRAME_RATE, contour)
     return frames
 
 
-def voice_track(d: Path, uid: str, frames: Array, keys: list[str]) -> dict[str, Any]:
+def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None) -> dict[str, Any]:
     """`frames` as a track for the voice of a recording's speaker. All the voice is told of the
     speaker is in the recording's meta: the sex picks the body, and the source idles at the
-    median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample)."""
+    median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample).
+
+    `fitted`: settings `pmvc.calibrate` fitted to a high voice, for speakers with a high one.
+    CHIMERA's own serve up to a median pitch of VOICE_PITCH[0], the fitted ones from
+    VOICE_PITCH[1] up, and a mix of the two between (`pmvc.pitchmix`). `pitch` is the speaker's
+    median pitch, so that all of a speaker's recordings get one voice; without it the
+    recording's own counts."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
-    return {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
+    track: dict[str, Any] = {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}
+    lo, hi = VOICE_PITCH
+    w = float(np.clip(np.log((pitch or meta["f0Median"]) / lo) / np.log(hi / lo), 0.0, 1.0))
+    if fitted and w > 0.0:
+        s = mixed(fitted, w)
+        track["source"].update({k: round(s[k], 5) for k in SOURCE})
+        track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
+        track["glottis"] = {k: round(s[k], 5) for k in GLOTTIS}
+    return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
 def render_track(track: dict[str, Any]) -> Array:
@@ -456,10 +501,20 @@ def encode(a: argparse.Namespace) -> None:
     model, stats = load_model((a.models or d / "models") / f"{a.name}.pt", device)
     ids = a.ids.split(",") if a.ids else ids_in(d, a.split)
     (d / a.out).mkdir(exist_ok=True)
+    fitted: dict[str, float] | None = json.loads(a.voice.read_text())["settings"] if a.voice else None
+    # each speaker's median pitch, over all of the speaker's recordings in the directory
+    by_speaker: dict[str, list[float]] = {}
+    speaker_of: dict[str, str] = {}
+    if fitted:
+        for p in (d / "meta").glob("*.json"):
+            meta = json.loads(p.read_text())
+            by_speaker.setdefault(meta["speaker"], []).append(meta["f0Median"])
+            speaker_of[meta["id"]] = meta["speaker"]
     tracks: list[dict[str, Any]] = []
     for uid in ids:
         audio, aux, f0 = hear_recording(d, uid, LEAD)
-        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"]))
+        pitch = float(np.median(by_speaker[speaker_of[uid]])) if fitted else None
+        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"], fitted, pitch))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -492,12 +547,14 @@ def main() -> None:
     t.add_argument("--tune", type=int, default=0, help="how many of wav2vec2's last layers learn too")
     t.add_argument("--tune-lr", type=float, default=2e-5)
     t.add_argument("--ssl", type=str, default=MODEL, help="the model the encoder hears through, if not the listener's own")
+    t.add_argument("--silences", action="store_true", help="teach the recordings' silences too: the track to copy has no breath outside the speech")
     t.add_argument("--seed", type=int, default=0)
     e = sub.choices["encode"]
     e.add_argument("--out", type=str, default="enc")
     e.add_argument("--split", choices=["test", "valid", "train", "all"], default="test")
     e.add_argument("--ids", type=str, default="")
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
+    e.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
     a = ap.parse_args()
     train(a) if a.command == "train" else encode(a)
 

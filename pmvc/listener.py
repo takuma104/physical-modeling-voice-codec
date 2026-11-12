@@ -66,7 +66,9 @@ class Listener:
         self.width: int = int(self.model.config.hidden_size)
 
     def chars(self, text: str) -> list[int]:
-        """The sentence as the recogniser's character ids."""
+        """The sentence as the recogniser's character ids (none, for a listener that writes none)."""
+        if not self.vocab:
+            return []
         t = " ".join(re.sub(r"[^A-Z' ]+", " ", text.upper().replace("’", "'")).split())
         return [self.vocab[c if c != " " else "|"] for c in t]
 
