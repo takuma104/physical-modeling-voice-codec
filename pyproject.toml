@@ -6,13 +6,18 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "faster-whisper>=1.2.1",
+    "librosa>=1.0.0",
+    "matplotlib>=3.11.2",
     "numpy>=2.5.4",
+    "pandas>=3.1.1",
     "pmvc-engine",
     "praat-parselmouth>=0.4.7",
     "pyopenjtalk-plus>=0.4.1.post10",
+    "pyyaml>=6.0.3",
     "scipy>=1.18.1",
     "soundfile>=0.14.0",
     "torch>=2.15.0",
+    "tqdm>=4.70.1",
     "transformers>=5.22.2",
 ]
 

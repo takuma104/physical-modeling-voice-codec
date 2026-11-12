@@ -22,6 +22,10 @@ For every variant, against the recording:
   voicing    the share of the recording's speech frames where a pitch tracker calls the
              recording and the render both voiced or both unvoiced; `f0Corr`, the correlation
              of their log pitch where both are voiced
+  stray      the share of recordings whose render is voiced for 30 ms or more where the
+             recording is silent, before or after its speech (60 ms either side of the speech
+             are left out); `outside`, the render's loudest 10 ms there against its level over
+             the speech (dB, the median over recordings)
 Whisper leans on what a sentence is likely to say; the phone recogniser cannot. Neither was
 optimised against. Two more columns make the numbers comparable:
   other      where another speaker in <dir> read the same sentence (one of the same sex, if
@@ -30,7 +34,8 @@ optimised against. Two more columns make the numbers comparable:
   letterRate, letterRate2   for a language scored by word, the same errors counted in letters,
              a unit about as fine as a phoneme
 
-Writes <dir>/<name>.json: the rows, their summary by speaker and by language, and under
+Writes <dir>/<name>.json: the rows, their summary by speaker, by language and by language and
+sex (`ja-F`), and under
 `sounds`, for each language whose units are phonemes, how often each phoneme of the sentences
 was lost (replaced or left out in the best alignment with what large-v3-turbo heard).
 `--again` redoes the summary of a file that is already there, judging nothing; `--add` judges
@@ -130,19 +135,34 @@ def _small(job: tuple[Path, str]) -> str:
     return " ".join(s.text.strip() for s in segs)
 
 
+# frames next to the recording's speech that are not counted as outside it: the voice's own
+# run-up and decay
+EDGE: int = 6
+
+
 def pitch_agreement(job: tuple[Path, str, str, str]) -> dict[str, float]:
-    """`voicing` and `f0Corr` of a variant's render against the recording, over its speech."""
+    """`voicing` and `f0Corr` of a variant's render against the recording, over its speech; and
+    what the render does where the recording is silent: `strayVoiced`, its voiced frames before
+    and after the speech, and `outside`, its loudest 10 ms there against its level over the
+    speech (dB)."""
     d, uid, v, sex = job
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     shift = round(json.loads((d / v / f"{uid}.tracks.json").read_text())["shift"] * FRAME_RATE)
     f_ref = np.load(d / "pitch" / f"{uid}.npy")
-    f_syn = pitch_track(*load(d / v / f"{uid}.wav"), sex)
+    x, sr = load(d / v / f"{uid}.wav")
+    f_syn = pitch_track(x, sr, sex)
     r0, r1 = round(meta["span"][0] * FRAME_RATE), min(round(meta["span"][1] * FRAME_RATE), len(f_ref), len(f_syn) - shift)
     fr, fs = f_ref[r0:r1], f_syn[r0 + shift : r1 + shift]
     both = (fr > 0) & (fs > 0)
     out = {"voicing": float(((fr > 0) == (fs > 0)).mean())}
     if both.sum() > 10:
         out["f0Corr"] = float(np.corrcoef(np.log2(fr[both]), np.log2(fs[both]))[0, 1])
+    hop = sr // FRAME_RATE
+    power = (x[: len(x) // hop * hop].reshape(-1, hop) ** 2).mean(axis=1) + 1e-12
+    k0, k1 = max(0, r0 + shift - EDGE), r1 + shift + EDGE
+    away = np.concatenate([power[:k0], power[k1:]])
+    out["strayVoiced"] = float((f_syn[:k0] > 0).sum() + (f_syn[k1 : len(power)] > 0).sum())
+    out["outside"] = float(10.0 * np.log10(away.max() / power[r0 + shift : r1 + shift].mean())) if len(away) else -99.0
     return out
 
 
@@ -150,7 +170,7 @@ def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) ->
     """Adds to the rows what no judge is needed for: the pitch tracker's agreement, another
     speaker's recording of the sentence against this one by the phone recogniser's two
     transcripts, and the errors in letters."""
-    todo = [(d, r["id"], v, r["sex"]) for r in rows for v in names if "distance" in r["variants"][v] and "voicing" not in r["variants"][v]]
+    todo = [(d, r["id"], v, r["sex"]) for r in rows for v in names if "distance" in r["variants"][v] and "outside" not in r["variants"][v]]
     with ThreadPoolExecutor(jobs) as pool:
         for (_, uid, v, _), m in zip(todo, pool.map(pitch_agreement, todo)):
             next(r for r in rows if r["id"] == uid)["variants"][v].update(m)
@@ -173,7 +193,7 @@ def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) ->
 def summarise(rows: list[dict[str, Any]], names: list[str]) -> dict[str, Any]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        for g in (r["speaker"], r["lang"]):
+        for g in (r["speaker"], r["lang"], f"{r['lang']}-{r['sex']}"):
             groups.setdefault(g, []).append(r)
     summary: dict[str, Any] = {}
     for g, sel in groups.items():
@@ -188,6 +208,14 @@ def summarise(rows: list[dict[str, Any]], names: list[str]) -> dict[str, Any]:
             for key in ("distance", "voicing", "f0Corr"):
                 if all("distance" in m for m in ms) and any(key in m for m in ms):
                     s[key] = round(float(np.mean([m[key] for m in ms if key in m])), 3)
+            if all("outside" in m for m in ms):
+                # the share of recordings whose render is voiced for 30 ms or more outside the speech
+                s["stray"] = round(100.0 * float(np.mean([m["strayVoiced"] >= 3 for m in ms])), 1)
+                s["outside"] = round(float(np.median([m["outside"] for m in ms])), 1)
+            # what `pmvc.natural` added, if it was run
+            for key in ("quality", "noisiness", "coloration", "discontinuity", "loudness", "natural"):
+                if all(key in m for m in ms):
+                    s[key] = round(float(np.mean([m[key] for m in ms])), 2)
             summary[g][v] = s
         others = [r["other"] for r in sel if "other" in r]
         if others:
@@ -289,6 +317,8 @@ def finish(d: Path, name: str, rows: list[dict[str, Any]], names: list[str], job
                 m = s[v]
                 cols = [f"{label} {m[key][0]:5.1f} % [{m[key][1]:.1f}, {m[key][2]:.1f}]" for key, label in (("rate", "small"), ("rate2", "large-v3-turbo"), ("letterRate2", "letters"), ("phoneRate", "phones")) if key in m]
                 rest = "".join(f"   {key} {m[key]:.3f}" for key in ("distance", "voicing", "f0Corr") if key in m)
+                rest += f"   stray {m['stray']:.0f} %" if "stray" in m else ""
+                rest += f"   NISQA {m['quality']:.2f}" if "quality" in m else ""
                 print(f"  {v:8s} " + "   ".join(cols) + rest)
 
 

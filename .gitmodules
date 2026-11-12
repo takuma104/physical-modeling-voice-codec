@@ -4,3 +4,6 @@
 [submodule "third-party/arti-6"]
 	path = third-party/arti-6
 	url = https://github.com/lee-jhwn/arti-6
+[submodule "third-party/NISQA"]
+	path = third-party/NISQA
+	url = https://github.com/gabrielmittag/NISQA
