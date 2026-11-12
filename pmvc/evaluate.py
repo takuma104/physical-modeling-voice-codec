@@ -76,7 +76,8 @@ def speech_cepstra(wav: Path) -> Cepstra:
     speakers saying one sentence are as far apart as a render is from either."""
     x, _ = load(wav, MEL_SR)
     mel = log_mel(x)
-    c, (a, b) = cepstra(mel), speech_span(mel)
+    c, (a, b) = cepstra(mel), speech_span(x)
+    b = min(b, len(c))
     return c - c[a:b].mean(axis=0), (a, b)
 
 

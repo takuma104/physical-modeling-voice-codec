@@ -83,10 +83,14 @@ def cepstra(mel: Array, n: int = 13) -> Array:
     return dct(mel, type=2, norm="ortho", axis=1)[:, 1:n] * np.sqrt(2.0 / mel.shape[1])
 
 
-def speech_span(mel: Array, floor_db: float = 40.0) -> tuple[int, int]:
-    """First and last frame within `floor_db` of the loudest frame."""
-    level = 10.0 / np.log(10.0) * np.log(np.exp(2.0 * mel).sum(axis=1))
-    on = np.flatnonzero(level > level.max() - floor_db)
+def speech_span(x: Array, sr: int = MEL_SR, floor_db: float = 40.0) -> tuple[int, int]:
+    """First and last frame (as `log_mel` counts them) within `floor_db` of the loudest, by the
+    signal's own level in 25 ms windows. `log_mel`'s output will not do for this: its floor
+    leaves no frame further than some 36 dB below the loudest."""
+    win, hop = int(0.025 * sr), sr // FRAME_RATE
+    x = np.concatenate([np.zeros(win // 2), x, np.zeros(win)])
+    power = (np.lib.stride_tricks.sliding_window_view(x, win)[::hop] ** 2).mean(axis=1)
+    on = np.flatnonzero(power > power.max() * 10.0 ** (-floor_db / 10.0))
     return int(on[0]), int(on[-1]) + 1
 
 

@@ -59,17 +59,20 @@ def conditions() -> list[str]:
 
 
 class Scale:
-    """Each channel's spread and range over the speech frames of a set of tracks (pitch in log2).
-    The spread is how far a channel moves within an utterance (each utterance's mean removed),
-    so a man's and a woman's pitch levels do not count as signal; the range is over all of them."""
+    """Each channel's spread and range in a set of tracks (pitch in log2). The spread is how far
+    a channel moves within an utterance, over its speech frames and with each utterance's mean
+    removed, so a man's and a woman's pitch levels do not count as signal. The range, which the
+    quantiser's levels are laid over, is over every frame, the voice at rest included: over
+    speech alone it starts at a breath of 0.75, and a quantised track then has the voice sound
+    through what should be its silences."""
 
     def __init__(self, tracks: list[dict[str, Any]]) -> None:
         self.keys: list[str] = tracks[0]["keys"]
         self.f0: int = self.keys.index("f0")
         breath = self.keys.index("breath")
-        speech = [f[f[:, breath] > 0.5] for f in (self.to_domain(np.array(t["frames"])) for t in tracks)]
-        self.std: Array = np.concatenate([f - f.mean(axis=0) for f in speech]).std(axis=0)
-        pooled = np.concatenate(speech)
+        frames = [self.to_domain(np.array(t["frames"])) for t in tracks]
+        self.std: Array = np.concatenate([f[f[:, breath] > 0.5] - f[f[:, breath] > 0.5].mean(axis=0) for f in frames]).std(axis=0)
+        pooled = np.concatenate(frames)
         self.lo: Array = np.percentile(pooled, 0.5, axis=0)
         self.hi: Array = np.percentile(pooled, 99.5, axis=0)
 
