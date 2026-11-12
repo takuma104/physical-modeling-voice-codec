@@ -56,6 +56,7 @@ from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
 from .calibrate import make_voice
 from .listener import FEATURE_RATE, LISTEN_SR, MODEL, Listener, distance, to16k
 from .paths import ROOT
+from .standin import SKIP_HEARD, load_standin
 from .transplant import F0_ADVANCE, START_MIN
 
 TEST: tuple[str, ...] = ("FK", "FL", "MK", "ML")
@@ -100,6 +101,10 @@ class Pair:
     audio: Audio
     aux: Audio
     frames: Audio | None
+    # for a recording whose track runs LEAD behind it: what the listener hears in the
+    # recording (frames, 768) and the span of its speech in those frames
+    heard: torch.Tensor | None = None
+    span: tuple[int, int] = (0, 0)
 
 
 def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]:
@@ -115,15 +120,21 @@ def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]
     return audio, aux_features(audio, f0, n), f0
 
 
-def real_pair(d: Path, uid: str, target: str) -> Pair:
+def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None) -> Pair:
     """A recording and the track `target` has for it, which runs its own `shift` behind the
-    recording, or the meta's if it does not say."""
+    recording, or the meta's if it does not say. With a listener, also what it hears in the
+    recording (for the closed-loop term, which needs the track to run LEAD behind)."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     track = json.loads((d / target / f"{uid}.tracks.json").read_text())
     frames = np.array(track["frames"], dtype=np.float32)
     audio, aux, _ = hear_recording(d, uid, track.get("shift", meta["shift"]))
     n = min(len(frames), len(aux))
-    return Pair(uid, audio[: n * HOP], aux[:n], frames[:n])
+    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n])
+    if listener is not None and track.get("shift") == LEAD:
+        x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
+        pair.heard = listener.hear(x).feats[0].half()
+        pair.span = (int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE))
+    return pair
 
 
 def synthetic_pair(d: Path, uid: str, variant: str) -> Pair:
@@ -140,16 +151,26 @@ def synthetic_pair(d: Path, uid: str, variant: str) -> Pair:
 class Encoder(nn.Module):
     """wav2vec2's layers mixed, then the side features, then recurrent layers both ways."""
 
-    def __init__(self, channels: int, hidden: int = 256, layers: int = 2, dropout: float = 0.3) -> None:
+    def __init__(self, channels: int, hidden: int = 256, layers: int = 2, dropout: float = 0.3, tune: int = 0) -> None:
         super().__init__()
         from transformers import Wav2Vec2Model, logging
 
         logging.set_verbosity_error()
         self.ssl = Wav2Vec2Model.from_pretrained(MODEL).eval().requires_grad_(False)
+        # wav2vec2's last `tune` layers learn too
+        self.tune = tune
+        for layer in self.ssl.encoder.layers[len(self.ssl.encoder.layers) - tune :]:
+            layer.requires_grad_(True)
         self.mix = nn.Parameter(torch.zeros(self.ssl.config.num_hidden_layers + 1))
         self.proj = nn.Sequential(nn.Linear(self.ssl.config.hidden_size, hidden), nn.Dropout(dropout))
         self.rnn = nn.LSTM(hidden + AUX, hidden, num_layers=layers, batch_first=True, bidirectional=True, dropout=dropout)
         self.head = nn.Sequential(nn.Dropout(dropout), nn.Linear(2 * hidden, channels))
+
+    def learned_state(self) -> dict[str, torch.Tensor]:
+        """The weights that are not wav2vec2's own."""
+        first = len(self.ssl.encoder.layers) - self.tune
+        kept = tuple(f"ssl.encoder.layers.{i}." for i in range(first, first + self.tune))
+        return {k: v for k, v in self.state_dict().items() if not k.startswith("ssl.") or k.startswith(kept)}
 
     def train(self, mode: bool = True) -> "Encoder":
         super().train(mode)
@@ -159,7 +180,7 @@ class Encoder(nn.Module):
     def forward(self, audio: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
         """`audio` (batch, samples), each clip normalised over its own length and padded with
         zeros; `aux` (batch, frames, AUX). Returns (batch, frames, channels), normalised."""
-        with torch.no_grad():
+        with torch.set_grad_enabled(self.tune > 0 and self.training):
             states = torch.stack(self.ssl(audio, output_hidden_states=True).hidden_states)
         h = (torch.softmax(self.mix, 0)[:, None, None, None] * states).sum(0)
         # wav2vec2's frames are 20 ms apart: each stands for two of the track's
@@ -215,8 +236,11 @@ def train(a: argparse.Namespace) -> None:
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
     device = pick_device()
+    listener = Listener(device) if a.standin or a.select == "listener" else None
+    standin = load_standin(d / "models" / f"{a.standin}.pt", device).train() if a.standin else None
     with ThreadPoolExecutor(a.jobs) as pool:
-        fit = [] if a.no_real else list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "train")))
+        # the listener's own features are computed one recording at a time, in this thread
+        fit = [] if a.no_real else [real_pair(d, i, a.target, listener if standin is not None else None) for i in ids_with(d, a.target, "train")]
         held = list(pool.map(lambda i: real_pair(d, i, a.target), ids_with(d, a.target, "valid")))
         n_real = len(fit)
         for v in filter(None, a.synthetic.split(",")):
@@ -232,18 +256,46 @@ def train(a: argparse.Namespace) -> None:
              "lo": pooled.min(axis=0).tolist(), "hi": pooled.max(axis=0).tolist()}  # fmt: skip
     mu = torch.tensor(mean[learned], device=device)
     sd = torch.tensor(std[learned], device=device)
-    model = Encoder(len(learned), a.hidden).to(device)
-    params = [p for p in model.parameters() if p.requires_grad]
-    opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.01)
+    model = Encoder(len(learned), a.hidden, tune=a.tune).to(device)
+    tuned = [p for p in model.ssl.parameters() if p.requires_grad]
+    own = [p for name, p in model.named_parameters() if p.requires_grad and not name.startswith("ssl.")]
+    params = own + tuned
+    groups = [{"params": own, "lr": a.lr}] + ([{"params": tuned, "lr": a.tune_lr}] if tuned else [])
+    opt = torch.optim.AdamW(groups, weight_decay=0.01)
     steps = a.epochs * len(batches(fit, a.batch, None))
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.05)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=[g["lr"] for g in groups], total_steps=steps, pct_start=0.05)
     print(f"{n_real} recordings and {len(fit) - n_real} renders to fit, {len(held)} held out; {len(learned)} channels; {sum(p.numel() for p in params) / 1e6:.1f} M weights; {device}", flush=True)
+
+    lo = torch.tensor(np.array(stats["lo"])[learned], device=device, dtype=torch.float32)
+    hi = torch.tensor(np.array(stats["hi"])[learned], device=device, dtype=torch.float32)
+    closed: list[float] = []
 
     def loss_of(batch: list[Pair]) -> torch.Tensor:
         audio, aux, frames, mask = collate(batch, device)
         assert frames is not None
-        err = (model(audio, aux) - (frames[..., learned] - mu) / sd).abs().mean(dim=-1)
-        return (err * mask).sum() / mask.sum()
+        out = model(audio, aux)
+        err = (out - (frames[..., learned] - mu) / sd).abs().mean(dim=-1)
+        loss = (err * mask).sum() / mask.sum()
+        real = [i for i, p in enumerate(batch) if p.heard is not None]
+        if standin is not None and real and model.training:
+            # the track the encoder writes, as the stand-in reads it: the learned channels in
+            # the voice's units, the others and the pitch as the target has them, the body last
+            track = frames[real].clone()
+            track[..., f0] = torch.log2(track[..., f0].clamp(min=1.0))
+            track = track.index_copy(-1, torch.tensor(learned, device=device), torch.minimum(torch.maximum(out[real] * sd + mu, lo), hi))
+            # past a clip's end, its first frame: the voice at rest
+            track = torch.where(mask[real][..., None], track, track[:, :1])
+            female = torch.tensor([[[1.0 if batch[i].uid[0] == "F" else 0.0]] for i in real], device=device)
+            said = standin(torch.cat([track, female.expand(-1, track.shape[1], -1)], dim=-1))[:, SKIP_HEARD:]
+            total = out.new_zeros(())
+            for row, i in enumerate(real):
+                p = batch[i]
+                assert p.heard is not None
+                a0, a1 = p.span[0], min(p.span[1], len(p.heard), said.shape[1])
+                total = total + (1.0 - (said[row, a0:a1] * p.heard[a0:a1].to(device).float()).sum(dim=-1)).mean()
+            closed.append(float(total) / len(real))
+            loss = loss + a.closed * total / len(real)
+        return loss
 
     def held_loss() -> float:
         model.eval()
@@ -251,7 +303,7 @@ def train(a: argparse.Namespace) -> None:
             parts = [(float(loss_of(b)), sum(len(p.aux) for p in b)) for b in batches(held, a.batch, None)]
         return sum(v * n for v, n in parts) / max(1, sum(n for _, n in parts))
 
-    loop = ClosedLoop(d, ids_with(d, "warp", "valid")[:: a.stride], device, a.jobs) if a.select == "listener" else None
+    loop = ClosedLoop(d, ids_with(d, "warp", "valid")[:: a.stride], device, a.jobs, listener) if a.select == "listener" else None
     out = d / "models"
     out.mkdir(exist_ok=True)
     log: list[dict[str, float]] = []
@@ -268,23 +320,25 @@ def train(a: argparse.Namespace) -> None:
             sched.step()
             total, count = total + loss.item(), count + 1
         row = {"epoch": epoch, "fit": total / count, "held": held_loss() if held else float("nan")}
+        if closed:
+            row["standin"] = float(np.mean(closed))
+            closed.clear()
         if loop is not None and (epoch % a.every == a.every - 1 or epoch == a.epochs - 1):
             row["listener"] = loop(model, stats)
         log.append(row)
         score = row.get("listener") if loop is not None else row["held"] if a.select == "loss" and held else -float(epoch)
         if score is not None and score < best:
             best = score
-            state = {k: v for k, v in model.state_dict().items() if not k.startswith("ssl.")}
-            torch.save({"state": state, "stats": stats, "hidden": a.hidden, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out / f"{a.name}.pt")
+            torch.save({"state": model.learned_state(), "stats": stats, "hidden": a.hidden, "tune": a.tune, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out / f"{a.name}.pt")
         if "listener" in row or (loop is None and (epoch % 5 == 0 or epoch == a.epochs - 1)):
-            heard = f"  listener {row['listener']:.4f}" if "listener" in row else ""
+            heard = (f"  stand-in {row['standin']:.4f}" if "standin" in row else "") + (f"  listener {row['listener']:.4f}" if "listener" in row else "")
             print(f"epoch {epoch:3d}  fit {row['fit']:.4f}  held {row['held']:.4f}{heard}{'  *' if score == best else ''}", flush=True)
     (out / f"{a.name}.json").write_text(json.dumps({"select": a.select, "best": best, "epochs": log}, indent=1))
 
 
 def load_model(path: Path, device: str) -> tuple[Encoder, dict[str, Any]]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    model = Encoder(len(ck["stats"]["learned"]), ck["hidden"])
+    model = Encoder(len(ck["stats"]["learned"]), ck["hidden"], tune=ck.get("tune", 0))
     model.load_state_dict(ck["state"], strict=False)
     return model.to(device).eval(), ck["stats"]
 
@@ -324,9 +378,9 @@ class ClosedLoop:
     feature distance between each recording and the render of the track written for it, over
     the recording's speech. It needs no track to compare with and no text."""
 
-    def __init__(self, d: Path, ids: list[str], device: str, jobs: int) -> None:
+    def __init__(self, d: Path, ids: list[str], device: str, jobs: int, listener: Listener | None = None) -> None:
         self.d, self.ids, self.device, self.jobs = d, ids, device, jobs
-        self.listener = Listener(device)
+        self.listener = listener or Listener(device)
         self.inputs = [hear_recording(d, uid, LEAD) for uid in ids]
         self.feats: list[torch.Tensor] = []
         self.spans: list[tuple[int, int]] = []
@@ -384,6 +438,10 @@ def main() -> None:
     t.add_argument("--batch", type=int, default=16)
     t.add_argument("--hidden", type=int, default=256)
     t.add_argument("--lr", type=float, default=1e-3)
+    t.add_argument("--standin", type=str, default="", help="a `pmvc.standin` model to close the loop through")
+    t.add_argument("--closed", type=float, default=1.0, help="the weight of the closed-loop term")
+    t.add_argument("--tune", type=int, default=0, help="how many of wav2vec2's last layers learn too")
+    t.add_argument("--tune-lr", type=float, default=2e-5)
     t.add_argument("--seed", type=int, default=0)
     e = sub.choices["encode"]
     e.add_argument("--out", type=str, default="enc")
