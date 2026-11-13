@@ -7,7 +7,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [--also DIR,...] [--ssl MODEL] [--silences]
                                     [--select listener|loss|last] [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
-                                     [--models DIR] [--voice FILE]
+                                     [--models DIR] [--voice FILE] [--no-wall-air] [--quiet-pauses]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -52,6 +52,18 @@ the render runs that far behind it (the track's `shift`). Of the speaker the voi
 sex (its body) and the median pitch. A recording needs its real/<id>.wav, pitch/<id>.npy and
 meta/<id>.json and nothing else, so `--split all` on a directory `pmvc.recordings` made, with
 `--models` saying where the encoder is, encodes recordings from outside TSP.
+
+`--no-wall-air`: the tracks tell the voice that its walls displace no air as they move. CHIMERA
+lets that air flow into the tract, and a track rendered with no breath at all is not silent: it
+thumps, below a few hundred hertz, some 40 dB under the speech (30 dB for a man's body) and
+up to 20 dB under it where the tongue moves fast. A man's voice covers that band. A woman's
+does not, and in a stop's closure or a pause nothing does: it is heard there as a wet smacking
+of the tongue (`pmvc.clicks.in_silences` counts it).
+
+`--quiet-pauses`: the track has no breath in the recording's pauses (its silences of 120 ms and
+more inside the speech). An encoder taught with `--silences` writes none before and after the
+speech, but in a pause it lets a little run, unsteadily, and the voice murmurs there and pops
+as the breath comes back.
 """
 
 import argparse
@@ -68,6 +80,7 @@ import torch
 from numpy.typing import NDArray
 from torch import nn
 
+from . import clicks
 from .audio import FRAME_RATE, Array, fill_pitch, load, pitch_track
 from .calibrate import AIRWAY, GLOTTIS, SOURCE, make_voice, mixed
 from .listener import FEATURE_RATE, LAYER, LISTEN_SR, MODEL, Listener, distance, to16k
@@ -87,6 +100,13 @@ HOP: int = LISTEN_SR // FRAME_RATE
 AUX: int = 3
 # with `--silences`: frames next to a recording's speech where the breath may already (or still) run
 RUN_UP: int = 8
+# with `--quiet-pauses`: a pause is a silence of the recording this many frames long or longer;
+# the breath stops PAUSE_IN frames into it and is back PAUSE_OUT frames before it ends (the
+# voice's breath rises with a time constant of 25 ms; back sooner, the voice sets in before
+# the speaker's does)
+PAUSE: int = 12
+PAUSE_IN: int = 2
+PAUSE_OUT: int = 3
 # and the frame by which the network's output for the lead has settled
 SETTLED: int = 4
 # with `encode --voice`: the speaker's median pitch (Hz) up to which the voice has CHIMERA's own
@@ -434,7 +454,20 @@ def write_track(model: Encoder, stats: dict[str, Any], audio: Audio, aux: Audio,
     return frames
 
 
-def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None) -> dict[str, Any]:
+def pauses(d: Path, uid: str) -> list[tuple[int, int]]:
+    """A recording's pauses, in its own frames (first, one past the last): where, inside its
+    speech, it stays `pmvc.clicks.QUIET` under its speech's level for PAUSE frames or more."""
+    meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+    x, sr = load(d / "real" / f"{uid}.wav")
+    lv = clicks.level(x, sr, clicks.WHOLE)
+    per = round(1.0 / (FRAME_RATE * clicks.HOP))
+    k0, k1 = round(meta["span"][0] / clicks.HOP), round(meta["span"][1] / clicks.HOP)
+    lv = lv - float(np.percentile(lv[k0:k1], 95))
+    quiet = lv[: len(lv) // per * per].reshape(-1, per).max(axis=1) < clicks.QUIET
+    return [(a, b) for a, b in clicks.stretches(quiet) if b - a >= PAUSE and a > k0 // per and b < k1 // per]
+
+
+def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None, wall_air: bool = True) -> dict[str, Any]:
     """`frames` as a track for the voice of a recording's speaker. All the voice is told of the
     speaker is in the recording's meta: the sex picks the body, and the source idles at the
     median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample).
@@ -443,7 +476,9 @@ def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[
     CHIMERA's own serve up to a median pitch of VOICE_PITCH[0], the fitted ones from
     VOICE_PITCH[1] up, and a mix of the two between (`pmvc.pitchmix`). `pitch` is the speaker's
     median pitch, so that all of a speaker's recordings get one voice; without it the
-    recording's own counts."""
+    recording's own counts.
+
+    `wall_air`: whether the walls of the tract displace air as they move (CHIMERA's own way)."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
     track: dict[str, Any] = {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}
@@ -455,6 +490,8 @@ def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[
         track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
         track["glottis"] = {k: round(s[k], 5) for k in GLOTTIS}
         track["airway"] = {k: round(s[k], 5) for k in AIRWAY}
+    if not wall_air:
+        track["airway"] = {**track.get("airway", {}), "volumeSource": 0}
     return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
@@ -515,7 +552,12 @@ def encode(a: argparse.Namespace) -> None:
     for uid in ids:
         audio, aux, f0 = hear_recording(d, uid, LEAD)
         pitch = float(np.median(by_speaker[speaker_of[uid]])) if fitted else None
-        tracks.append(voice_track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"], fitted, pitch))
+        frames = write_track(model, stats, audio, aux, f0, device)
+        if a.quiet_pauses:
+            lead = round(LEAD * FRAME_RATE)
+            for first, last in pauses(d, uid):
+                frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, stats["keys"].index("breath")] = 0.0
+        tracks.append(voice_track(d, uid, frames, stats["keys"], fitted, pitch, not a.no_wall_air))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -556,6 +598,8 @@ def main() -> None:
     e.add_argument("--ids", type=str, default="")
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
     e.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
+    e.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
+    e.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
     a = ap.parse_args()
     train(a) if a.command == "train" else encode(a)
 

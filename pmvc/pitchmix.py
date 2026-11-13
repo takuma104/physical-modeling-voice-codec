@@ -5,7 +5,7 @@ each speaker's tracks with the settings a share w of the way from CHIMERA's own 
 ones (in the fit's coordinates: each setting's ratio to its default raised to w) and has NISQA
 score the renders (`pmvc.natural`).
 
-usage: python -m pmvc.pitchmix DIR:VARIANT:PREFIX ... [--voice out/fit/voice-F.json] [--n 10]
+usage: python -m pmvc.pitchmix DIR:VARIANT:PREFIX ... [--voice out/fit/voice-F2.json] [--n 10]
                                [--shares 0,0.25,0.5,0.75,1,1.25]
 
 Each argument names a speaker: the recordings of DIR whose ids start with PREFIX, and the
@@ -36,7 +36,7 @@ from .paths import ROOT
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("speakers", type=str, nargs="+", help="DIR:VARIANT:PREFIX")
-    ap.add_argument("--voice", type=Path, default=ROOT / "out" / "fit" / "voice-F.json")
+    ap.add_argument("--voice", type=Path, default=ROOT / "out" / "fit" / "voice-F2.json")
     ap.add_argument("--n", type=int, default=10)
     ap.add_argument("--shares", type=str, default="0,0.25,0.5,0.75,1,1.25")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
@@ -55,7 +55,9 @@ def main() -> None:
             k, (_, path, w) = job
             track: dict[str, Any] = json.loads(path.read_text())
             # the track as CHIMERA's own voice would play it, whatever voice it was written for
-            track = {**{key: v for key, v in track.items() if key not in ("noise", "glottis", "airway")}, "source": {"f0": track["source"]["f0"]}}
+            # (but with what it says of the walls' air, which is no part of a voice)
+            walls = {key: v for key, v in track.get("airway", {}).items() if key == "volumeSource"}
+            track = {**{key: v for key, v in track.items() if key not in ("noise", "glottis", "airway")}, "source": {"f0": track["source"]["f0"]}, **({"airway": walls} if walls else {})}
             v = make_voice(track, mixed(fitted, w) if w else None)
             frames = np.array(track["frames"])
             v.set_track(frames, 0)

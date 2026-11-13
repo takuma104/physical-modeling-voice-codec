@@ -138,7 +138,10 @@ def make_voice(track: dict[str, Any], s: dict[str, float] | None) -> pmvc_engine
     glottis = {k: s[k] for k in GLOTTIS if k in s} if s else track.get("glottis")
     if glottis:
         v.set_glottis(json.dumps(glottis))
-    airway = {k: s[k] for k in AIRWAY if k in s} if s else track.get("airway")
+    # what the track says of the airway that is no setting of the fit (whether the walls displace air) stays
+    airway = {k: x for k, x in track.get("airway", {}).items() if not s or k not in AIRWAY}
+    if s:
+        airway.update({k: s[k] for k in AIRWAY if k in s})
     if airway:
         v.set_airway(json.dumps(airway))
     return v

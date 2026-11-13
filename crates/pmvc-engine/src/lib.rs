@@ -163,6 +163,9 @@ impl Voice {
     /// `sealLo`, `sealHi` (cm², between which the closing rate eases from the one to the other)
     /// and `sealEase` (cm², below which it slows on to the seal). The engine's own values keep a
     /// closure from clicking at a man's pitch; a voice that lets more air through needs gentler ones.
+    /// `volumeSource` (0 or 1) is the engine's switch for the air the tract's walls displace as
+    /// they move: on, that air flows into the tract and is heard, without any breath, as soft
+    /// thumps below a few hundred hertz.
     fn set_airway(&mut self, patch: &str) -> PyResult<()> {
         let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
         let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
@@ -176,6 +179,7 @@ impl Voice {
                 "sealLo" => a.seal_lo = x,
                 "sealHi" => a.seal_hi = x,
                 "sealEase" => a.seal_ease = x,
+                "volumeSource" => a.net.enable_volume_source = x != 0.0,
                 _ => return Err(bad(format!("unknown airway parameter {k:?}"))),
             }
         }
@@ -186,7 +190,11 @@ impl Voice {
     #[getter]
     fn airway(&self) -> String {
         let a = &self.v.airway;
-        serde_json::json!({"maxAreaRate": a.max_area_rate, "areaRateGain": a.area_rate_gain, "sealRate": a.seal_rate, "sealLo": a.seal_lo, "sealHi": a.seal_hi, "sealEase": a.seal_ease}).to_string()
+        serde_json::json!({
+            "maxAreaRate": a.max_area_rate, "areaRateGain": a.area_rate_gain, "sealRate": a.seal_rate, "sealLo": a.seal_lo, "sealHi": a.seal_hi, "sealEase": a.seal_ease,
+            "volumeSource": if a.net.enable_volume_source { 1.0 } else { 0.0 },
+        })
+        .to_string()
     }
 
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
