@@ -9,7 +9,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [the voice's options, as for encode]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
                                      [--models DIR] [--voice FILE] [--no-wall-air] [--quiet-pauses]
-                                     [--closed-area CM2]
+                                     [--closed-area CM2] [--no-render]
        python -m pmvc.encoder revoice [dir] --of sim --out sim2c [--split all]
                                       [--voice FILE] [--no-wall-air] [--closed-area CM2]
 
@@ -612,15 +612,23 @@ def encode(a: argparse.Namespace) -> None:
     (d / a.out).mkdir(exist_ok=True)
     decoder = Decoder.of(a)
     pitches = speaker_pitches(d)
-    tracks: list[dict[str, Any]] = []
-    for uid in ids:
-        audio, aux, f0 = hear_recording(d, uid, LEAD)
-        tracks.append(decoder.track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"], pitches[uid]))
-        (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
+
+    def written(job: tuple[str, Array]) -> dict[str, Any]:
+        uid, frames = job
+        track = decoder.track(d, uid, frames, stats["keys"], pitches[uid])
+        (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(track))
+        return track
+
+    # a few hundred recordings at a time: a corpus's tracks do not all fit in memory as lists
     with ThreadPoolExecutor(a.jobs) as pool:
-        for uid, x in zip(ids, pool.map(render_track, tracks)):
-            sf.write(str(d / a.out / f"{uid}.wav"), x, 48000, subtype="PCM_16")
-    print(f"{len(tracks)} recordings → {d / a.out}")
+        for k in range(0, len(ids), 256):
+            part = ids[k : k + 256]
+            frames = [write_track(model, stats, *heard, device) for heard in pool.map(lambda uid: hear_recording(d, uid, LEAD), part)]
+            tracks = list(pool.map(written, zip(part, frames)))
+            if not a.no_render:
+                for uid, x in zip(part, pool.map(render_track, tracks)):
+                    sf.write(str(d / a.out / f"{uid}.wav"), x, 48000, subtype="PCM_16")
+    print(f"{len(ids)} recordings → {d / a.out}")
 
 
 def revoice(a: argparse.Namespace) -> None:
@@ -677,6 +685,7 @@ def main() -> None:
     e.add_argument("--split", choices=["test", "valid", "train", "all"], default="test")
     e.add_argument("--ids", type=str, default="")
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
+    e.add_argument("--no-render", action="store_true", help="write the tracks only: a corpus's, to learn from (`pmvc.tts`)")
     r = sub.choices["revoice"]
     r.add_argument("--of", type=str, required=True, help="the variant whose tracks are rendered again")
     r.add_argument("--out", type=str, required=True)
