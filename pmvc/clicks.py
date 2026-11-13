@@ -14,13 +14,24 @@ over the loudest of the 5 to 20 ms before it, and at least 8 dB over the mean of
 
 A recording is silent in a stop's closure and in a pause: 55 dB under its speech. A render is
 some 10 dB less so, and not evenly: once or twice a second a soft thump stands out, 35 dB
-under the speech, most of it below 1 kHz, where `measure` does not look. That, more than the
-clicks, is what is heard as a wet smacking of the tongue. It is the air the tract's walls
-displace as they move (see `pmvc.encoder`'s `--no-wall-air`). `in_silences` counts it.
+under the speech, most of it below 1 kHz, where `measure` does not look. It is the air the
+tract's walls displace as they move (see `pmvc.encoder`'s `--no-wall-air`). `in_silences`
+counts it.
+
+Neither is what is heard as a wet smacking of the tongue. That is still there with the
+silences clean, and it goes when some 35 ms either side of the voiced stretches are muted above
+2 kHz. What is there: as the tongue closes for a stop, a click of a millisecond or two that
+reaches 16 kHz, 25 to 35 dB under the speech, where the recording has nothing (CHIMERA stops
+the flow through a constriction within one sample once it is nearly shut; see `pmvc.encoder`'s
+`--closed-area`). `measure` asks a click to stand out of the 20 ms before it, which one right
+after a vowel does not, and stops at 9 kHz; `in_silences` leaves out a silence's first 15 ms.
+`extra` assumes less: band by band it counts what a render has that its recording has not,
+wherever that is, and says how much of it above 4 kHz is such a click of a closure.
 """
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.ndimage import maximum_filter1d
 from scipy.signal import butter, sosfiltfilt
 
 from .audio import Array
@@ -42,6 +53,16 @@ SILENT: float = -30.0
 QUIET: float = -45.0
 EDGE: int = 6
 HEARD: float = -40.0
+# for `extra`: the bands looked at (Hz; the last ends under half the lower sample rate); a sound
+# is extra where the render stands OVER dB above everything the recording does within NEAR
+# frames of it, and is within AUDIBLE dB of its speech's level; a recording is never taken to
+# be more than FLOOR dB under its speech; and a click is an extra sound of at most SHORT frames
+BANDS: dict[str, tuple[float, float]] = {"80": (80.0, 300.0), "300": (300.0, 2000.0), "2k": (2000.0, 4000.0), "4k": (4000.0, 16000.0)}
+OVER: float = 12.0
+NEAR: int = 6
+AUDIBLE: float = -45.0
+FLOOR: float = -60.0
+SHORT: int = 8
 
 
 def level(x: Array, sr: int, band: tuple[float, float]) -> Array:
@@ -121,4 +142,46 @@ def in_silences(x: Array, sr: int, span: tuple[float, float], recording: tuple[A
     out = {"silence": float(inside.sum() * HOP), "silenceSounds": len(stretches(inside & (own[:n] > HEARD))) / max(1e-3, n * HOP)}
     if inside.any():
         out["silenceLevel"] = 10.0 * float(np.log10(np.mean(10.0 ** (own[:n][inside] / 10.0))))
+    return out
+
+
+def extra(x: Array, sr: int, span: tuple[float, float], recording: tuple[Array, int] | None = None) -> dict[str, float]:
+    """The sounds `x` has that the recording has not, band by band, over the recording's speech.
+    `recording` and `span` as for `measure`; without a recording there are none.
+      extra80, extra300, extra2k, extra4k   how many a second in each of BANDS: stretches where
+                     `x`'s level in the band is OVER dB above anything the recording does in that
+                     band within NEAR frames, and within AUDIBLE dB of its speech's level
+      extra80Level, ...   their energy a second against the speech's level (dB), if there are any
+      closureClicks  those above 4 kHz of at most SHORT frames that fall where the recording has
+                     just gone silent or is silent on both sides: the clicks of a closure, a second
+      closureClickLevel   their mean peak level against the speech's (dB), if there are any
+    """
+    out: dict[str, float] = {f"extra{name}": 0.0 for name in BANDS} | {"closureClicks": 0.0}
+    if recording is None:
+        return out
+    k0, k1 = round(span[0] / HOP), round(span[1] / HOP)
+    top = min(sr, recording[1]) / 2.0 - 500.0
+    ref, heard_ref = float(np.percentile(level(x, sr, WHOLE)[k0:k1], 95)), float(np.percentile(level(*recording, WHOLE)[k0:k1], 95))
+    whole = level(*recording, WHOLE)[k0:k1] - heard_ref
+    for name, (lo, hi) in BANDS.items():
+        own, heard = level(x, sr, (lo, min(hi, top)))[k0:k1] - ref, level(recording[0], recording[1], (lo, min(hi, top)))[k0:k1] - heard_ref
+        n = min(len(own), len(heard))
+        own, heard = own[:n], heard[:n]
+        over = (own - np.maximum(maximum_filter1d(heard, 2 * NEAR + 1), FLOOR) >= OVER) & (own >= AUDIBLE)
+        found = stretches(over)
+        seconds = max(1e-3, n * HOP)
+        out[f"extra{name}"] = len(found) / seconds
+        if found:
+            out[f"extra{name}Level"] = 10.0 * float(np.log10((10.0 ** (own[over] / 10.0)).sum() * HOP / seconds))
+        if name == "4k":
+            clicks: list[float] = []
+            for a, b in found:
+                t = a + int(np.argmax(own[a:b]))
+                if b - a <= SHORT and 12 <= t < n - 12:
+                    before, after = whole[t - 12 : t - 4].mean(), whole[t + 4 : t + 12].mean()
+                    if after < SILENT and (before >= SOUND or before < SILENT):
+                        clicks.append(float(own[t]))
+            out["closureClicks"] = len(clicks) / seconds
+            if clicks:
+                out["closureClickLevel"] = float(np.mean(clicks))
     return out
