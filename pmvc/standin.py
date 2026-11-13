@@ -10,7 +10,7 @@ are unlimited and exact, so a network can learn the track → listener's feature
 and stand in for it.
 
 usage: python -m pmvc.standin [dir] [--name standin] [--variants warp,sim,simcopy] [--epochs 30]
-                              [--also DIR,...] [--listener MODEL] [--layer N]
+                              [--also DIR,...] [--listener MODEL] [--layer N] [--voiced]
 
 Fits on the training speakers' renders of `--variants` (their tracks and what `pmvc.listener`
 hears of them, from `LEAD` seconds in, as the search hears a render against its recording) and
@@ -18,6 +18,10 @@ writes <dir>/models/<name>.pt; the validation speakers' renders say how far off 
 `--also` adds the renders of those variants in other directories (`pmvc.jvs`'s), and
 `--listener` and `--layer` name another model for the listener: the stand-in is for that
 listener, and remembers which.
+
+`--voiced`: the renders are under a voice that goes by the speaker's pitch (`pmvc.encoder
+revoice` made them with `--voice`). The stand-in then reads, beside the body, how much of the
+fitted voice the track's speaker gets, and stands in for that voice.
 """
 
 import argparse
@@ -43,12 +47,14 @@ SKIP: int = 20
 SKIP_HEARD: int = SKIP // 2
 
 
-def track_input(frames: Array, keys: list[str], female: float) -> NDArray[np.float32]:
-    """A track as the stand-in reads it: pitch in octaves, and the body as a last channel."""
+def track_input(frames: Array, keys: list[str], female: float, voice: float | None = None) -> NDArray[np.float32]:
+    """A track as the stand-in reads it: pitch in octaves, and the body as a last channel; for
+    a voice that goes by the speaker's pitch, the speaker's share of the fitted voice after it."""
     x = np.array(frames, dtype=np.float64)
     f0 = keys.index("f0")
     x[:, f0] = np.log2(np.maximum(x[:, f0], 1.0))
-    return np.concatenate([x, np.full((len(x), 1), female)], axis=1).astype(np.float32)
+    who = [female] if voice is None else [female, voice]
+    return np.concatenate([x, np.tile(who, (len(x), 1))], axis=1).astype(np.float32)
 
 
 class Standin(nn.Module):
@@ -87,7 +93,7 @@ def load_standin(path: Path, device: str) -> tuple[Standin, tuple[str, int]]:
 
 
 def main() -> None:
-    from .encoder import pick_device, split_in
+    from .encoder import pick_device, speaker_pitches, split_in, voice_share
 
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
@@ -96,6 +102,7 @@ def main() -> None:
     ap.add_argument("--also", type=str, default="", help="more directories with renders of those variants")
     ap.add_argument("--listener", type=str, default=MODEL, help="the listener's model, if not pmvc.listener's own")
     ap.add_argument("--layer", type=int, default=LAYER)
+    ap.add_argument("--voiced", action="store_true", help="the renders are under a voice that goes by the speaker's pitch: the stand-in reads the speaker's share of it")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=512)
@@ -109,14 +116,17 @@ def main() -> None:
     device = pick_device()
     listener = Listener(device, a.listener, a.layer)
 
+    sets: dict[str, list[Render]] = {"train": [], "valid": []}
+    dirs = [d, *(Path(p) for p in filter(None, a.also.split(",")))]
+    pitches = {dd: speaker_pitches(dd) for dd in dirs} if a.voiced else {}
+
     def read(job: tuple[Path, str, str]) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
         dd, v, uid = job
         track = json.loads((dd / v / f"{uid}.tracks.json").read_text())
         x, _ = load(dd / v / f"{uid}.wav", LISTEN_SR)
-        return track_input(np.array(track["frames"]), track["keys"], float(track["body"]["female"])), x[SKIP * (LISTEN_SR // FRAME_RATE) :].astype(np.float32)
+        voice = voice_share(pitches[dd][uid]) if a.voiced else None
+        return track_input(np.array(track["frames"]), track["keys"], float(track["body"]["female"]), voice), x[SKIP * (LISTEN_SR // FRAME_RATE) :].astype(np.float32)
 
-    sets: dict[str, list[Render]] = {"train": [], "valid": []}
-    dirs = [d, *(Path(p) for p in filter(None, a.also.split(",")))]
     jobs = [(dd, v, p.name.split(".")[0]) for dd in dirs for v in a.variants.split(",") for p in sorted((dd / v).glob("*.tracks.json")) if (dd / v / p.name.replace(".tracks.json", ".wav")).exists()]
     jobs = [j for j in jobs if split_in(j[0], j[2]) in sets]
     with ThreadPoolExecutor(a.jobs) as pool:

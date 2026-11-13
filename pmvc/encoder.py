@@ -6,9 +6,12 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [--no-real] [--standin NAME] [--closed 1.0] [--tune 0]
                                     [--also DIR,...] [--ssl MODEL] [--silences]
                                     [--select listener|loss|last] [--epochs 40] [--hidden 256]
+                                    [the voice's options, as for encode]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
                                      [--models DIR] [--voice FILE] [--no-wall-air] [--quiet-pauses]
                                      [--closed-area CM2]
+       python -m pmvc.encoder revoice [dir] --of sim --out sim2c [--split all]
+                                      [--voice FILE] [--no-wall-air] [--closed-area CM2]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -72,6 +75,13 @@ tongue closes for a stop under a full breath, about 1 cm³/s is still running th
 is a click some 25 dB under the speech between 4 and 16 kHz, where a recording's closure is
 silent. With 1e-6 the flow has died away by itself before it is cut (`pmvc.clicks.extra`
 counts what is left).
+
+These four options say how the voice plays an encoder's tracks, and an encoder taught through
+a stand-in for CHIMERA's own way is not taught for another. To teach one for it: `revoice`
+renders the tracks of a variant again as the options say (the tracks themselves stay), which
+gives `pmvc.standin` (with `--voiced`) the renders to learn that voice from and `train` its
+`--synthetic` pairs; and `train` takes the same options, so that the stand-in is told each
+speaker's share of the fitted voice and the listener's check drives the voice that way.
 """
 
 import argparse
@@ -170,8 +180,9 @@ class Pair:
     # recording (frames, 768) and the span of its speech in those frames
     heard: torch.Tensor | None = None
     span: tuple[int, int] = (0, 0)
-    # the speaker's body, for the stand-in
+    # the speaker's body, and the share of the fitted voice the speaker gets, for the stand-in
     female: bool = False
+    voice: float = 0.0
 
 
 def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]:
@@ -187,7 +198,7 @@ def hear_recording(d: Path, uid: str, lead: float) -> tuple[Audio, Audio, Array]
     return audio, aux_features(audio, f0, n), f0
 
 
-def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, silences: bool = False) -> Pair:
+def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, silences: bool = False, voice: float = 0.0) -> Pair:
     """A recording and the track `target` has for it, which runs its own `shift` behind the
     recording, or the meta's if it does not say. With a listener, also what it hears in the
     recording (for the closed-loop term, which needs the track to run LEAD behind).
@@ -209,7 +220,7 @@ def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, 
         frames[k1 + RUN_UP :, breath] = 0.0
     audio, aux, _ = hear_recording(d, uid, lead)
     n = min(len(frames), len(aux))
-    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=meta["sex"] == "F")
+    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=meta["sex"] == "F", voice=voice)
     if listener is not None and track.get("shift") == LEAD:
         x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
         pair.heard = listener.hear(x).feats[0].half()
@@ -217,7 +228,7 @@ def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, 
     return pair
 
 
-def synthetic_pair(d: Path, uid: str, variant: str) -> Pair:
+def synthetic_pair(d: Path, uid: str, variant: str, voice: float = 0.0) -> Pair:
     """A render and the track it was rendered from."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     frames = np.array(json.loads((d / variant / f"{uid}.tracks.json").read_text())["frames"], dtype=np.float32)
@@ -225,7 +236,7 @@ def synthetic_pair(d: Path, uid: str, variant: str) -> Pair:
     x, _ = load(d / variant / f"{uid}.wav", LISTEN_SR)
     n = min(len(frames), len(x) // HOP)
     audio = x[: n * HOP].astype(np.float32)
-    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n], female=meta["sex"] == "F")
+    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n], female=meta["sex"] == "F", voice=voice)
 
 
 class Encoder(nn.Module):
@@ -324,19 +335,25 @@ def train(a: argparse.Namespace) -> None:
         standin.train()
     # the listener the stand-in is for: the closed-loop term and the check both go by it
     listener = Listener(device, *heard_by) if a.standin or a.select == "listener" else None
+    # how the voice will play the tracks, and each recording's share of the fitted voice
+    decoder = Decoder.of(a)
+    share = {dd: {uid: decoder.share(pitch) for uid, pitch in speaker_pitches(dd).items()} for dd in dirs}
 
     def every(variant: str, split: str) -> list[tuple[Path, str]]:
         return [(dd, i) for dd in dirs for i in ids_with(dd, variant, split)]
 
     with ThreadPoolExecutor(a.jobs) as pool:
         # the listener's own features are computed one recording at a time, in this thread
-        fit = [] if a.no_real else [real_pair(dd, i, a.target, listener if standin is not None else None, a.silences) for dd, i in every(a.target, "train")]
-        held = list(pool.map(lambda j: real_pair(j[0], j[1], a.target, None, a.silences), every(a.target, "valid")))
+        fit = [] if a.no_real else [real_pair(dd, i, a.target, listener if standin is not None else None, a.silences, share[dd][i]) for dd, i in every(a.target, "train")]
+        held = list(pool.map(lambda j: real_pair(j[0], j[1], a.target, None, a.silences, share[j[0]][j[1]]), every(a.target, "valid")))
         n_real = len(fit)
         for v in filter(None, a.synthetic.split(",")):
-            fit += list(pool.map(lambda j, v=v: synthetic_pair(j[0], j[1], v), [j for j in every(v, "train") if (j[0] / v / f"{j[1]}.wav").exists()]))
+            fit += list(pool.map(lambda j, v=v: synthetic_pair(j[0], j[1], v, share[j[0]][j[1]]), [j for j in every(v, "train") if (j[0] / v / f"{j[1]}.wav").exists()]))
     keys: list[str] = json.loads(next(dd / a.target / f"{fit[0].uid}.tracks.json" for dd in dirs if (dd / a.target / f"{fit[0].uid}.tracks.json").exists()).read_text())["keys"]
     f0 = keys.index("f0")
+    # a stand-in for a voice that goes by the speaker's pitch reads the speaker's share of it too
+    voiced = standin is not None and standin.inp.in_features == len(keys) + 2
+    assert voiced == (standin is not None and decoder.fitted is not None), "the stand-in and --voice do not go together: one is for a fitted voice, the other is not"
     # every channel but pitch, on its spread over the tracks to learn; a channel that never
     # moves is written as its constant
     pooled = np.concatenate([p.frames for p in fit[: n_real or None] if p.frames is not None])
@@ -375,8 +392,8 @@ def train(a: argparse.Namespace) -> None:
             track = track.index_copy(-1, torch.tensor(learned, device=device), torch.minimum(torch.maximum(out[real] * sd + mu, lo), hi))
             # past a clip's end, its first frame: the voice at rest
             track = torch.where(mask[real][..., None], track, track[:, :1])
-            female = torch.tensor([[[1.0 if batch[i].female else 0.0]] for i in real], device=device)
-            said = standin(torch.cat([track, female.expand(-1, track.shape[1], -1)], dim=-1))[:, SKIP_HEARD:]
+            who = torch.tensor([[[1.0 if batch[i].female else 0.0, batch[i].voice][: 2 if voiced else 1]] for i in real], device=device)
+            said = standin(torch.cat([track, who.expand(-1, track.shape[1], -1)], dim=-1))[:, SKIP_HEARD:]
             total = out.new_zeros(())
             for row, i in enumerate(real):
                 p = batch[i]
@@ -393,7 +410,7 @@ def train(a: argparse.Namespace) -> None:
             parts = [(float(loss_of(b)), sum(len(p.aux) for p in b)) for b in batches(held, a.batch, None)]
         return sum(v * n for v, n in parts) / max(1, sum(n for _, n in parts))
 
-    loop = ClosedLoop([(dd, i) for dd in dirs for i in ids_in(dd, "valid")[:: a.stride]], device, a.jobs, listener) if a.select == "listener" else None
+    loop = ClosedLoop([(dd, i) for dd in dirs for i in ids_in(dd, "valid")[:: a.stride]], device, a.jobs, listener, decoder) if a.select == "listener" else None
     out = d / "models"
     out.mkdir(exist_ok=True)
     log: list[dict[str, float]] = []
@@ -475,35 +492,74 @@ def pauses(d: Path, uid: str) -> list[tuple[int, int]]:
     return [(a, b) for a, b in clicks.stretches(quiet) if b - a >= PAUSE and a > k0 // per and b < k1 // per]
 
 
-def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None, wall_air: bool = True, closed_area: float | None = None) -> dict[str, Any]:
-    """`frames` as a track for the voice of a recording's speaker. All the voice is told of the
-    speaker is in the recording's meta: the sex picks the body, and the source idles at the
-    median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample).
-
-    `fitted`: settings `pmvc.calibrate` fitted to a high voice, for speakers with a high one.
-    CHIMERA's own serve up to a median pitch of VOICE_PITCH[0], the fitted ones from
-    VOICE_PITCH[1] up, and a mix of the two between (`pmvc.pitchmix`). `pitch` is the speaker's
-    median pitch, so that all of a speaker's recordings get one voice; without it the
-    recording's own counts.
-
-    `wall_air`: whether the walls of the tract displace air as they move (CHIMERA's own way).
-    `closed_area`: the area (cm²) under which a constriction counts as closed, if not CHIMERA's."""
-    meta = json.loads((d / "meta" / f"{uid}.json").read_text())
-    body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
-    track: dict[str, Any] = {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}
+def voice_share(pitch: float) -> float:
+    """How much of the fitted voice a speaker of this median pitch gets: none up to
+    VOICE_PITCH[0], all of it from VOICE_PITCH[1] up, and a share between (`pmvc.pitchmix`)."""
     lo, hi = VOICE_PITCH
-    w = float(np.clip(np.log((pitch or meta["f0Median"]) / lo) / np.log(hi / lo), 0.0, 1.0))
-    if fitted and w > 0.0:
-        s = mixed(fitted, w)
-        track["source"].update({k: round(s[k], 5) for k in SOURCE})
-        track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
-        track["glottis"] = {k: round(s[k], 5) for k in GLOTTIS}
-        track["airway"] = {k: round(s[k], 5) for k in AIRWAY}
-    if not wall_air:
-        track["airway"] = {**track.get("airway", {}), "volumeSource": 0}
-    if closed_area is not None:
-        track["airway"] = {**track.get("airway", {}), "closedArea": closed_area}
-    return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
+    return float(np.clip(np.log(pitch / lo) / np.log(hi / lo), 0.0, 1.0))
+
+
+def speaker_pitches(d: Path) -> dict[str, float]:
+    """For each recording in `d`, the median pitch of its speaker over all of the speaker's
+    recordings there: one voice for all of a speaker's recordings."""
+    metas = {p.stem: json.loads(p.read_text()) for p in (d / "meta").glob("*.json")}
+    by_speaker: dict[str, list[float]] = {}
+    for meta in metas.values():
+        by_speaker.setdefault(meta["speaker"], []).append(meta["f0Median"])
+    return {uid: float(np.median(by_speaker[meta["speaker"]])) for uid, meta in metas.items()}
+
+
+@dataclass
+class Decoder:
+    """How the voice plays a track: `fitted`, the settings `pmvc.calibrate` fitted to a high
+    voice, for speakers with a high one (`--voice`); `wall_air`, whether the walls of the tract
+    displace air as they move (`--no-wall-air`); `closed_area`, the area (cm²) under which a
+    constriction counts as closed (`--closed-area`); and `quiet_pauses`, whether an encoder's
+    track gets no breath in the recording's pauses (`--quiet-pauses`). As it stands, CHIMERA's
+    own way."""
+
+    fitted: dict[str, float] | None = None
+    wall_air: bool = True
+    closed_area: float | None = None
+    quiet_pauses: bool = False
+
+    @classmethod
+    def of(cls, a: argparse.Namespace) -> "Decoder":
+        return cls(json.loads(a.voice.read_text())["settings"] if a.voice else None, not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False))
+
+    def share(self, pitch: float) -> float:
+        return voice_share(pitch) if self.fitted else 0.0
+
+    def settle(self, track: dict[str, Any], pitch: float) -> dict[str, Any]:
+        """`track` with this voice's settings for a speaker of that median pitch."""
+        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway")}, "source": dict(track["source"])}
+        w = self.share(pitch)
+        if self.fitted and w > 0.0:
+            s = mixed(self.fitted, w)
+            track["source"].update({k: round(s[k], 5) for k in SOURCE})
+            track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
+            track["glottis"] = {k: round(s[k], 5) for k in GLOTTIS}
+            track["airway"] = {k: round(s[k], 5) for k in AIRWAY}
+        if not self.wall_air:
+            track["airway"] = {**track.get("airway", {}), "volumeSource": 0}
+        if self.closed_area is not None:
+            track["airway"] = {**track.get("airway", {}), "closedArea": self.closed_area}
+        return track
+
+    def track(self, d: Path, uid: str, frames: Array, keys: list[str], pitch: float | None = None) -> dict[str, Any]:
+        """An encoder's `frames` as a track for the voice of a recording's speaker. All the
+        voice is told of the speaker is in the recording's meta: the sex picks the body, and the
+        source idles at the median pitch (as `pmvc.transplant` sets them: the renders are the
+        same to the sample). `pitch` is the speaker's median pitch over all of the speaker's
+        recordings, which picks the voice; without it the recording's own counts."""
+        meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+        if self.quiet_pauses:
+            lead = round(LEAD * FRAME_RATE)
+            for first, last in pauses(d, uid):
+                frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, keys.index("breath")] = 0.0
+        body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
+        track = self.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}, pitch or meta["f0Median"])
+        return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
 def render_track(track: dict[str, Any]) -> Array:
@@ -518,9 +574,13 @@ class ClosedLoop:
     feature distance between each recording and the render of the track written for it, over
     the recording's speech. It needs no track to compare with and no text."""
 
-    def __init__(self, items: list[tuple[Path, str]], device: str, jobs: int, listener: Listener | None = None) -> None:
-        """`items`: (directory, id) of the recordings to check on."""
+    def __init__(self, items: list[tuple[Path, str]], device: str, jobs: int, listener: Listener | None = None, decoder: Decoder | None = None) -> None:
+        """`items`: (directory, id) of the recordings to check on. `decoder`: how the voice
+        plays the tracks, if not CHIMERA's own way."""
         self.items, self.device, self.jobs = items, device, jobs
+        self.decoder = decoder or Decoder()
+        pitches = {d: speaker_pitches(d) for d in {d for d, _ in items}}
+        self.pitches = [pitches[d][uid] for d, uid in items]
         self.listener = listener or Listener(device)
         self.inputs = [hear_recording(d, uid, LEAD) for d, uid in items]
         self.feats: list[torch.Tensor] = []
@@ -534,7 +594,7 @@ class ClosedLoop:
     def __call__(self, model: "Encoder", stats: dict[str, Any]) -> dict[str, float]:
         """The mean distance over each directory's recordings, by the directory's name."""
         model.eval()
-        tracks = [voice_track(d, uid, write_track(model, stats, *inp, self.device), stats["keys"]) for (d, uid), inp in zip(self.items, self.inputs)]
+        tracks = [self.decoder.track(d, uid, write_track(model, stats, *inp, self.device), stats["keys"], pitch) for (d, uid), inp, pitch in zip(self.items, self.inputs, self.pitches)]
         with ThreadPoolExecutor(self.jobs) as pool:
             renders = list(pool.map(render_track, tracks))
         out: dict[str, list[float]] = {}
@@ -550,25 +610,12 @@ def encode(a: argparse.Namespace) -> None:
     model, stats = load_model((a.models or d / "models") / f"{a.name}.pt", device)
     ids = a.ids.split(",") if a.ids else ids_in(d, a.split)
     (d / a.out).mkdir(exist_ok=True)
-    fitted: dict[str, float] | None = json.loads(a.voice.read_text())["settings"] if a.voice else None
-    # each speaker's median pitch, over all of the speaker's recordings in the directory
-    by_speaker: dict[str, list[float]] = {}
-    speaker_of: dict[str, str] = {}
-    if fitted:
-        for p in (d / "meta").glob("*.json"):
-            meta = json.loads(p.read_text())
-            by_speaker.setdefault(meta["speaker"], []).append(meta["f0Median"])
-            speaker_of[meta["id"]] = meta["speaker"]
+    decoder = Decoder.of(a)
+    pitches = speaker_pitches(d)
     tracks: list[dict[str, Any]] = []
     for uid in ids:
         audio, aux, f0 = hear_recording(d, uid, LEAD)
-        pitch = float(np.median(by_speaker[speaker_of[uid]])) if fitted else None
-        frames = write_track(model, stats, audio, aux, f0, device)
-        if a.quiet_pauses:
-            lead = round(LEAD * FRAME_RATE)
-            for first, last in pauses(d, uid):
-                frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, stats["keys"].index("breath")] = 0.0
-        tracks.append(voice_track(d, uid, frames, stats["keys"], fitted, pitch, not a.no_wall_air, a.closed_area))
+        tracks.append(decoder.track(d, uid, write_track(model, stats, audio, aux, f0, device), stats["keys"], pitches[uid]))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -576,14 +623,36 @@ def encode(a: argparse.Namespace) -> None:
     print(f"{len(tracks)} recordings → {d / a.out}")
 
 
+def revoice(a: argparse.Namespace) -> None:
+    """The tracks of one variant rendered again as the voice's options say: the same frames,
+    under another voice."""
+    d: Path = a.dir
+    decoder = Decoder.of(a)
+    pitches = speaker_pitches(d)
+    ids = [i for i in sorted(p.name.split(".")[0] for p in (d / a.of).glob("*.tracks.json")) if a.split == "all" or split_in(d, i) == a.split]
+    (d / a.out).mkdir(exist_ok=True)
+    tracks = [decoder.settle(json.loads((d / a.of / f"{uid}.tracks.json").read_text()), pitches[uid]) for uid in ids]
+    with ThreadPoolExecutor(a.jobs) as pool:
+        for uid, track, x in zip(ids, tracks, pool.map(render_track, tracks)):
+            (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(track))
+            sf.write(str(d / a.out / f"{uid}.wav"), x, 48000, subtype="PCM_16")
+    print(f"{len(tracks)} tracks of {a.of} → {d / a.out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
-    for name in ("train", "encode"):
+    for name in ("train", "encode", "revoice"):
         p = sub.add_parser(name)
         p.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
         p.add_argument("--name", type=str, default="encoder")
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
+        # how the voice plays the tracks
+        p.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
+        p.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
+        p.add_argument("--closed-area", type=float, default=None, help="the area (cm²) under which the voice takes a constriction for closed, if not CHIMERA's 2e-4: 1e-6 keeps the tongue from clicking as it closes")
+        if name != "revoice":
+            p.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
     t = sub.choices["train"]
     t.add_argument("--target", type=str, default="simcopy")
     t.add_argument("--synthetic", type=str, default="simcopy", help="variants whose render → track pairs are added")
@@ -608,12 +677,12 @@ def main() -> None:
     e.add_argument("--split", choices=["test", "valid", "train", "all"], default="test")
     e.add_argument("--ids", type=str, default="")
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
-    e.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
-    e.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
-    e.add_argument("--closed-area", type=float, default=None, help="the area (cm²) under which the voice takes a constriction for closed, if not CHIMERA's 2e-4: 1e-6 keeps the tongue from clicking as it closes")
-    e.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
+    r = sub.choices["revoice"]
+    r.add_argument("--of", type=str, required=True, help="the variant whose tracks are rendered again")
+    r.add_argument("--out", type=str, required=True)
+    r.add_argument("--split", choices=["test", "valid", "train", "all"], default="all")
     a = ap.parse_args()
-    train(a) if a.command == "train" else encode(a)
+    {"train": train, "encode": encode, "revoice": revoice}[a.command](a)
 
 
 if __name__ == "__main__":
