@@ -12,7 +12,7 @@
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()` と、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()` を持つ |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe` を持つ |
 | `pmvc/` | 実験スクリプト(Python) |
 | `docs/` | 企画メモと関連論文 |
 
@@ -143,10 +143,12 @@ uv run python -m pmvc.calibrate out/fit --sex F --tracks encg --prefix hjfd --by
 #   その設定がどの高さの話者に効くか(17 話者)。encode --voice はこの結果に従い、話者の声の高さで設定を切り替える
 uv run python -m pmvc.pitchmix --voice out/fit/voice-F1.json $(for s in ML MK FL FK; do echo out/transplant:ench:$s; done) \
   $(for s in hem hef hjm hjf jsut; do echo out/ja:ench:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:ench:jvs$n; done)
-#   無音区間(破裂音の閉鎖、ポーズ)の中の音への対策が 2 つある(pmvc.clicks.in_silences が数える):
-#   --no-wall-air は、声道の壁が動いて押しのける空気を音にしない(エンジンの公開スイッチ)。息を止めても出る数百 Hz 以下の低い音で、舌を鳴らすように聞こえる
+#   対策 1: 無音区間(破裂音の閉鎖、ポーズ)の中の音(pmvc.clicks.in_silences が数える)
+#   --no-wall-air は、声道の壁が動いて押しのける空気を音にしない(エンジンの公開スイッチ)。息を止めても出る数百 Hz 以下の低い音
 #   --quiet-pauses は、録音のポーズ(発話の中の 0.12 秒以上の無音)で息を止める
-Q="--no-wall-air --quiet-pauses"
+#   対策 2: 舌が閉じる瞬間のクリック音(pmvc.clicks.extra が数える)。舌を鳴らすように聞こえるのはこちら
+#   --closed-area は、狭めを「閉じた」とみなす面積。エンジンの既定(2e-4 cm²)では、まだ流れが残っているうちに 1 サンプルで止めるので 16 kHz まで届く衝撃になる
+Q="--no-wall-air --quiet-pauses"; C="$Q --closed-area 1e-6"
 uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name ench --out enchq --split all $Q
 #   調整 2 と 3: 調整 1 の声門の開き方のまま、振動の振幅を 1.4 倍にし、雑音源を既定値(調整 2)、狭めと歯だけ 0.6 倍(調整 3)にする。
 #   高い帯域のクリック音(pmvc.clicks.measure)を見ながら手で決めた値(--evals 0 は探索せず、--start の設定の点数を測って書き出す)
@@ -155,18 +157,19 @@ import json, sys; s = json.load(open('out/fit/voice-F1.json'))['settings']; s.up
 s.update(noiseConstriction=float(sys.argv[1]), noiseTeeth=float(sys.argv[1])); print(json.dumps(s))" $1; }
 uv run python -m pmvc.calibrate out/fit --sex F --tracks enchq --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F2 --start "$(with 1.0)"
 uv run python -m pmvc.calibrate out/fit --sex F --tracks enchq --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F3 --start "$(with 0.6)"
-#   3 つのテストで評価する: H、対策ごとの H、調整 1(対策なし・あり)、調整 2 と 3(対策あり)
+#   3 つのテストで評価する: H と 3 つの声を、対策なし・対策 1・対策 1+2 で
 for t in "${T[@]}"; do
   enc() { uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench "$@"; }
-  enc --out enchs --no-wall-air; enc --out enchq $Q
-  enc --out enchv --voice out/fit/voice-F1.json; enc --out enchvq --voice out/fit/voice-F1.json $Q
-  enc --out ench2q --voice out/fit/voice-F2.json $Q; enc --out ench3q --voice out/fit/voice-F3.json $Q
-  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchs,enchq,enchv,enchvq,ench2q,ench3q --name results_tuned
+  enc --out enchs --no-wall-air; enc --out enchq $Q; enc --out enchc $C
+  enc --out enchv --voice out/fit/voice-F1.json; enc --out enchvq --voice out/fit/voice-F1.json $Q; enc --out enchvc --voice out/fit/voice-F1.json $C
+  enc --out ench2q --voice out/fit/voice-F2.json $Q; enc --out ench2c --voice out/fit/voice-F2.json $C
+  enc --out ench3q --voice out/fit/voice-F3.json $Q; enc --out ench3c --voice out/fit/voice-F3.json $C
+  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchs,enchq,enchc,enchv,enchvq,enchvc,ench2q,ench2c,ench3q,ench3c --name results_tuned
   uv run python -m pmvc.natural ${t%% *} --name results_tuned       # NISQA の点数を足す
 done
 #   対策ありの制御列で、調整 2 がどの高さの話者に効くかを測り直す(試聴ページの表)
-uv run python -m pmvc.pitchmix --voice out/fit/voice-F2.json $(for s in ML MK FL FK; do echo out/transplant:enchq:$s; done) \
-  $(for s in hem hef hjm hjf jsut; do echo out/ja:enchq:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:enchq:jvs$n; done)
+uv run python -m pmvc.pitchmix --voice out/fit/voice-F2.json $(for s in ML MK FL FK; do echo out/transplant:enchc:$s; done) \
+  $(for s in hem hef hjm hjf jsut; do echo out/ja:enchc:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:enchc:jvs$n; done)
 
 # 8. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
