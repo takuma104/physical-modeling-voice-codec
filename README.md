@@ -171,13 +171,28 @@ done
 uv run python -m pmvc.pitchmix --voice out/fit/voice-F2.json $(for s in ML MK FL FK; do echo out/transplant:enchc:$s; done) \
   $(for s in hem hef hjm hjf jsut; do echo out/ja:enchc:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:enchc:jvs$n; done)
 
-# 8. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
+# 8. 調整後の声でエンコーダを学習し直す(エンコーダ I)。調整後の声 = 声の高い話者に調整 2、対策 1+2
+#   H は CHIMERA の既定の声を通して学習したので、まず学習用の制御列を調整後の声で鳴らし直し(制御列は同じ)、その声の代役を作る
+V="--voice out/fit/voice-F2.json --no-wall-air --closed-area 1e-6"
+uv run python -m pmvc.encoder revoice --of warp --out warp2c $V
+uv run python -m pmvc.encoder revoice --of sim --out sim2c $V
+uv run python -m pmvc.encoder revoice out/jvs --of sim --out sim2c $V
+uv run python -m pmvc.standin --name standin_2c --variants warp2c,sim2c --also out/jvs $M --voiced   # --voiced: 話者ごとの「調整した声の割合」も読む
+#   H と同じ作り方で、代役と、エポックを選ぶ聞き比べを調整後の声にする
+uv run python -m pmvc.encoder train --name enci --target sim --synthetic sim2c --tune 6 --standin standin_2c --also out/jvs --ssl utter-project/mHuBERT-147 --silences $V --quiet-pauses
+for t in "${T[@]}"; do
+  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name enci --out enci $V --quiet-pauses
+  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchs,enchq,enchc,enchv,enchvq,enchvc,ench2q,ench2c,ench3q,ench3c,enci --name results_tuned --add
+  uv run python -m pmvc.natural ${t%% *} --name results_tuned
+done
+
+# 9. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
-日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
+日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。手順 8 は、鳴らし直しが 7 分(3,864 本)、代役が 3 分、I が 22 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
 声の設定の調整は CPU で 15 分ほどです。手順 7 の最初の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。クリック音(`pmvc.clicks`)を減点に入れて当てはめ直すこともできますが(`--clicks`、既定 0.3)、開放率を下げて振幅を倍にする、息の雑音を増やして紛らわせる、といった別の逃げ道に行くので、クリック音に効く 4 つの設定は指標を見ながら手で決めています。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。

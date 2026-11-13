@@ -133,6 +133,18 @@ TUNED_NOTES: dict[str, str] = {
     "enchvc": "調整 1 は NISQA だけに合わせた設定（歯の雑音源 2.2 倍）",
     "ench3c": "調整 3 は、調整 2 の狭めと歯の雑音源を 0.6 倍にしたもの",
 }
+RETAUGHT_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "ench": "エンコーダ H（既定の声）",
+    "ench2c": "エンコーダ H（調整後の声）",
+    "enci": "エンコーダ I（調整後の声）",
+}
+RETAUGHT_NOTES: dict[str, str] = {
+    "real": "話者本人",
+    "ench": "CHIMERA の既定の声で学習し、既定の声で鳴らす（第 3 節の H）",
+    "ench2c": "既定の声で学習した H を、調整後の声で鳴らす（第 3 節の「H + 調整 2（対策 1+2）」）",
+    "enci": "H と同じ作り方で、調整後の声を通して学習し直し、調整後の声で鳴らす",
+}
 # the settings `pmvc.calibrate` fits, as the page names them
 VOICE_LABELS: dict[str, str] = {
     "noiseGlottis": "雑音源のゲイン（声門）",
@@ -564,10 +576,11 @@ def grid(sets: list[tuple[str, dict[str, Any]]], variants: list[str], labels: di
 <tbody>{"".join(rows)}</tbody></table></div>"""
 
 
-def sentence_cards(clips: dict[str, str], ja: Path, jvs: Path, results: dict[str, Any], variants: list[str], labels: dict[str, str], voiced: tuple[str, ...] = ()) -> str:
+def sentence_cards(clips: dict[str, str], ja: Path, jvs: Path, results: dict[str, Any], variants: list[str], labels: dict[str, str], voiced: tuple[str, ...] = (), plain: tuple[str, ...] = ()) -> str:
     """The cards of the three tests: one sentence each of four JVS speakers, then the sentences
     of the first section's cards, then English. `voiced`: variants rendered with a fitted
-    voice, left out where the speaker's pitch leaves the voice as it was."""
+    voice, left out where the speaker's pitch leaves the voice as it was. `plain`: variants
+    shown only there, in their place."""
 
     def unchanged(where: Path, v: str, uid: str) -> bool:
         glottis = json.loads((where / v / f"{uid}.tracks.json").read_text()).get("glottis")
@@ -594,7 +607,7 @@ def sentence_cards(clips: dict[str, str], ja: Path, jvs: Path, results: dict[str
                 clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", labels[v],
                 f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small" if r["lang"] == "ja" else "small.en",
             )
-            for v in variants if v in r["variants"] and not (v in voiced and unchanged(where, v, r["id"]))
+            for v in variants if v in r["variants"] and not (v in voiced and unchanged(where, v, r["id"])) and not (v in plain and not all(unchanged(where, w, r["id"]) for w in voiced))
         )  # fmt: skip
         cards.append(
             f"""<article class="sentence">
@@ -705,7 +718,40 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
 {clicks}
 {{{{tuned_check}}}}
 {tables}
-<div class="stack">{sentence_cards(clips, ja, jvs, results, [v for v in clicking if v != "enchq"], TUNED_LABELS, ("ench2q", "ench2c", "enchvc", "ench3c"))}</div>
+<div class="stack">{sentence_cards(clips, ja, jvs, results, ["real", "ench", "enchc", "ench2q", "ench2c"], TUNED_LABELS, ("ench2q", "ench2c"), ("enchc",))}</div>
+</section>"""
+
+
+def retaught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
+    """Encoder I: the recipe of H, taught through a stand-in for the voice the listening
+    settled on. Nothing before `pmvc.judge` has its results on JVS's held-out speakers."""
+    if not (jvs / "results_tuned.json").exists():
+        return ""
+    results, sets = three_tests(d, ja, jvs, "results_tuned", "results_tuned")
+    if not all("enci" in g for _, g in sets):
+        return ""
+    variants = list(RETAUGHT_LABELS)
+    by_sex: list[tuple[str, dict[str, Any]]] = []
+    for key, heading in (("jvs", "JVS"), ("ja", "HFC・JSUT"), ("tsp", "TSP 英語"), ("ja", "HFC 英語")):
+        lang = "en" if "英語" in heading else "ja"
+        by_sex += [(f"{heading} {'女性' if sex == 'F' else '男性'}", results[key]["summary"][f"{lang}-{sex}"]) for sex in "FM" if f"{lang}-{sex}" in results[key]["summary"]]
+    tables = (
+        grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "音声記号の不一致 %。角括弧は 95% 区間。", "phoneRate", other=True)
+        + grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。", "rate2")
+        + grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "Whisper small の誤り率 %（英語の列は small.en）。", "rate")
+        + grid(by_sex, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "NISQA が予測する品質（1〜5）。", "quality")
+    )
+    sounds = (
+        grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "閉鎖のクリック音の回数（発話 1 秒あたり。数え方は第 3 節と同じ）。", "closureClicks")
+        + grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "録音が無音の区間の中で、合成音が鳴った回数（発話 1 秒あたり）。", "silenceSounds")
+        + grid(sets, variants, RETAUGHT_LABELS, RETAUGHT_NOTES, "破裂のクリック音の大きさ（発話のレベルに対する dB、平均）。", "releaseLevel")
+    )
+    return f"""<section aria-labelledby="h-i"><h2 id="h-i">4. 調整後の声でエンコーダを学習し直す</h2>
+{{{{retaught_text}}}}
+{tables}
+{{{{retaught_sounds}}}}
+{sounds}
+<div class="stack">{sentence_cards(clips, ja, jvs, results, ["real", "ench2c", "enci"], RETAUGHT_LABELS)}</div>
 </section>"""
 
 
@@ -848,7 +894,9 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
     body += taught_section(d, ja, jvs, clips).replace("{{taught_text}}", TAUGHT_TEXT).replace("{{taught_between}}", TAUGHT_BETWEEN)
     body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_walls}}", TUNED_WALLS).replace("{{tuned_closure}}", TUNED_CLOSURE).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
-    body += pointer(4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
+    retaught = retaught_section(d, ja, jvs, clips).replace("{{retaught_text}}", RETAUGHT_TEXT).replace("{{retaught_sounds}}", RETAUGHT_SOUNDS)
+    body += retaught
+    body += pointer(5 if retaught else 4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
 
@@ -1000,13 +1048,18 @@ TUNED_VOICE = """<p>女声の声色には、NISQA（音声だけから主観品�
 <p>そこで、Hi-Fi-CAPTAIN の女性話者の録音 16 文（テストとは別の文）を手本に、声門と雑音源の設定を調整しました。NISQA の点数が上がり、かつ多言語の物差しで録音から離れないように合わせています。エンジンのコードは変えておらず、声門のパラメータを外から直接指定しています。</p>"""
 TUNED_RULE = """<p>上の 2 つの表から、調整した設定は声の高さが 175 Hz 以上の話者に使い、150 Hz 以下の話者は既定のまま、その間は混ぜることにしました。「H + 調整 1」などは、エンコーダ H の制御列をこの規則で鳴らしたものです。声の高さは、その話者の録音全体の中央値で決めています。調整には 3 つの版があります（下で説明します。前回の報告では「前回」「中間」「今回」と呼んでいました）。</p>"""
 TUNED_WALLS = """<p>声の設定とは別に、合成音には録音にない音が 2 種類ありました。録音が無音の区間（破裂音で舌や唇が閉じている間と、文の途中のポーズ）で鳴る低い音と、舌が閉じる瞬間の鋭いクリック音です。順に対策を入れました。どちらも制御列は H のままで、男性の録音にも使っています。</p>
-<p>対策 1 は、無音区間の音への対策です。実録音は無音区間で発話より 55 dB ほど小さくなります。合成音は既定の声の H でも 10 dB ほど大きく、短い音が何度も突き出ます。原因は 2 つありました。1 つ目は声道の壁が動く音です。CHIMERA は、舌・唇・あごが動いて押しのけた空気を、声道の中の流れとして計算します。そのため、息を完全に止めた制御列でも無音にはならず、300 Hz 以下を中心にした低い音が出ます。大きさは発話より 40 dB ほど小さく（男性の体では 30 dB ほど）、舌が速く動く瞬間は 20 dB 差まで上がります。男性の声はこの帯域に声の成分があるので隠れますが、女性の声にはなく、無音区間では何にも隠れません。CHIMERA 自身の規則で作った制御列でも同じ大きさで出るので、エンコーダの癖ではなくエンジンの性質です。エンジンにはこの流れを切るスイッチがあり（コードは変えていません）、それを切ります。2 つ目はポーズの中の息です。エンコーダ H は発話の前後では息を止めますが、文の途中のポーズでは弱い息を出し続けていて、かすかな声と、息が戻る瞬間の音になっていました。録音が 0.12 秒以上無音になる区間で息を止めます（区間が終わる 30 ms 前に戻します）。</p>"""
+<p>対策 1 は、無音区間の音への対策です。実録音は無音区間で発話より 55 dB ほど小さくなります。合成音は既定の声の H でも 10 dB ほど大きく、短い音が何度も突き出ます。原因は 2 つありました。1 つ目は声道の壁が動く音です。CHIMERA は、舌・唇・あごが動いて押しのけた空気を、声道の中の流れとして計算します。そのため、息を完全に止めた制御列でも無音にはならず、300 Hz 以下を中心にした低い音が出ます。大きさは発話より 40 dB ほど小さく（男性の体では 30 dB ほど）、舌が速く動く瞬間は 20 dB 差まで上がります。男性の声はこの帯域に声の成分があるので隠れますが、女性の声にはなく、無音区間では何にも隠れません。CHIMERA 自身の規則で作った制御列では、さらに 3〜4 dB 大きく出ます。エンコーダの癖ではなくエンジンの性質です。エンジンにはこの流れを切るスイッチがあり（コードは変えていません）、それを切ります。2 つ目はポーズの中の息です。エンコーダ H は発話の前後では息を止めますが、文の途中のポーズでは弱い息を出し続けていて、かすかな声と、息が戻る瞬間の音になっていました。録音が 0.12 秒以上無音になる区間で息を止めます（区間が終わる 30 ms 前に戻します）。</p>"""
 TUNED_CLOSURE = """<p>対策 2 は、舌が閉じる瞬間のクリック音への対策です。対策 1 で長い無音区間は静かになりましたが、舌を鳴らすような湿った音は残りました。有声区間の直前と直後の 35 ms ほどを無音にすると消える、というご指摘の区間を調べると、破裂音で舌が閉じきる瞬間に、16 kHz まで広がる 1〜2 ms の衝撃が出ていました。発話より 25〜35 dB 小さい音ですが、実録音はそこで無音です。雑音源をすべて切っても変わらないので、乱流の雑音ではありません。</p>
 <p>原因はエンジンの扱いでした。CHIMERA は、狭めの面積が 0.0002 cm² を下回ると「閉じた」とみなして、そこを通る流れを 1 サンプルで 0 にします。息が十分にあると、その時点でまだ 1 cm³/s ほど流れていて、それが急に止まる段差が衝撃になります。このしきい値は外から設定できるので（コードは変えていません）、0.000001 cm² にしました。流れは切られる前に自然に消えます。</p>
 <p>下の表の「閉鎖のクリック音」は、この種類の音を数えたものです。破裂の瞬間（舌が離れるとき）の音は、この対策では変わりません。Hi-Fi-CAPTAIN の女性話者の破裂 653 か所で比べると、合成音の破裂は 4 kHz 以上では実録音と同程度の強さですが（中央値で +1〜3 dB）、4 kHz 以下の成分が 5〜7 dB 弱く、実録音より鋭い音になっています。</p>"""
 TUNED_CLICKS = """<p>声の設定によって変わるクリック音もあります。2〜9 kHz で前後から突き出た短い音を数えると、実録音では破裂音で舌や唇が離れる瞬間のものがほとんどで、既定の声の H も同じです。調整 1 では、舌が閉じる瞬間や、音が続いている途中にも出ます。NISQA だけに合わせると歯の雑音源のゲインが既定の 2.2 倍になること、声門を長く開く設定が息の流量を増やすことが原因です。</p>
 <p>調整 2 と 3 は、声門の開き方（開放率・張り・明るさ）を調整 1 のままにして、クリック音に効く設定を変えたものです。どちらも、声門の振動の振幅を 1.4 倍にして、声を破裂に対して大きくしています。雑音源のゲインは、調整 2 が既定値、調整 3 が狭めと歯を既定の 0.6 倍です。ゲインを下げるほどクリック音は減り、NISQA の点数も下がります。数値を当てはめに任せると別の抜け道に行ってしまったので、指標を見ながら手で決めました。</p>"""
 TUNED_CHECK = """<p class="small">声の設定や対策を変えても言葉が保たれているかを、第 2 節と同じ物差しで確かめたのが以下の表です。Whisper と音声記号認識器は、学習にも調整にも使っていません。NISQA は女声の設定の調整にだけ使いました（表の点数は、調整に使っていない録音のものです）。対策 1 で動きの音を切ると、音声記号の不一致が最大 2 ポイントほど増えます。増えるのは、破裂音の有声・無声の取り違え（t を d と聞く、など）です。エンコーダは動きの音がある声で学習したままです。対策 2 では変わりません。</p>"""
+
+RETAUGHT_TEXT = """<p>第 3 節で決めた鳴らし方（声の高い話者には調整 2、対策 1+2。以下「調整後の声」）は、エンコーダ H が学習したときの声ではありません。H は、CHIMERA の既定の声を真似る代役モデルを通して学習しています。調整後の声で鳴らすと、音声記号の不一致が最大 5 ポイント増えていました。主に破裂音の有声・無声の取り違えです。</p>
+<p>エンコーダ I は、H と同じ作り方で、調整後の声を通して学習し直したものです。学習用の制御列 3,864 本を調整後の声で鳴らし直し（制御列は同じです）、その音から代役モデルを作り直しました。代役には、話者ごとに「調整した声をどの割合で使うか」も入力しています。エポックを選ぶ聞き比べも、調整後の声で鳴らして行います。学習データと物差しは H と同じです。</p>
+<p>音声記号の不一致は、増えた分の半分ほどから全部が戻りました（JVS は 31.7% から 29.3% に。H を既定の声で鳴らすと 28.3%。Hi-Fi-CAPTAIN の女性は 27.5% から 25.2% に。同 26.0%）。日本語 500 文で数えた有声・無声の取り違えは、H を既定の声で鳴らすと 141 件、調整後の声で鳴らすと 278 件、I では 200 件です。Whisper の誤り率は H と同程度で（差は 95% 区間の内側）、JVS と TSP ではわずかに下がりました。NISQA の点数は変わりません。</p>"""
+RETAUGHT_SOUNDS = """<p class="small">録音にない音は、H を調整後の声で鳴らしたときとほぼ同じです。閉鎖のクリック音と破裂の大きさは変わらず、無音区間の中の音は同じか少なくなりました。</p>"""
 
 TITLE_JA = "CHIMERA 日本語エンコーダの試聴"
 LEDE_JA = "物理モデル音声合成 CHIMERA をデコーダにしたコーデックを、日本語の録音で試した結果です。合成エンジンは無改造で、変えたのはエンコーダの学習だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
