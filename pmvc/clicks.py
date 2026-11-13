@@ -1,19 +1,26 @@
-"""Clicks: short bursts in the high band that stand out of what comes before and after them.
+"""Sounds a render makes that its recording does not: clicks, and sounds inside silences.
 
+Clicks are short bursts in the high band that stand out of what comes before and after them.
 A stop's release is one, and recordings have them: about 0.4 a second in the Japanese test
 recordings, 27 dB under the level of the speech. Hardly any fall elsewhere. A render under
 CHIMERA's own voice has the same. Under a voice that lets more air through (a longer open
 phase, louder noise sources) it has louder releases and clicks of two more kinds: as the tongue
-closes, where a speaker's closure sets in silently, and in the middle of voiced sound. Together
-they are heard as a wet smacking of the tongue.
+closes, where a speaker's closure sets in silently, and in the middle of voiced sound.
 
 `measure` counts them in a signal's speech. A frame of the 2-9 kHz band's level (2.5 ms apart)
 is a click if it is a local peak no more than 42 dB under the speech's level, at least 12 dB
 over the loudest of the 5 to 20 ms before it, and at least 8 dB over the mean of the 7.5 to
 20 ms after it. What the recording does 10 to 30 ms before and after says of which kind it is.
+
+A recording is silent in a stop's closure and in a pause: 55 dB under its speech. A render is
+some 10 dB less so, and not evenly: once or twice a second a soft thump stands out, 35 dB
+under the speech, most of it below 1 kHz, where `measure` does not look. That, more than the
+clicks, is what is heard as a wet smacking of the tongue. It is the air the tract's walls
+displace as they move (see `pmvc.encoder`'s `--no-wall-air`). `in_silences` counts it.
 """
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.signal import butter, sosfiltfilt
 
 from .audio import Array
@@ -28,6 +35,13 @@ NO_LOAD: float = -60.0
 # the recording sounds, or is silent, where its level is this far under its speech's (dB)
 SOUND: float = -25.0
 SILENT: float = -30.0
+# for `in_silences`: a silence is where the recording stays this far under its speech's level
+# (dB); its first and last EDGE frames are left out, as a render's closure and release need not
+# fall on the recording's to the frame; and a render sounds where it comes this near its own
+# speech's level (dB)
+QUIET: float = -45.0
+EDGE: int = 6
+HEARD: float = -40.0
 
 
 def level(x: Array, sr: int, band: tuple[float, float]) -> Array:
@@ -74,4 +88,37 @@ def measure(x: Array, sr: int, span: tuple[float, float], recording: tuple[Array
         out["clickLevel"] = float(np.mean(found))
     if releases:
         out["releaseLevel"] = float(np.mean(releases))
+    return out
+
+
+
+def stretches(mask: NDArray[np.bool_]) -> list[tuple[int, int]]:
+    """The runs of true frames in `mask`, as (first, one past the last)."""
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], mask.astype(np.int8), [0]])))
+    return [(int(a), int(b)) for a, b in zip(edges[::2], edges[1::2])]
+
+
+def in_silences(x: Array, sr: int, span: tuple[float, float], recording: tuple[Array, int] | None = None) -> dict[str, float]:
+    """What `x` does where the recording is silent inside its speech: in a stop's closure, in a
+    pause. `recording` and `span` as for `measure`.
+      silence        the seconds of silence looked at (those QUIET under the speech's level and
+                     longer than twice EDGE, less EDGE at each end)
+      silenceLevel   `x`'s level over them against its speech's (dB), if there are any
+      silenceSounds  how many times a second of speech `x` comes within HEARD of its speech's
+                     level in them
+    """
+    k0, k1 = round(span[0] / HOP), round(span[1] / HOP)
+    own = level(x, sr, WHOLE)[k0:k1]
+    own = own - float(np.percentile(own, 95))
+    heard = level(*recording, WHOLE)[k0:k1] if recording else own
+    heard = heard - float(np.percentile(heard, 95))
+    n = min(len(own), len(heard))
+    inside = np.zeros(n, dtype=bool)
+    for a, b in stretches(heard[:n] < QUIET):
+        # a silence the speech begins or ends with is no closure and no pause
+        if b - a > 2 * EDGE and a > 0 and b < n:
+            inside[a + EDGE : b - EDGE] = True
+    out = {"silence": float(inside.sum() * HOP), "silenceSounds": len(stretches(inside & (own[:n] > HEARD))) / max(1e-3, n * HOP)}
+    if inside.any():
+        out["silenceLevel"] = 10.0 * float(np.log10(np.mean(10.0 ** (own[:n][inside] / 10.0))))
     return out

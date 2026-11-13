@@ -32,6 +32,9 @@ For the recording and every variant:
              `releases` and `releaseLevel`, those where the recording goes from silence to
              sound, as a stop's release does; `oddClicks`, those of the kinds recordings hardly
              have (as the tongue closes, or in the middle of sound)
+  silenceSounds  `pmvc.clicks.in_silences`: how many times a second the clip sounds where the
+             recording is silent inside its speech (a stop's closure, a pause), and
+             `silenceLevel`, its level there against its speech's (dB)
 Whisper leans on what a sentence is likely to say; the phone recogniser cannot. Neither was
 optimised against. Two more columns make the numbers comparable:
   other      where another speaker in <dir> read the same sentence (one of the same sex, if
@@ -61,7 +64,7 @@ import torch
 from faster_whisper import WhisperModel
 
 from .audio import FRAME_RATE, load, pitch_track
-from .clicks import measure
+from .clicks import in_silences, measure
 from .encoder import ids_in, pick_device
 from .evaluate import edits, wer_interval, words
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
@@ -181,7 +184,8 @@ def clicks_of(job: tuple[Path, str, str]) -> dict[str, float]:
     track = d / v / f"{uid}.tracks.json"
     shift = 0.0 if v == "real" else json.loads(track.read_text()).get("shift", meta["shift"]) if track.exists() else meta["shift"]
     x, sr = load(d / v / f"{uid}.wav")
-    return measure(x[round(shift * sr) :], sr, (meta["span"][0], meta["span"][1]), None if v == "real" else load(d / "real" / f"{uid}.wav"))
+    span, recording = (meta["span"][0], meta["span"][1]), None if v == "real" else load(d / "real" / f"{uid}.wav")
+    return {**measure(x[round(shift * sr) :], sr, span, recording), **in_silences(x[round(shift * sr) :], sr, span, recording)}
 
 
 def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) -> None:
@@ -193,7 +197,7 @@ def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) ->
     with ThreadPoolExecutor(jobs) as pool:
         for (_, uid, v, _), m in zip(todo, pool.map(pitch_agreement, todo)):
             by_id[uid]["variants"][v].update(m)
-        clicking = [(d, r["id"], v) for r in rows for v in names if "oddClicks" not in r["variants"][v]]
+        clicking = [(d, r["id"], v) for r in rows for v in names if "silenceSounds" not in r["variants"][v]]
         for (_, uid, v), m in zip(clicking, pool.map(clicks_of, clicking)):
             by_id[uid]["variants"][v].update(m)
     same: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -241,6 +245,12 @@ def summarise(rows: list[dict[str, Any]], names: list[str]) -> dict[str, Any]:
                 for key in ("clickLevel", "releaseLevel"):
                     if any(key in m for m in ms):
                         s[key] = round(float(np.mean([m[key] for m in ms if key in m])), 1)
+            if all("silenceSounds" in m for m in ms):
+                s["silenceSounds"] = round(float(np.mean([m["silenceSounds"] for m in ms])), 2)
+                # over all the silence of the group's recordings, each second counting the same
+                seconds = sum(m["silence"] for m in ms)
+                if seconds > 0.0:
+                    s["silenceLevel"] = round(10.0 * float(np.log10(sum(m["silence"] * 10.0 ** (m["silenceLevel"] / 10.0) for m in ms if "silenceLevel" in m) / seconds)), 1)
             # what `pmvc.natural` added, if it was run
             for key in ("quality", "noisiness", "coloration", "discontinuity", "loudness", "natural"):
                 if all(key in m for m in ms):
@@ -348,6 +358,7 @@ def finish(d: Path, name: str, rows: list[dict[str, Any]], names: list[str], job
                 rest = "".join(f"   {key} {m[key]:.3f}" for key in ("distance", "voicing", "f0Corr") if key in m)
                 rest += f"   stray {m['stray']:.0f} %" if "stray" in m else ""
                 rest += f"   releases {m['releases']:.2f}/s at {m.get('releaseLevel', float('nan')):.0f} dB, odd clicks {m['oddClicks']:.2f}/s" if "oddClicks" in m else ""
+                rest += f"   in silences {m['silenceSounds']:.2f}/s at {m.get('silenceLevel', float('nan')):.0f} dB" if "silenceSounds" in m else ""
                 rest += f"   NISQA {m['quality']:.2f}" if "quality" in m else ""
                 print(f"  {v:8s} " + "   ".join(cols) + rest)
 
