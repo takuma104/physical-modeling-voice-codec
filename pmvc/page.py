@@ -114,18 +114,24 @@ TUNED_LABELS: dict[str, str] = {
     "encn": "エンコーダ C′",
     "encg": "エンコーダ G",
     "ench": "エンコーダ H",
-    "enchv": "H + 高い声の調整（前回）",
-    "enchx": "H + 高い声の調整（中間）",
-    "enchw": "H + 高い声の調整（今回）",
+    "enchs": "H（動きの音なし）",
+    "enchq": "H（無音区間の対策あり）",
+    "enchv": "H + 調整 1",
+    "enchvq": "H + 調整 1（対策あり）",
+    "ench2q": "H + 調整 2（対策あり）",
+    "ench3q": "H + 調整 3（対策あり）",
 }
 TUNED_NOTES: dict[str, str] = {
     "real": "話者本人",
     "encn": "英語の録音だけで学習",
     "encg": "日本語の録音、多言語の物差しと入口（第 2 節）",
     "ench": "G と同じ。ただし発話の外では「息なし」を手本にする",
-    "enchv": "声の高い話者では声門の設定を調整して鳴らす。NISQA だけに合わせた設定",
-    "enchx": "声門の開き方は前回のまま。振幅 1.4 倍、閉じきる速さ半分、雑音源は既定値",
-    "enchw": "中間と同じで、狭めと歯の雑音源を既定の 0.6 倍にする",
+    "enchs": "H の制御列を、声道の壁が押しのける空気を音にしない設定で鳴らす",
+    "enchq": "動きの音なしに加えて、録音のポーズ（0.12 秒以上の無音）では息を止める",
+    "enchv": "声の高い話者だけ声の設定を変える。NISQA だけに合わせた設定（前回の報告の「前回」）。対策なし",
+    "enchvq": "調整 1 に、無音区間の対策（動きの音なし、ポーズで息を止める）を加える",
+    "ench2q": "調整 2 は、調整 1 の声門のまま、振幅を 1.4 倍にし、雑音源を既定値に戻したもの",
+    "ench3q": "調整 3 は、調整 2 の狭めと歯の雑音源を 0.6 倍にしたもの",
 }
 # the settings `pmvc.calibrate` fits, as the page names them
 VOICE_LABELS: dict[str, str] = {
@@ -543,7 +549,8 @@ def grid(sets: list[tuple[str, dict[str, Any]]], variants: list[str], labels: di
     head = "".join(f'<th scope="col">{esc(label)}<span class="sub">{g["n"]} 文</span></th>' for label, g in sets)
 
     def cell(m: dict[str, Any]) -> str:
-        return rate_cell(m, key) if isinstance(m.get(key), list) else num_cell(m, key, {"quality": ".2f", "oddClicks": ".2f", "releases": ".2f", "releaseLevel": ".1f"}.get(key, ".0f"))
+        formats = {"quality": ".2f", "oddClicks": ".2f", "releases": ".2f", "releaseLevel": ".1f", "silenceSounds": ".2f", "silenceLevel": ".1f"}
+        return rate_cell(m, key) if isinstance(m.get(key), list) else num_cell(m, key, formats.get(key, ".0f"))
 
     rows = [
         f'<tr><th scope="row">{esc(labels[v])}<span class="sub">{esc(notes[v])}</span></th>' + "".join(cell(g[v]) for _, g in sets) + "</tr>"
@@ -629,7 +636,7 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
         return ""
     results, sets = three_tests(d, ja, jvs, "results_tuned", "results_tuned")
     variants = [v for v in TUNED_LABELS if all(v in g for _, g in sets)]
-    stray = grid(sets, [v for v in variants if v not in ("real", "enchv")], TUNED_LABELS, TUNED_NOTES,
+    stray = grid(sets, [v for v in variants if v in ("encn", "encg", "ench", "enchq")], TUNED_LABELS, TUNED_NOTES,
                  "発話の外（録音が無音のところ）で、合成音が 30 ms 以上有声になった録音の割合 %。発話の前後 60 ms は除いています。TSP と JSUT の録音は、発話の前にほとんど無音がありません。", "stray")  # fmt: skip
     # NISQA by sex: the same files' summaries by language and sex
     by_sex: list[tuple[str, dict[str, Any]]] = []
@@ -639,15 +646,15 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
             by_sex += [(f"{heading} {'女性' if sex == 'F' else '男性'}", results[key]["summary"][f"{lang}-{sex}"]) for sex in "FM" if f"{lang}-{sex}" in results[key]["summary"]]
     quality = grid(by_sex, variants, TUNED_LABELS, TUNED_NOTES, "NISQA が予測する品質（1〜5 の平均オピニオン評点）。女性の列と男性の列を分けています。JVS の男性 4 人のうち 3 人は声が高く（中央値 172〜200 Hz）、調整の対象です。", "quality")
     by_pitch = ""
-    if (fit / "voice-F.pitchmix.json").exists():
-        mix = json.loads((fit / "voice-F.pitchmix.json").read_text())
+    if (fit / "voice-F2.pitchmix.json").exists():
+        mix = json.loads((fit / "voice-F2.pitchmix.json").read_text())
         head = "".join(f'<th scope="col">{w:g}</th>' for w in mix["shares"])
         rows = "".join(
             f'<tr><th scope="row">{esc(PITCH_SPEAKERS.get(r["speaker"], r["speaker"]))}</th><td class="num">{r["pitch"]:.0f}</td>' + "".join(f'<td class="num">{r["quality"][str(w)]:.2f}</td>' for w in mix["shares"]) + "</tr>"
             for r in mix["speakers"]
         )
         by_pitch = f"""<div class="scroll"><table>
-<caption>調整した設定（今回の版）をどの程度使うと NISQA の点数がどうなるか（話者ごとに {mix["n"]} 文、エンコーダ H の制御列）。0 は CHIMERA の既定、1 は調整後、その間は設定を混ぜたもの。話者は声の高さの順です。</caption>
+<caption>調整した設定（調整 2、無音区間の対策あり）をどの程度使うと NISQA の点数がどうなるか（話者ごとに {mix["n"]} 文、エンコーダ H の制御列）。0 は CHIMERA の既定、1 は調整後、その間は設定を混ぜたもの。話者は声の高さの順です。</caption>
 <thead><tr><th scope="col">話者</th><th scope="col">声の高さ Hz</th>{head}</tr></thead>
 <tbody>{rows}</tbody></table></div>"""
     tables = (
@@ -656,10 +663,10 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
         + grid(sets, variants, TUNED_LABELS, TUNED_NOTES, "音声記号の不一致 %。", "phoneRate", other=True)
     )
     settings = ""
-    if (fit / "voice-F.json").exists():
+    if (fit / "voice-F2.json").exists():
         from .calibrate import PARAMS
 
-        files = {"調整（前回）": fit / "voice-F1.json", "調整（中間）": fit / "voice-F-mid.json", "調整（今回）": fit / "voice-F.json"}
+        files = {"調整 1": fit / "voice-F1.json", "調整 2": fit / "voice-F2.json", "調整 3": fit / "voice-F3.json"}
         fits = [json.loads(p.read_text())["settings"] for p in files.values() if p.exists()]
         rows = "".join(
             f'<tr><th scope="row">{esc(VOICE_LABELS[name])}</th><td class="num">{default:.3g}</td>' + "".join(f'<td class="num">{f.get(name, default):.3g}</td>' for f in fits) + "</tr>"
@@ -670,7 +677,10 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
 <caption>声の設定。CHIMERA の既定値と、Hi-Fi-CAPTAIN の女性話者の録音 16 文に合わせて調整した値。雑音源のゲインは既定値に対する倍率です。</caption>
 <thead><tr><th scope="col">設定</th><th scope="col">既定</th>{heads}</tr></thead>
 <tbody>{rows}</tbody></table></div>"""
-    clicking = [v for v in variants if v != "encn"]
+    clicking = [v for v in variants if v not in ("encn", "encg")]
+    silences = grid(sets, clicking, TUNED_LABELS, TUNED_NOTES, "録音が無音の区間（破裂音の閉鎖とポーズ。発話のレベルより 45 dB 以上小さい区間で、両端の 15 ms は除く）の中で、合成音が発話のレベルの −40 dB を超えた回数（発話 1 秒あたり）。", "silenceSounds") + grid(
+        sets, clicking, TUNED_LABELS, TUNED_NOTES, "同じ区間の音量（発話のレベルに対する dB）。", "silenceLevel"
+    )
     clicks = (
         grid(sets, clicking, TUNED_LABELS, TUNED_NOTES, "実録音にはほとんどない種類のクリック音の回数（1 秒あたり）: 舌が閉じる瞬間（録音が音から無音に変わるところ）と、音が続いている途中のもの。クリック音は、2〜9 kHz の帯域で前後から 8〜12 dB 以上突き出た短い音として数えています。", "oddClicks")
         + grid(sets, clicking, TUNED_LABELS, TUNED_NOTES, "破裂（録音が無音から音に変わるところ）のクリック音の回数（1 秒あたり）。", "releases")
@@ -684,11 +694,13 @@ def tuned_section(d: Path, ja: Path, jvs: Path, fit: Path, clips: dict[str, str]
 {settings}
 {{{{tuned_rule}}}}
 {quality}
+{{{{tuned_walls}}}}
+{silences}
 {{{{tuned_clicks}}}}
 {clicks}
 {{{{tuned_check}}}}
 {tables}
-<div class="stack">{sentence_cards(clips, ja, jvs, results, clicking, TUNED_LABELS, ("enchv", "enchx", "enchw"))}</div>
+<div class="stack">{sentence_cards(clips, ja, jvs, results, [v for v in clicking if v != "enchs"], TUNED_LABELS, ("enchv", "enchvq", "ench2q", "ench3q"))}</div>
 </section>"""
 
 
@@ -830,7 +842,7 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     clips: dict[str, str] = {}
     body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
     body += taught_section(d, ja, jvs, clips).replace("{{taught_text}}", TAUGHT_TEXT).replace("{{taught_between}}", TAUGHT_BETWEEN)
-    body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
+    body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_walls}}", TUNED_WALLS).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
     body += pointer(4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
@@ -981,10 +993,13 @@ TUNED_TEXT = """<p>第 2 節のエンコーダ G には、発話の前に余計�
 <p>エンコーダ H は、G と同じ作り方で、発話の外では「息なし」を手本にします。あわせて、エンコーダ自身が足している先頭 0.2 秒の無音では、制御列を落ち着いた値から始めます。</p>"""
 TUNED_VOICE = """<p>女声の声色には、NISQA（音声だけから主観品質の評点を予測するモデル）を物差しに使いました。男性の合成音は実録音に近い点数になるのに、女性の合成音は大きく下がります。調べると、点数は性別ではなく声の高さに従っていました。話者ごとの声の高さ（中央値）と点数の相関は −0.9 で、声の高い男性も下がります。原因はエンコーダではなく、CHIMERA のエンジンが高い声を鳴らすときの声門の動かし方にありました。エンジンの声門は、1 周期のうち開いている割合（開放率）が声の高さによらず約 0.6 で、設定で動かせるのも 0.78 までです。実際の声は、高いほど、また女声のほうが、開放率が大きいことが知られています。</p>
 <p>そこで、Hi-Fi-CAPTAIN の女性話者の録音 16 文（テストとは別の文）を手本に、声門と雑音源の設定を調整しました。NISQA の点数が上がり、かつ多言語の物差しで録音から離れないように合わせています。エンジンのコードは変えておらず、声門のパラメータを外から直接指定しています。</p>"""
-TUNED_RULE = """<p>上の 2 つの表から、調整した設定は声の高さが 175 Hz 以上の話者に使い、150 Hz 以下の話者は既定のまま、その間は混ぜることにしました。「H + 高い声の調整」は、エンコーダ H の制御列をこの規則で鳴らしたものです。声の高さは、その話者の録音全体の中央値で決めています。制御列は H と同じです。調整には前回・中間・今回の 3 つの版があります（下で説明します）。</p>"""
-TUNED_CLICKS = """<p>前回の調整には副作用がありました。舌を鳴らすような音です。実録音のクリック音は、破裂音で舌や唇が離れる瞬間のものがほとんどで、CHIMERA の既定の声で鳴らした H も同じです。ところが前回の調整では、舌が閉じる瞬間や、音が続いている途中にもクリック音が出るようになっていました。NISQA だけに合わせると歯の雑音源のゲインが既定の 2.2 倍になること、声門を長く開く設定が息の流量を増やすこと、の両方が効いています。</p>
-<p>「中間」と「今回」は、声門の開き方（開放率・張り・明るさ）を前回のままにして、クリック音に効く設定を変えたものです。どちらも、声門の振動の振幅を 1.4 倍にして声を破裂に対して大きくし、狭めが閉じきる速さを半分にして閉じる瞬間の音を小さくしています（エンジンにこのための設定があり、外から指定しています）。雑音源のゲインは、「中間」が既定値、「今回」が狭めと歯を既定の 0.6 倍です。ゲインを下げるほどクリック音は減り、NISQA の点数も下がります。数値を当てはめに任せると別の抜け道に行ってしまったので、下の指標を見ながら手で決めました。</p>"""
-TUNED_CHECK = """<p class="small">声の設定を変えても言葉が保たれているかを、第 2 節と同じ物差しで確かめたのが以下の表です。Whisper と音声記号認識器は、学習にも調整にも使っていません。NISQA は女声の設定の調整にだけ使いました（表の点数は、調整に使っていない録音のものです）。</p>"""
+TUNED_RULE = """<p>上の 2 つの表から、調整した設定は声の高さが 175 Hz 以上の話者に使い、150 Hz 以下の話者は既定のまま、その間は混ぜることにしました。「H + 調整 1」などは、エンコーダ H の制御列をこの規則で鳴らしたものです。声の高さは、その話者の録音全体の中央値で決めています。調整には 3 つの版があります（下で説明します。前回の報告では「前回」「中間」「今回」と呼んでいました）。</p>"""
+TUNED_WALLS = """<p>調整 1 で聴くと、舌を鳴らすような湿った音が混じります。鳴っているのは、録音が無音の区間でした。破裂音で舌や唇が閉じている間と、文の途中のポーズです。実録音はここで発話より 55 dB ほど小さくなります。合成音は既定の声の H でも 10 dB ほど大きく、短い音が何度も突き出ます。原因は 2 つありました。</p>
+<p>1 つ目は、声道の壁が動く音です。CHIMERA は、舌・唇・あごが動いて押しのけた空気を、声道の中の流れとして計算します。そのため、息を完全に止めた制御列でも無音にはならず、300 Hz 以下を中心にした低い音が出ます。大きさは発話より 40 dB ほど小さく（男性の体では 30 dB ほど）、舌が速く動く瞬間は 20 dB 差まで上がります。男性の声はこの帯域に声の成分があるので隠れますが、女性の声にはなく、無音区間では何にも隠れません。CHIMERA 自身の規則で作った制御列でも同じ大きさで出るので、エンコーダの癖ではなくエンジンの性質です。エンジンにはこの流れを切るスイッチがあり（コードは変えていません）、「動きの音なし」はそれを切って鳴らしたものです。</p>
+<p>2 つ目は、ポーズの中の息です。エンコーダ H は発話の前後では息を止めますが、文の途中のポーズでは弱い息を出し続けていて、かすかな声と、息が戻る瞬間の音になっていました。「無音区間の対策あり」は、動きの音を切ったうえで、録音が 0.12 秒以上無音になる区間で息を止めます（区間が終わる 30 ms 前に戻します）。制御列のほかの部分は H と同じです。男性の録音にも同じ対策を使っています。</p>"""
+TUNED_CLICKS = """<p>無音区間の音とは別に、高い帯域（2〜9 kHz）の短いクリック音があります。実録音のクリック音は、破裂音で舌や唇が離れる瞬間のものがほとんどで、既定の声の H も同じです。調整 1 では、舌が閉じる瞬間や、音が続いている途中にもクリック音が出ます。NISQA だけに合わせると歯の雑音源のゲインが既定の 2.2 倍になること、声門を長く開く設定が息の流量を増やすことが原因で、無音区間の対策では減りません。</p>
+<p>調整 2 と 3 は、声門の開き方（開放率・張り・明るさ）を調整 1 のままにして、クリック音に効く設定を変えたものです。どちらも、声門の振動の振幅を 1.4 倍にして、声を破裂に対して大きくしています。雑音源のゲインは、調整 2 が既定値、調整 3 が狭めと歯を既定の 0.6 倍です。ゲインを下げるほどクリック音は減り、NISQA の点数も下がります。数値を当てはめに任せると別の抜け道に行ってしまったので、指標を見ながら手で決めました。前回の報告の「中間」「今回」では狭めが閉じきる速さも半分にしていましたが、動きの音を切ると不要になったので、既定に戻しています。</p>"""
+TUNED_CHECK = """<p class="small">声の設定や無音区間の対策を変えても言葉が保たれているかを、第 2 節と同じ物差しで確かめたのが以下の表です。Whisper と音声記号認識器は、学習にも調整にも使っていません。NISQA は女声の設定の調整にだけ使いました（表の点数は、調整に使っていない録音のものです）。動きの音を切ると、音声記号の不一致が最大 2 ポイントほど増えます。増えるのは、破裂音の有声・無声の取り違え（t を d と聞く、など）です。エンコーダは動きの音がある声で学習したままです。</p>"""
 
 TITLE_JA = "CHIMERA 日本語エンコーダの試聴"
 LEDE_JA = "物理モデル音声合成 CHIMERA をデコーダにしたコーデックを、日本語の録音で試した結果です。合成エンジンは無改造で、変えたのはエンコーダの学習だけです。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"

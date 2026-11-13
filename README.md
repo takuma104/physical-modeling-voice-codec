@@ -136,28 +136,37 @@ for t in "${T[@]}"; do uv run python -m pmvc.encoder encode $t --models out/tran
 #   声の設定: Hi-Fi-CAPTAIN の女性話者の dev 100 文のうち 16 文に合わせ、残り 84 文で確かめる
 uv run python -m pmvc.recordings out/fit --set hjfd --lang ja --sex F --wavs $H/ja-JP/female/wav/dev --text $H/ja-JP/female/text/dev.txt
 for m in encg ench; do uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name $m --out $m --split all; done
-#   NISQA だけに合わせる(--clicks 0)。声門は長く開く設定になるが、歯の雑音源も 2.2 倍になり、破裂音のたびにクリック音が出る
+#   調整 1: NISQA だけに合わせる(--clicks 0)。声門は長く開く設定になるが、歯の雑音源も 2.2 倍になり、舌が閉じる瞬間などにもクリック音が出る
 uv run python -m pmvc.calibrate out/fit --sex F --tracks encg --prefix hjfd --by nisqa --clicks 0 --n 16 --evals 220 --name voice-F1 \
   --only noiseGlottis,noiseConstriction,noiseTeeth,pressure,tension,breathiness,brightness,roughness,openQuotient,amplitudeScale \
   --start '{"tension": 0.0745, "brightness": 0.0264, "breathiness": 0.0465, "roughness": 0.0084, "noiseGlottis": 1.18, "noiseConstriction": 1.55, "noiseTeeth": 1.87, "openQuotient": 0.88}'
-#   使う声は、その声門の開き方に、クリック音(pmvc.clicks)が出にくい 4 つの設定を手で組み合わせたもの:
-#   狭めと歯の雑音源 0.6 倍、振動の振幅 1.4 倍、狭めが閉じきる速さ半分(--evals 0 は探索せず、--start の設定の点数を測って書き出す)
-with() { python3 -c "
-import json, sys; s = json.load(open('out/fit/voice-F1.json'))['settings']; s.update(noiseGlottis=1, amplitudeScale=1.4, sealRate=2.5)
-s.update(noiseConstriction=float(sys.argv[1]), noiseTeeth=float(sys.argv[1])); print(json.dumps(s))" $1; }
-uv run python -m pmvc.calibrate out/fit --sex F --tracks ench --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F --start "$(with 0.6)"
-uv run python -m pmvc.calibrate out/fit --sex F --tracks ench --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F-mid --start "$(with 1.0)"   # 比較用: 雑音源は既定値
 #   その設定がどの高さの話者に効くか(17 話者)。encode --voice はこの結果に従い、話者の声の高さで設定を切り替える
-uv run python -m pmvc.pitchmix $(for s in ML MK FL FK; do echo out/transplant:ench:$s; done) \
+uv run python -m pmvc.pitchmix --voice out/fit/voice-F1.json $(for s in ML MK FL FK; do echo out/transplant:ench:$s; done) \
   $(for s in hem hef hjm hjf jsut; do echo out/ja:ench:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:ench:jvs$n; done)
-#   3 つのテストで、H と、3 通りの声(NISQA だけに合わせた voice-F1、中間の voice-F-mid、使う声 voice-F)で鳴らした H を評価する
+#   無音区間(破裂音の閉鎖、ポーズ)の中の音への対策が 2 つある(pmvc.clicks.in_silences が数える):
+#   --no-wall-air は、声道の壁が動いて押しのける空気を音にしない(エンジンの公開スイッチ)。息を止めても出る数百 Hz 以下の低い音で、舌を鳴らすように聞こえる
+#   --quiet-pauses は、録音のポーズ(発話の中の 0.12 秒以上の無音)で息を止める
+Q="--no-wall-air --quiet-pauses"
+uv run python -m pmvc.encoder encode out/fit --models out/transplant/models --name ench --out enchq --split all $Q
+#   調整 2 と 3: 調整 1 の声門の開き方のまま、振動の振幅を 1.4 倍にし、雑音源を既定値(調整 2)、狭めと歯だけ 0.6 倍(調整 3)にする。
+#   高い帯域のクリック音(pmvc.clicks.measure)を見ながら手で決めた値(--evals 0 は探索せず、--start の設定の点数を測って書き出す)
+with() { python3 -c "
+import json, sys; s = json.load(open('out/fit/voice-F1.json'))['settings']; s.update(noiseGlottis=1, amplitudeScale=1.4)
+s.update(noiseConstriction=float(sys.argv[1]), noiseTeeth=float(sys.argv[1])); print(json.dumps(s))" $1; }
+uv run python -m pmvc.calibrate out/fit --sex F --tracks enchq --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F2 --start "$(with 1.0)"
+uv run python -m pmvc.calibrate out/fit --sex F --tracks enchq --prefix hjfd --by nisqa --n 16 --evals 0 --name voice-F3 --start "$(with 0.6)"
+#   3 つのテストで評価する: H、対策ごとの H、調整 1(対策なし・あり)、調整 2 と 3(対策あり)
 for t in "${T[@]}"; do
-  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchv --voice out/fit/voice-F1.json
-  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchx --voice out/fit/voice-F-mid.json
-  uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench --out enchw --voice out/fit/voice-F.json
-  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchv,enchx,enchw --name results_tuned
+  enc() { uv run python -m pmvc.encoder encode $t --models out/transplant/models --name ench "$@"; }
+  enc --out enchs --no-wall-air; enc --out enchq $Q
+  enc --out enchv --voice out/fit/voice-F1.json; enc --out enchvq --voice out/fit/voice-F1.json $Q
+  enc --out ench2q --voice out/fit/voice-F2.json $Q; enc --out ench3q --voice out/fit/voice-F3.json $Q
+  uv run python -m pmvc.judge $t --variants encn,encg,ench,enchs,enchq,enchv,enchvq,ench2q,ench3q --name results_tuned
   uv run python -m pmvc.natural ${t%% *} --name results_tuned       # NISQA の点数を足す
 done
+#   対策ありの制御列で、調整 2 がどの高さの話者に効くかを測り直す(試聴ページの表)
+uv run python -m pmvc.pitchmix --voice out/fit/voice-F2.json $(for s in ML MK FL FK; do echo out/transplant:enchq:$s; done) \
+  $(for s in hem hef hjm hjf jsut; do echo out/ja:enchq:$s; done) $(for n in 093 094 095 096 097 098 099 100; do echo out/jvs:enchq:jvs$n; done)
 
 # 8. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
