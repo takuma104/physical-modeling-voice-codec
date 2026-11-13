@@ -28,7 +28,7 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
-from .calibrate import make_voice, mixed
+from .calibrate import AIRWAY, make_voice, mixed
 from .natural import score
 from .paths import ROOT
 
@@ -55,8 +55,8 @@ def main() -> None:
             k, (_, path, w) = job
             track: dict[str, Any] = json.loads(path.read_text())
             # the track as CHIMERA's own voice would play it, whatever voice it was written for
-            # (but with what it says of the walls' air, which is no part of a voice)
-            walls = {key: v for key, v in track.get("airway", {}).items() if key == "volumeSource"}
+            # (but with what it says of the airway that is no part of a voice: the walls' air, the closed area)
+            walls = {key: v for key, v in track.get("airway", {}).items() if key not in AIRWAY}
             track = {**{key: v for key, v in track.items() if key not in ("noise", "glottis", "airway")}, "source": {"f0": track["source"]["f0"]}, **({"airway": walls} if walls else {})}
             v = make_voice(track, mixed(fitted, w) if w else None)
             frames = np.array(track["frames"])

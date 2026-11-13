@@ -8,6 +8,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [--select listener|loss|last] [--epochs 40] [--hidden 256]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
                                      [--models DIR] [--voice FILE] [--no-wall-air] [--quiet-pauses]
+                                     [--closed-area CM2]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -64,6 +65,13 @@ of the tongue (`pmvc.clicks.in_silences` counts it).
 more inside the speech). An encoder taught with `--silences` writes none before and after the
 speech, but in a pause it lets a little run, unsteadily, and the voice murmurs there and pops
 as the breath comes back.
+
+`--closed-area`: the area (cm²) under which the voice takes a constriction for closed. CHIMERA
+stops the flow through a constriction within one sample once its area is under 2e-4 cm². As the
+tongue closes for a stop under a full breath, about 1 cm³/s is still running then, and its stop
+is a click some 25 dB under the speech between 4 and 16 kHz, where a recording's closure is
+silent. With 1e-6 the flow has died away by itself before it is cut (`pmvc.clicks.extra`
+counts what is left).
 """
 
 import argparse
@@ -467,7 +475,7 @@ def pauses(d: Path, uid: str) -> list[tuple[int, int]]:
     return [(a, b) for a, b in clicks.stretches(quiet) if b - a >= PAUSE and a > k0 // per and b < k1 // per]
 
 
-def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None, wall_air: bool = True) -> dict[str, Any]:
+def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[str, float] | None = None, pitch: float | None = None, wall_air: bool = True, closed_area: float | None = None) -> dict[str, Any]:
     """`frames` as a track for the voice of a recording's speaker. All the voice is told of the
     speaker is in the recording's meta: the sex picks the body, and the source idles at the
     median pitch (as `pmvc.transplant` sets them: the renders are the same to the sample).
@@ -478,7 +486,8 @@ def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[
     median pitch, so that all of a speaker's recordings get one voice; without it the
     recording's own counts.
 
-    `wall_air`: whether the walls of the tract displace air as they move (CHIMERA's own way)."""
+    `wall_air`: whether the walls of the tract displace air as they move (CHIMERA's own way).
+    `closed_area`: the area (cm²) under which a constriction counts as closed, if not CHIMERA's."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
     body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
     track: dict[str, Any] = {"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}
@@ -492,6 +501,8 @@ def voice_track(d: Path, uid: str, frames: Array, keys: list[str], fitted: dict[
         track["airway"] = {k: round(s[k], 5) for k in AIRWAY}
     if not wall_air:
         track["airway"] = {**track.get("airway", {}), "volumeSource": 0}
+    if closed_area is not None:
+        track["airway"] = {**track.get("airway", {}), "closedArea": closed_area}
     return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
 
@@ -557,7 +568,7 @@ def encode(a: argparse.Namespace) -> None:
             lead = round(LEAD * FRAME_RATE)
             for first, last in pauses(d, uid):
                 frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, stats["keys"].index("breath")] = 0.0
-        tracks.append(voice_track(d, uid, frames, stats["keys"], fitted, pitch, not a.no_wall_air))
+        tracks.append(voice_track(d, uid, frames, stats["keys"], fitted, pitch, not a.no_wall_air, a.closed_area))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -599,6 +610,7 @@ def main() -> None:
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
     e.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
     e.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
+    e.add_argument("--closed-area", type=float, default=None, help="the area (cm²) under which the voice takes a constriction for closed, if not CHIMERA's 2e-4: 1e-6 keeps the tongue from clicking as it closes")
     e.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
     a = ap.parse_args()
     train(a) if a.command == "train" else encode(a)

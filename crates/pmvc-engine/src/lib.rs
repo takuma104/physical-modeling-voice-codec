@@ -165,7 +165,10 @@ impl Voice {
     /// closure from clicking at a man's pitch; a voice that lets more air through needs gentler ones.
     /// `volumeSource` (0 or 1) is the engine's switch for the air the tract's walls displace as
     /// they move: on, that air flows into the tract and is heard, without any breath, as soft
-    /// thumps below a few hundred hertz.
+    /// thumps below a few hundred hertz. `closedArea` (cm²) is the area under which the engine
+    /// takes a constriction for closed and stops the flow through it within one sample: at the
+    /// engine's own 2e-4 the flow still running then (about 1 cm³/s under a full breath) stops as
+    /// a step, a click that reaches 16 kHz.
     fn set_airway(&mut self, patch: &str) -> PyResult<()> {
         let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
         let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
@@ -180,6 +183,7 @@ impl Voice {
                 "sealHi" => a.seal_hi = x,
                 "sealEase" => a.seal_ease = x,
                 "volumeSource" => a.net.enable_volume_source = x != 0.0,
+                "closedArea" => a.net.closed_area = x,
                 _ => return Err(bad(format!("unknown airway parameter {k:?}"))),
             }
         }
@@ -193,8 +197,34 @@ impl Voice {
         serde_json::json!({
             "maxAreaRate": a.max_area_rate, "areaRateGain": a.area_rate_gain, "sealRate": a.seal_rate, "sealLo": a.seal_lo, "sealHi": a.seal_hi, "sealEase": a.seal_ease,
             "volumeSource": if a.net.enable_volume_source { 1.0 } else { 0.0 },
+            "closedArea": a.net.closed_area,
         })
         .to_string()
+    }
+
+    /// What the voice is doing at this sample, for diagnosis: the glottal area (cm²) and the
+    /// voicing gate (0..1); the narrowest point of the oral tube (cm²) and where it is (0 at the
+    /// pharynx, 1 at the lips); the narrowest point of the pharynx (cm²); the pressure just above
+    /// the glottis and just behind the oral tube's narrowest point (the engine's units); the flow
+    /// out of the lips and out of the nose (cm³/s).
+    #[getter]
+    fn probe(&self) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
+        let a = &self.v.airway;
+        let narrowest = |xs: &[f64]| xs.iter().copied().enumerate().fold((0usize, f64::INFINITY), |m, (i, x)| if x < m.1 { (i, x) } else { m });
+        let (at, oral) = narrowest(&a.or_min);
+        let (_, pharynx) = narrowest(&a.ph_min);
+        let behind = if at > 0 { a.oral.node(at - 1) } else { a.pharynx.last_node() };
+        (
+            self.v.glottis.area,
+            self.v.glottis.voicing,
+            oral,
+            at as f64 / (a.n_or.max(2) - 1) as f64,
+            pharynx,
+            a.net.p[a.pharynx.first_node()],
+            a.net.p[behind],
+            a.net.radiated_flow(a.rad_lips),
+            a.net.radiated_flow(a.rad_nose),
+        )
     }
 
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
