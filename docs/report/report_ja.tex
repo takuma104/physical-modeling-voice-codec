@@ -25,11 +25,7 @@
 \title{\Large\bfseries 声の物理モデルをデコーダにした音声コーデック:\\
 制御列を書くエンコーダと、制御列の上の音声合成}
 \author{Claude（Anthropic）\thanks{Claude（Fable 5.2）が Claude Code 上で、実験の計画と実装、実行、
-結果の分析、本稿の執筆を行った。森 琢磨は、着想（小さなニューラルコーデックが声道では出せない音を
-出すことから、声の物理モデルをニューラルコーデックのデコーダにする）を出し、シミュレータ、コーパス、
-品質の予測モデルを選び、計算機を用意し、試聴を行った。試聴の判断が各段階の方針を決めた。発話の前の
-余計な音と高い声の音色の薄さを見つけ、\ref{sec:voice} 節の舌を鳴らすような音の場所を、合成音の
-区間を波形編集ソフトで無音にして特定し、声を選んだ。}\qquad 森 琢磨}
+結果の分析、本稿の執筆を行った。森 琢磨は、試聴とおおまかなディレクションを行った。}\qquad 森 琢磨}
 \date{{\small テクニカルレポート（下書き）、2026 年 11 月}\\
 {\small\url{https://github.com/takuma104/physical-modeling-voice-codec}}}
 
@@ -100,28 +96,19 @@
 ジェスチャに変える。
 
 \textbf{制御列。}フロントエンドは使わない。小さなラッパー（PyO3）が、10\,ms ごとに 21 個の制御値の
-フレームを、エンジンの調音器官と音源の目標値として予約する（表~\ref{tab:channels}）。制御列のほかに
+フレームを、エンジンの調音器官と音源の目標値として予約する（図~\ref{fig:channels}）。制御列のほかに
 声に伝える話者の情報は 2 つだけである。体格を選ぶ性別と、声の高さの中央値である。それ以上の
 話者性は、潜在表現に含まれない（\ref{sec:discussion} 節）。
 
-\begin{table}[t]
-\centering\footnotesize\setlength{\tabcolsep}{3pt}
-\caption{制御列。100\,Hz・21 チャネル。エンコーダは発話の中で動く 16 個を書く。声の高さは
-ピッチ抽出器から取る。4 個は使わない。}
-\label{tab:channels}
-\begin{tabular}{@{}p{0.52\columnwidth}p{0.42\columnwidth}@{}}
-\toprule
-チャネル & 動かすもの\\
-\midrule
-jaw; tbX, tbY; ttX, ttY, ttCurl; root & 顎、舌の本体・先・根\\
-lipAp, lipProt, lipWidth, labiodental & 唇\\
-velum; larynx; lateral & 鼻への通路、喉頭の高さ、側面の通路\\
-abduction; breath & 声門の開き、肺の圧力\\
-f0 & 声の高さ（Hz）\\
-epilarynx, ventricular, dorsum, closure & ここでは一定\\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_tract_ja.pdf}
+\caption{デコーダの声道と、制御列の 21 チャネル（100\,Hz）。輪郭は CHIMERA 自身のもので、男性の体格で
+口を半分開いた母音、鼻への通路は開いた姿勢である。シミュレートするのは、輪郭の間の空気（青）である。
+各チャネルは、調音器官 1 つ、または音源の目標値である。エンコーダは発話の中で動く 16 個を書く。
+声の高さはピッチ抽出器から取る。4 個は一定にしておく。}
+\label{fig:channels}
+\end{figure}
 
 \textbf{制御列で足りるか。}CHIMERA の規則による合成音を、その制御列（100\,Hz）から鳴らし直しても、
 ほとんど変わらない。元の音とのメルケプストラム距離は 0.7\,dB で、有声・無声は 97\% のフレームで

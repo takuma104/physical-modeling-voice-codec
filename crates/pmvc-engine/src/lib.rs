@@ -6,7 +6,7 @@
 //! and flows, articulator positions and velocities, glottal phase), so a search can render a
 //! track up to a frame once and try many continuations from there.
 
-use chimera::anatomy::human::BodyMix;
+use chimera::anatomy::human::{ArticKey, BodyMix, HumanVocalTract, NEUTRAL};
 use chimera::control::articulators::ARTIC_SPECS;
 use chimera::control::score::{ControlKey, Gesture, Targets};
 use chimera::math::PI;
@@ -241,9 +241,24 @@ impl Voice {
     }
 }
 
+/// The midsagittal outlines of a body in a posture, as CHIMERA computes them for its own
+/// display and for the airway's areas: JSON, in cm with the glottis at the origin. `body` as
+/// for a [`Voice`]; `posture`: a JSON object of articulator values, the rest neutral.
+#[pyfunction]
+fn outline(body: &str, posture: &str) -> PyResult<String> {
+    let body: BodyMix = serde_json::from_str(body).or_else(|_| serde_json::from_str(&format!("{body:?}"))).map_err(bad)?;
+    let values: std::collections::BTreeMap<String, f64> = serde_json::from_str(posture).map_err(bad)?;
+    let mut a = NEUTRAL;
+    for (name, x) in &values {
+        a.set(ArticKey::from_name(name).ok_or_else(|| bad(format!("unknown articulator {name:?}")))?, *x);
+    }
+    serde_json::to_string(&HumanVocalTract::new(body.body()).compute_new(&a)).map_err(bad)
+}
+
 #[pymodule]
 fn pmvc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Voice>()?;
+    m.add_function(wrap_pyfunction!(outline, m)?)?;
     m.add("SAMPLE_RATE", FS as u32)?;
     Ok(())
 }

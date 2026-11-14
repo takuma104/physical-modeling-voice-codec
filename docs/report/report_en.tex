@@ -19,13 +19,8 @@
 \title{\bfseries A Physical Voice Model as the Decoder of a Speech Codec:\\
 Encoders and Text-to-Speech on Its Control Tracks}
 \author{Claude (Anthropic)\thanks{Claude (Fable 5.2), working in Claude Code, planned and implemented
-the experiments, ran them, analyzed the results and wrote this report. Takuma Mori proposed the idea
-(a physical model of the voice as the decoder of a neural codec, after finding that a small neural
-codec makes sounds no vocal tract can make), chose the simulator, the corpora and the quality
-predictor, provided the machines, and did the listening: his verdicts set the direction at every
-step, found the stray sounds before an utterance and the thin timbre of the high voice, located the
-tongue-smacking sound of \S\ref{sec:voice} by muting stretches of a render in an audio editor, and
-chose the voice.}\qquad Takuma Mori}
+the experiments, ran them, analyzed the results and wrote this report. Takuma Mori did the listening and gave the
+overall direction.}\qquad Takuma Mori}
 \date{{\small Technical report (draft), November 2026}\\
 {\small\url{https://github.com/takuma104/physical-modeling-voice-codec}}}
 
@@ -105,29 +100,21 @@ text into gestures by rule.
 
 \textbf{The control track.} We bypass the front end. A small wrapper (PyO3) schedules one
 frame of 21 control values every 10\,ms as targets for the engine's articulators and source
-(Table~\ref{tab:channels}).
+(Fig.~\ref{fig:channels}).
 Besides the track the voice is told two things about a speaker: the sex, which picks the body,
 and the median pitch. Speaker identity beyond that is not part of the latent
 (\S\ref{sec:discussion}).
 
-\begin{table}[t]
-\centering\footnotesize\setlength{\tabcolsep}{3pt}
-\caption{The control track: 21 channels at 100\,Hz. The encoder writes the 16 that vary in
-speech; pitch comes from a pitch tracker; four are never used.}
-\label{tab:channels}
-\begin{tabular}{@{}p{0.52\columnwidth}p{0.42\columnwidth}@{}}
-\toprule
-Channels & What they move\\
-\midrule
-jaw; tbX, tbY; ttX, ttY, ttCurl; root & jaw; tongue body, tip, root\\
-lipAp, lipProt, lipWidth, labiodental & lips\\
-velum; larynx; lateral & nasal port; larynx height; side passage\\
-abduction; breath & glottal opening; lung pressure\\
-f0 & pitch (Hz)\\
-epilarynx, ventricular, dorsum, closure & constant here\\
-\bottomrule
-\end{tabular}
-\end{table}
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_tract_en.pdf}
+\caption{The decoder's vocal tract and the 21 channels of the control track (100\,Hz). The
+outlines are CHIMERA's own, for its male body in a half-open vowel with the passage to the nose
+open; what it simulates is the air between them (blue). Each channel is the target of one
+articulator or of the voice source. The encoder writes the 16 that vary in speech, the pitch
+comes from a pitch tracker, and four are held constant.}
+\label{fig:channels}
+\end{figure}
 
 \textbf{Is the track enough?} Rendering CHIMERA's rule-made speech again from its own control
 track at 100\,Hz changes little: the mel-cepstral distance to the original is 0.7\,dB and the

@@ -8,18 +8,29 @@ recordings (README, step 9): out/ja/results_tts.json (variants tts, tts2000, tts
 tts20, and enci and real for the two reference lines). For the second, the control (step 11):
 out/ja/results_ctl.json (the track: tts20n, tts50n, tts200n, tts2000n, tts; the neural
 decoders' latents: ctl<latent><n>; each decoder's best: enci, copy_<latent>).
+
+The drawing of the vocal tract is CHIMERA's own: `pmvc_engine.outline` gives the midsagittal
+outlines its airway's areas are computed from, for the male body in one posture.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+from typing import Any
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+import pmvc_engine
 from matplotlib import font_manager
+from matplotlib.axes import Axes
+from matplotlib.patches import FancyArrowPatch, Polygon
+from numpy.typing import NDArray
+from scipy.interpolate import make_interp_spline
 
 # recordings the model was taught with, and what the judges make of its 100 test sentences:
 # Whisper small and large-v3-turbo (% of phonemes wrong), NISQA's predicted quality
@@ -45,7 +56,53 @@ CONTROL: dict[str, dict[str, list[float] | float]] = {
 }
 LOOKS: dict[str, tuple[str, str]] = {"track": (BLUE, "o"), "mel": (ORANGE, "s"), "encodec": (AQUA, "^"), "mimi": (VIOLET, "D")}
 
-LABELS: dict[str, dict[str, str]] = {
+# the drawing of the vocal tract: air, flesh and bone
+AIR, FLESH, BONE = "#dce9f8", "#f3cdbd", "#d4d3cd"
+Points = NDArray[np.float64]
+# a mid-open vowel with the passage to the nose open, so that every part shows
+POSTURE: dict[str, float] = {"tbX": 2.05, "tbY": 6.15, "jaw": 1.05, "lipAp": 0.95, "lipProt": 0.25, "lipWidth": 0.6, "root": 0.15, "larynx": 0.05, "ttX": 5.8, "ttY": 6.2, "velum": 0.8}
+# the back wall of the throat above where the airway's sections start, up into the nose
+# (CHIMERA's fixed landmarks for the male body, `HumanVocalTract::new`)
+BACK: list[tuple[float, float]] = [(-1.3, 5.6), (-1.38, 7.5), (-1.33, 8.9), (-1.05, 10.1), (-0.45, 10.9), (0.4, 11.3)]
+
+TRACT: dict[str, dict[str, str]] = {
+    "en": {
+        "velum": "passage to the nose",
+        "root": "tongue root",
+        "larynx": "larynx height",
+        "glottis": "glottal opening",
+        "f0": "pitch",
+        "lungs": "lung pressure",
+        "lips": "lips",
+        "jaw": "jaw",
+        "body": "tongue body",
+        "tip": "tongue tip",
+        "lateral": "side passage, as for /l/",
+        "encoder": "written by the encoder (16)",
+        "pitch": "from a pitch tracker",
+        "constant": "constant here:",
+    },
+    "ja": {
+        "velum": "鼻への通路",
+        "root": "舌の根",
+        "larynx": "喉頭の高さ",
+        "glottis": "声門の開き",
+        "f0": "声の高さ",
+        "lungs": "肺の圧力",
+        "lips": "唇",
+        "jaw": "顎",
+        "body": "舌の本体",
+        "tip": "舌の先",
+        "lateral": "舌の側面の通路（/l/ など）",
+        "encoder": "エンコーダが書く（16）",
+        "pitch": "ピッチ抽出器から",
+        "constant": "ここでは一定:",
+    },
+}
+MONO: str = "DejaVu Sans Mono"
+
+
+LABELS: dict[str, dict[str, Any]] = {
     "en": {
         "x": "recordings the model is taught with",
         "error": "phonemes wrong (%)",
@@ -161,6 +218,134 @@ def control(lang: str, out: Path) -> None:
     plt.close(fig)
 
 
+def pts(v: list[dict[str, float]]) -> Points:
+    return np.array([[p["x"], p["y"]] for p in v])
+
+
+def smooth(p: list[tuple[float, float]] | Points, n: int = 80) -> Points:
+    """A smooth curve through points, by how far along the points they are."""
+    q = np.asarray(p, dtype=np.float64)
+    t = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(q, axis=0), axis=1))])
+    return make_interp_spline(t, q, k=min(3, len(q) - 1))(np.linspace(0, t[-1], n))
+
+
+def label(ax: Axes, at: tuple[float, float], to: tuple[float, float], title: str, names: list[tuple[str, str]], side: str, above: float | None = None) -> None:
+    """A part's name with its channels under it (each with a dot in the colour of where its
+    values come from), and a line from the name to the part at `to`. `side`: where the text
+    is held, and the line leaves from the other end of the name, or with `above` from over
+    the name, so far from its held end."""
+    x, y = at
+    title_text = ax.text(x, y, title, fontsize=6.3, color=INK, ha=side, va="bottom")
+    ax.figure.canvas.draw()
+    box = title_text.get_window_extent().transformed(ax.transData.inverted())
+    for k, (name, colour) in enumerate(names):
+        yy = y - 0.16 - 0.62 * k
+        if side == "left":
+            ax.plot([x + 0.16], [yy - 0.3], marker="o", ms=2.6, color=colour, mec="none", zorder=8, clip_on=False)
+            ax.text(x + 0.44, yy, name, fontsize=6.0, color=INK, ha="left", va="top", family=MONO)
+        else:
+            text = ax.text(x, yy, name, fontsize=6.0, color=INK, ha="right", va="top", family=MONO)
+            ax.figure.canvas.draw()
+            ax.plot([text.get_window_extent().transformed(ax.transData.inverted()).x0 - 0.28], [yy - 0.3], marker="o", ms=2.6, color=colour, mec="none", zorder=8, clip_on=False)
+    start = (box.x1 + 0.2 if side == "left" else box.x0 - 0.2, (box.y0 + box.y1) / 2)
+    if above is not None:
+        start = (x + above if side == "left" else x - above, box.y1 + 0.12)
+    ax.plot([start[0], to[0]], [start[1], to[1]], color=MUTED, lw=0.45, zorder=7, solid_capstyle="round")
+    ax.plot([to[0]], [to[1]], marker="o", ms=1.8, color=MUTED, mec="none", zorder=7)
+
+
+def arrow(ax: Axes, a: tuple[float, float], b: tuple[float, float], both: bool = True, colour: str = MUTED) -> None:
+    ax.add_patch(FancyArrowPatch(a, b, arrowstyle="<|-|>" if both else "-|>", mutation_scale=4.0, lw=0.55, color=colour, zorder=9, shrinkA=0, shrinkB=0))
+
+
+def tract(lang: str, out: Path) -> None:
+    """The decoder's vocal tract (CHIMERA's outlines) and where each channel of the track acts."""
+    t = TRACT[lang]
+    f: dict[str, Any] = json.loads(pmvc_engine.outline("male", json.dumps(POSTURE)))
+    fig, ax = plt.subplots(figsize=(3.45, 3.45 * 18.6 / 20.8))
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_xlim(-7.4, 13.4)
+    ax.set_ylim(-5.4, 13.2)
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    grid = f["grid"]
+    outer, inner = pts([g["outer"] for g in grid]), pts([g["inner"] for g in grid])
+    wall, tongue, velum = pts(f["outer"]), pts(f["tongue"]), pts(f["velum"])
+    lip_u, lip_l = pts(f["upperLip"]), pts(f["lowerLip"])
+    glottis = (f["glottis"]["x"], f["glottis"]["y"])
+    centre = (f["tongueCenter"]["x"], f["tongueCenter"]["y"])
+    tip = (f["tip"]["x"], f["tip"]["y"])
+    roof = pts(f["nasalCavity"])
+    back = wall[wall[:, 1] <= outer[0, 1]]  # the throat's back wall below the first section, bottom → top
+    # the throat's back wall above the sections, and on over the nose to the nostril
+    ceiling = smooth(np.concatenate([np.array(BACK), [[1.6, 11.32]], roof[roof[:, 0] > 2.9]]), 90)
+    # the airway: the windpipe and larynx below the sections, then between the walls to the lips
+    front = smooth([(0.22, -1.5), (0.16, glottis[1] - 0.6), (0.0, glottis[1]), (0.1, 1.5), (float(inner[0, 0]), float(inner[0, 1]))], 30)
+    ax.add_patch(Polygon(np.concatenate([back, outer, inner[::-1], front[::-1]]), closed=True, fc=AIR, ec="none", zorder=1))
+    # the nose: under the ceiling; over the soft palate (from its tip) and the bone of the hard one
+    palate = wall[(wall[:, 0] >= roof[0, 0]) & (wall[:, 1] > 8.5) & (wall[:, 0] <= roof[-1, 0] - 0.25)]
+    bone = np.concatenate([palate, (palate + np.array([0.0, 0.36]))[::-1]])
+    above = ceiling[ceiling[:, 1] >= velum[10, 1] - 0.4]
+    ax.add_patch(Polygon(np.concatenate([above, (palate + np.array([0.0, 0.36]))[::-1], velum[:11]]), closed=True, fc=AIR, ec="none", zorder=1))
+    ax.add_patch(Polygon(bone, closed=True, fc="white", ec=INK, lw=0.55, zorder=4, joinstyle="round"))
+    # the body of the jaw under the tongue (its sides, which reach up to the ears, are left out)
+    jaw = pts(f["jawBone"])
+    ax.plot(*np.concatenate([jaw[:3], [jaw[2] + 0.75 * (jaw[3] - jaw[2])]]).T, color=BONE, lw=3.2, solid_capstyle="round", solid_joinstyle="round", zorder=2)
+    # flesh and teeth
+    ax.add_patch(Polygon(tongue, closed=True, fc=FLESH, ec=INK, lw=0.7, zorder=3, joinstyle="round"))
+    ax.add_patch(Polygon(velum, closed=True, fc=FLESH, ec=INK, lw=0.6, zorder=5, joinstyle="round"))
+    ax.add_patch(Polygon(pts(f["upperTeeth"])[1:4], closed=True, fc="white", ec=INK, lw=0.55, zorder=4, joinstyle="round"))
+    ax.add_patch(Polygon(pts(f["lowerTeeth"]), closed=True, fc="white", ec=INK, lw=0.55, zorder=4, joinstyle="round"))
+    ax.plot(*pts(f["epiglottis"]).T, color=INK, lw=1.3, solid_capstyle="round", zorder=4)
+    # the walls: the throat's back and the nose's ceiling, the palate's front, the windpipe's front
+    ax.plot(*np.concatenate([back, ceiling[ceiling[:, 1] > back[-1, 1]]]).T, color=INK, lw=1.0, zorder=5)
+    ax.plot(*wall[wall[:, 0] >= palate[-1, 0]].T, color=INK, lw=0.8, zorder=5)
+    ax.plot(*front.T, color=INK, lw=0.8, zorder=5)
+    for lip in (lip_u, lip_l):
+        ax.plot(*smooth(lip, 60).T, color=INK, lw=0.8, zorder=4)
+    # the vocal folds
+    behind_glottis = float(back[np.argmin(np.abs(back[:, 1] - glottis[1])), 0])
+    for a, b in ((behind_glottis, -0.66), (0.0, -0.36)):
+        ax.plot([a, b], [glottis[1], glottis[1]], color=INK, lw=2.2, solid_capstyle="butt", zorder=6)
+    # the face
+    nose = smooth([(float(lip_u[-1, 0]), float(lip_u[-1, 1])), (7.45, 10.5), (8.25, 10.75), (8.5, 11.2), (8.15, 11.9), (7.6, 12.7), (7.35, 13.4)], 50)
+    chin = smooth([(float(lip_l[-1, 0]), float(lip_l[-1, 1])), (5.95, 3.75), (5.8, 3.0), (5.0, 2.5), (3.5, 2.35), (2.2, 1.7), (1.6, 0.4), (1.55, -1.5)], 60)
+    for line in (nose, chin):
+        ax.plot(*line.T, color=MUTED, lw=0.7, zorder=2)
+
+    enc, f0 = BLUE, ORANGE
+    root = tongue[np.argmin(np.hypot(tongue[:, 0] - 0.2, tongue[:, 1] - 4.7))]
+    left, right = -7.3, 13.3
+    label(ax, (left, 10.9), (float(velum[5, 0]) + 0.25, float(velum[5, 1]) - 0.3), t["velum"], [("velum", enc)], "left")
+    label(ax, (left, 8.3), (float(root[0]) + 0.2, float(root[1])), t["root"], [("root", enc)], "left")
+    label(ax, (left, 5.7), (-0.45, 1.8), t["larynx"], [("larynx", enc)], "left")
+    label(ax, (left, 3.1), (-0.56, glottis[1] + 0.08), t["glottis"], [("abduction", enc)], "left")
+    label(ax, (left, 0.5), (-0.56, glottis[1] - 0.08), t["f0"], [("f0", f0)], "left")
+    label(ax, (left, -2.1), (-0.42, -1.25), t["lungs"], [("breath", enc)], "left")
+    label(ax, (right, 12.3), (float(lip_u[8, 0]) + 0.02, float(lip_u[8, 1])), t["lips"], [("lipAp", enc), ("lipProt", enc), ("lipWidth", enc), ("labiodental", enc)], "right")
+    label(ax, (right, 7.9), (tip[0] - 0.05, tip[1] + 0.02), t["tip"], [("ttX", enc), ("ttY", enc), ("ttCurl", enc)], "right")
+    label(ax, (right, 4.4), (5.9, 3.5), t["jaw"], [("jaw", enc)], "right")
+    label(ax, (3.1, 0.3), (centre[0] + 0.25, centre[1] - 1.25), t["body"], [("tbX", enc), ("tbY", enc)], "left", above=0.9)
+    label(ax, (right, 1.2), (centre[0] + 2.0, centre[1] - 0.45), t["lateral"], [("lateral", enc)], "right")
+    # how they move
+    arrow(ax, (centre[0] - 0.85, centre[1] + 0.1), (centre[0] + 0.85, centre[1] + 0.1))
+    arrow(ax, (centre[0], centre[1] - 0.75), (centre[0], centre[1] + 0.95))
+    arrow(ax, (0.62, 0.95), (0.62, 2.45))
+    arrow(ax, (-0.45, -2.45), (-0.45, -0.7), both=False, colour=BLUE)
+    # where the values come from
+    y = -4.0
+    for x, colour, text in ((left + 0.16, enc, t["encoder"]), (2.6, f0, t["pitch"])):
+        ax.plot([x], [y], marker="o", ms=2.6, color=colour, mec="none", clip_on=False)
+        ax.text(x + 0.3, y, text, fontsize=6.0, color=INK, ha="left", va="center")
+    y -= 0.8
+    ax.plot([left + 0.16], [y], marker="o", ms=2.4, mfc="white", mec=MUTED, mew=0.5, clip_on=False)
+    held = ax.text(left + 0.46, y, t["constant"], fontsize=6.0, color=INK, ha="left", va="center")
+    fig.canvas.draw()
+    ax.text(held.get_window_extent().transformed(ax.transData.inverted()).x1 + 0.25, y, "epilarynx ventricular dorsum closure", fontsize=6.0, color=MUTED, ha="left", va="center", family=MONO)
+    fig.savefig(out)
+    plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--font-dir", type=Path, default=None, help="where build.sh put the Noto fonts")
@@ -178,7 +363,8 @@ def main() -> None:
         plt.rcParams["font.family"] = "Noto Sans JP" if lang == "ja" and japanese else "DejaVu Sans"
         figure(lang, a.out / f"fig_data_{lang}.pdf")
         control(lang, a.out / f"fig_control_{lang}.pdf")
-        print(a.out / f"fig_data_{lang}.pdf", a.out / f"fig_control_{lang}.pdf")
+        tract(lang, a.out / f"fig_tract_{lang}.pdf")
+        print(a.out / f"fig_data_{lang}.pdf", a.out / f"fig_control_{lang}.pdf", a.out / f"fig_tract_{lang}.pdf")
 
 
 if __name__ == "__main__":
