@@ -193,11 +193,14 @@ MANY_NOTES: dict[str, str] = {
 CONTROL_LATENTS: dict[str, tuple[str, str, str, str]] = {
     "track": ("CHIMERA の制御列", "物理モデル。対照と同じ誤差で学習（代役なし）", "tts{}n", "enci"),
     "mel": ("メルスペクトログラム", "UnivNet ボコーダで音にする。この形のモデルの標準の出力先", "ctlmel{}", "copy_mel"),
-    "melv": ("メル + 調整したボコーダ", "上と同じモデル。UnivNet を、モデルの学習と同じ録音で調整", "ctlmel{}vp", ""),
+    "melv": ("メル + 調整したボコーダ", "上と同じモデル。UnivNet を、モデルの学習と同じ録音で調整", "ctlmel{}vp", "copy_melvp"),
+    "melf": ("同、交差予測で調整", "各録音のメルを、その録音を学習していないモデルに書かせて調整", "ctlmel{}v", ""),
     "encodec": ("EnCodec の潜在表現", "量子化前の連続値。128 次元、75 Hz", "ctlencodec{}", "copy_encodec"),
     "mimi": ("Mimi の潜在表現", "32 コードブックが表すベクトル。512 次元、12.5 Hz", "ctlmimi{}", "copy_mimi"),
 }
 CONTROL_SIZES: dict[str, str] = {"20": "20 文", "50": "50 文", "200": "200 文", "2000": "2,000 文", "": "18,655 文"}
+# the latents that are in the tables only: the page has room for so many clips
+CONTROL_UNHEARD: set[str] = {"melf"}
 # the speakers whose voices the page's cards are in
 MANY_VOICES: dict[str, str] = {"jvs093": "女性 jvs093", "jvs095": "女性 jvs095", "jvs097": "男性 jvs097", "jvs100": "男性 jvs100"}
 VOICE_LABELS: dict[str, str] = {
@@ -1064,10 +1067,11 @@ def control_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
 <tbody>{rows}</tbody></table></div>"""
 
     tables = (
-        table(summary, "rate2", f"テストの {summary['n']} 文。Whisper large-v3-turbo の音素誤り率 %。列は学習に使った録音の数。「デコーダの上限」は、録音をその潜在表現にして戻した音（制御列ではエンコーダ I の合成音）。")
+        table(summary, "rate2", f"テストの {summary['n']} 文。Whisper large-v3-turbo の音素誤り率 %。列は学習に使った録音の数。「デコーダの上限」は、録音をその潜在表現にして戻した音（制御列ではエンコーダ I の合成音。調整したボコーダでは、全データで調整したもの）。")
         + table(summary, "rate", "同じく Whisper small の音素誤り率 %。")
         + "{{control_between}}"
         + table(summary, "quality", "NISQA が予測する品質（1〜5）。")
+        + table(summary, "natural", "参考: NISQA のもう 1 つのモデルが予測する「合成音声の自然さ」（1〜5）。品質とは順位が逆になる。実録音は 4.52。")
     )
     if free is not None:
         tables += table(free["summary"]["ja"], "rate2", f"録音のない {free['summary']['ja']['n']} 文（第 2 節の文）。Whisper large-v3-turbo の音素誤り率 %。", best=False)
@@ -1080,7 +1084,7 @@ def control_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
 
         groups = "".join(
             f'<div class="kind"><span class="kind-label">{esc(size)}で学習</span><div class="clips">'
-            + "".join(clip(named(name, n), label) for label, _, name, _ in latents.values() if named(name, n) in r["variants"])
+            + "".join(clip(named(name, n), label) for key, (label, _, name, _) in latents.items() if key not in CONTROL_UNHEARD and named(name, n) in r["variants"])
             + "</div></div>"
             for n, size in CONTROL_SIZES.items() if n in ("20", "200", "")
         )
@@ -1367,7 +1371,7 @@ CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だから�
 </ul>
 <p><b>調整したボコーダ</b>の行は、メルの対照を強くしたものです。ボコーダは実録音のメルで学習されていて、モデルが書くぼやけたメルを見たことがありません。そこでこの分野の通常の手順どおり、モデルの学習に使ったのと同じ録音だけで、ボコーダを調整しました。入力は、モデルがその録音について書いたメル（録音の音素長とピッチで書かせたもの）、目標は録音の音です。UnivNet の学習に使われた識別器（作者が公開しているチェックポイントに入っています）と、同じ誤差を使いました。残す重みは、検証の文で NISQA が最も高いものです。NISQA で選んでいるのはこの行だけで、対照に有利な選び方です。</p>
 <p>ほかはどれも公開されているモデルをそのまま使い、24 kHz で動かしています。対照のモデルには、FastSpeech 2 のピッチ予測器を付けました。制御列にはピッチのチャネルがありますが、これらの潜在表現にはないためです。物理モデルの側は、条件を揃えるために、代役を通した誤差を外して学習し直しました（18,655 文の列だけは、第 1 節のモデルです）。残す重みの選び方は、どのモデルも同じです。</p>"""
-CONTROL_BETWEEN = """<p class="small">NISQA は、実録音を 4.56 と付けます。物理モデルの合成音がそれより高いのは、CHIMERA の音が雑音のないきれいな音だからで、話者に似ているからではありません。ニューラルデコーダの上限（録音を潜在表現にして戻した音）は、話者の声そのものです。</p>"""
+CONTROL_BETWEEN = """<p class="small">NISQA は、実録音を 4.56 と付けます。物理モデルの合成音がそれより高いのは、CHIMERA の音が雑音のないきれいな音だからで、話者に似ているからではありません。ニューラルデコーダの上限（録音を潜在表現にして戻した音）は、話者の声そのものです。ここまでの NISQA は「音声品質」のモデルの値です。「合成音声の自然さ」のモデルは CHIMERA の声を低く付けるので、その表も下に載せます。</p>"""
 CONTROL_SOUNDS = """<p>下のカードで、20 文、200 文、18,655 文で学習したモデルを、出力先ごとに聞き比べられます。最後のカードは、第 2 節の録音のない文です。</p>"""
 MANY_TEXT = """<p>同じモデルを、JVS の 100 話者（女性 51 人、男性 49 人）で学習しました。話者ごとにベクトルを 1 つ持たせ、すべての音素とフレームに足します。声の高さは、話者ごとの平均と幅を基準に書きます。ほかは第 1 節のモデルと同じです。</p>
 <p>学習データは、全話者が読む 100 文のうち 1〜70 番と、話者ごとに異なる 30 文で、合わせて 9,998 文（約 20 時間。1 話者あたり約 100 文、12 分）です。テストは、エンコーダのテストと同じ 8 話者（女性 4 人、男性 4 人）が読む、どの話者の学習にも出てこない 25 文です。話者の声は学習に出てきますが、文は出てきません。鳴らし方は日本語編で決めた「調整後の声」で、声の高い話者には高い声の設定が入ります。</p>"""

@@ -7,7 +7,8 @@ Hi-Fi-CAPTAIN's Japanese man. For the first figure, the text-to-speech models ta
 recordings (README, step 9): out/ja/results_tts.json (variants tts, tts2000, tts200, tts50,
 tts20, and enci and real for the two reference lines). For the second, the control (step 11):
 out/ja/results_ctl.json (the track: tts20n, tts50n, tts200n, tts2000n, tts; the neural
-decoders' latents: ctl<latent><n>; each decoder's best: enci, copy_<latent>).
+decoders' latents: ctl<latent><n>; the spectrogram with its vocoder tuned: ctlmel<n>vp; each
+decoder's best: enci, copy_<latent>).
 
 The drawing of the vocal tract is CHIMERA's own: `pmvc_engine.outline` gives the midsagittal
 outlines its airway's areas are computed from, for the male body in one posture.
@@ -51,10 +52,12 @@ AQUA, VIOLET = "#1baf7a", "#6250d6"
 CONTROL: dict[str, dict[str, list[float] | float]] = {
     "track": {"large": [8.75, 3.16, 0.71, 0.27, 0.17], "quality": [4.06, 4.5, 4.77, 4.81, 4.78], "best": 4.75},
     "mel": {"large": [7.71, 2.76, 0.58, 0.04, 0.42], "quality": [2.57, 3.24, 3.53, 3.64, 3.68], "best": 4.45},
+    "melv": {"large": [7.19, 3.03, 0.56, 0.04, 0.29], "quality": [2.83, 3.76, 4.13, 4.52, 4.46]},
     "encodec": {"large": [6.57, 2.64, 0.67, 0.12, 0.08], "quality": [1.85, 2.1, 2.35, 3.27, 2.59], "best": 4.36},
     "mimi": {"large": [23.43, 11.25, 2.62, 0.33, 0.35], "quality": [2.62, 3.55, 3.5, 4.65, 3.31], "best": 4.81},
 }
-LOOKS: dict[str, tuple[str, str]] = {"track": (BLUE, "o"), "mel": (ORANGE, "s"), "encodec": (AQUA, "^"), "mimi": (VIOLET, "D")}
+# a latent's colour and marker; dashed with open markers where its decoder was tuned
+LOOKS: dict[str, tuple[str, str, bool]] = {"track": (BLUE, "o", False), "mel": (ORANGE, "s", False), "melv": (ORANGE, "s", True), "encodec": (AQUA, "^", False), "mimi": (VIOLET, "D", False)}
 
 # the drawing of the vocal tract: air, flesh and bone
 AIR, FLESH, BONE = "#dce9f8", "#f3cdbd", "#d4d3cd"
@@ -113,7 +116,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "recording": "recordings",
         "minutes": ["1.5 min", "4 min", "15 min", "2.6 h", "24 h"],
         "large_axis": "phonemes wrong (%)\nWhisper large-v3-turbo",
-        "names": {"track": "control track (CHIMERA)", "mel": "mel spectrogram", "encodec": "EnCodec", "mimi": "Mimi"},
+        "names": {"track": "control track (CHIMERA)", "mel": "mel spectrogram", "melv": "mel, vocoder tuned", "encodec": "EnCodec", "mimi": "Mimi"},
         "best": "decoder's\nbest",
     },
     "ja": {
@@ -126,7 +129,7 @@ LABELS: dict[str, dict[str, Any]] = {
         "recording": "実録音",
         "minutes": ["1.5 分", "4 分", "15 分", "2.6 時間", "24 時間"],
         "large_axis": "音素誤り率（%）\nWhisper large-v3-turbo",
-        "names": {"track": "制御列（CHIMERA）", "mel": "メルスペクトログラム", "encodec": "EnCodec", "mimi": "Mimi"},
+        "names": {"track": "制御列（CHIMERA）", "mel": "メルスペクトログラム", "melv": "メル、ボコーダを調整", "encodec": "EnCodec", "mimi": "Mimi"},
         "best": "デコーダ\nの上限",
     },
 }
@@ -194,13 +197,17 @@ def control(lang: str, out: Path) -> None:
         ax.tick_params(which="minor", length=0)
     top.set_yscale("log")
     for name, series in CONTROL.items():
-        colour, marker = LOOKS[name]
+        colour, marker, tuned = LOOKS[name]
         large, quality = series["large"], series["quality"]
         assert isinstance(large, list) and isinstance(quality, list)
-        top.plot(SIZES[: len(large)], [max(v, 0.03) for v in large], color=colour, linewidth=1.5, marker=marker, markersize=4.2, label=t["names"][name])
-        bottom.plot(SIZES[: len(quality)], quality, color=colour, linewidth=1.5, marker=marker, markersize=4.2)
+        look: dict[str, Any] = {"color": colour, "linewidth": 1.5, "marker": marker, "markersize": 4.2}
+        if tuned:
+            look.update(linestyle=(0, (3, 1.6)), markerfacecolor="white", markeredgewidth=1.1)
+        top.plot(SIZES[: len(large)], [max(v, 0.03) for v in large], label=t["names"][name], **look)
+        bottom.plot(SIZES[: len(quality)], quality, **look)
         # the decoder at its best: a tick past the last point, in the series' colour
-        bottom.plot([90000, 170000], [series["best"]] * 2, color=colour, linewidth=2.2, solid_capstyle="butt")
+        if "best" in series:
+            bottom.plot([90000, 170000], [series["best"]] * 2, color=colour, linewidth=2.2, solid_capstyle="butt")
     top.set_ylim(0.025, 40)
     top.set_yticks([0.03, 0.1, 0.3, 1, 3, 10, 30])
     top.set_yticklabels(["≤0.03", "0.1", "0.3", "1", "3", "10", "30"])

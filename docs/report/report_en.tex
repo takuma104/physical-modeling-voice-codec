@@ -43,9 +43,11 @@ by listening to the simulator's own mechanics and removed through its public set
 text-to-speech model that writes the track from phonemes is read as well as the encoder (0.2\%
 against 0.1\%). Taught with 200 sentences (15 minutes) of one speaker it gets 0.5\% of the
 phonemes wrong, with 20 sentences (1.5 minutes) 7.7\%. A control says what of this the latent
-does: the same model writing a mel spectrogram or EnCodec's latent is understood as well from
-as little data, but its sound degrades (predicted quality 2.6 and 1.9 with 20 sentences), while
-the physical model's stays clean (4.1). Taught with a hundred speakers it reads sentences it never
+does. The same model writing a mel spectrogram or EnCodec's latent is understood as well from
+as little data, so that is the model's doing. The decoder shows in the sound when data is
+scarce: with 20 and 200 sentences the physical model's predicted quality is 4.1 and 4.8, the
+spectrogram's 2.6 and 3.5, and at best 3.2 and 4.1 once its vocoder is tuned on the model's
+output. With 2,000 sentences the tuned vocoder reaches 4.5, where the recordings are. Taught with a hundred speakers it reads sentences it never
 saw as intelligibly as their recordings are (2.3\% against 2.5\%), although of a speaker only
 the sex and the pitch survive the codec.
 \end{abstract}
@@ -130,8 +132,10 @@ and in phonemes of Open JTalk's~\cite{openjtalk} reading for Japanese; and a mul
 recognizer~\cite{xlsrphone} that knows no text, which writes down a recording and its render in IPA
 (\emph{phone mismatch}: the share of the recording's phones the render changes; another person
 reading the same sentence scores 24--32\% on Japanese). Predicted quality is
-NISQA~\cite{nisqa}, which is used once for tuning (\S\ref{sec:voice}) and reported on other
-recordings.
+NISQA~\cite{nisqa}, which is used to choose settings in two places (\S\ref{sec:voice},
+\S\ref{sec:control}) and reported on other recordings. This is NISQA's model of speech quality;
+its model of the naturalness of synthesized speech rates the simulator's voice lower, and is
+reported in \S\ref{sec:control}.
 
 \section{Encoders}\label{sec:encoder}
 \begin{figure}[t]
@@ -488,15 +492,18 @@ against the recording's latent, each value on its spread, and the durations'.
 \includegraphics[width=\columnwidth]{fig_control_en.pdf}
 \caption{The same model writing four latents, on the 100 test sentences. Top: what Whisper
 misreads. Bottom: predicted quality; the bars on the right are each decoder at its best (a
-recording through the latent and back; for the control track, encoder I's renders).}
+recording through the latent and back; for the control track, encoder I's renders). Dashed:
+the spectrogram's vocoder tuned on what the model writes.}
 \label{fig:control}
 \end{figure}
 
 \begin{table}[t]
 \centering\footnotesize\setlength{\tabcolsep}{3pt}
 \caption{The control on the 100 test sentences, by the number of recordings the model is taught
-with. Best: the decoder's, as in Fig.~\ref{fig:control}. $^\dagger$The model of \S\ref{sec:tts},
-with its stand-in loss.}
+with. Best: the decoder's, as in Fig.~\ref{fig:control} (for the tuned vocoder, the one tuned
+with all the recordings, on real spectrograms). Held-out: tuned on spectrograms written by
+models that did not learn from the recording. $^\dagger$The model of \S\ref{sec:tts}, with
+its stand-in loss.}
 \label{tab:control}
 \begin{tabular}{@{}lrrrrrr@{}}
 \toprule
@@ -505,11 +512,15 @@ with its stand-in loss.}
 \multicolumn{7}{@{}l}{\emph{Whisper large-v3-turbo, phonemes wrong (\%)}}\\
 Control track & 8.8 & 3.2 & 0.7 & 0.3 & 0.2$^\dagger$ & 0.1\\
 Mel spectrogram & 7.7 & 2.8 & 0.6 & 0.0 & 0.4 & 0.1\\
+\quad vocoder tuned & 7.2 & 3.0 & 0.6 & 0.0 & 0.3 & 0.1\\
+\quad tuned, held-out & 8.2 & 3.4 & 0.8 & 0.0 & -- & --\\
 EnCodec & 6.6 & 2.6 & 0.7 & 0.1 & 0.1 & 0.1\\
 Mimi & 23.4 & 11.2 & 2.6 & 0.3 & 0.3 & 0.1\\
 \multicolumn{7}{@{}l}{\emph{NISQA}}\\
 Control track & 4.06 & 4.50 & 4.77 & 4.81 & 4.78$^\dagger$ & 4.75\\
 Mel spectrogram & 2.57 & 3.24 & 3.53 & 3.64 & 3.68 & 4.45\\
+\quad vocoder tuned & 2.83 & 3.76 & 4.13 & 4.52 & 4.46 & 4.62\\
+\quad tuned, held-out & 3.18 & 3.64 & 3.92 & 4.30 & -- & --\\
 EnCodec & 1.85 & 2.10 & 2.35 & 3.27 & 2.59 & 4.36\\
 Mimi & 2.62 & 3.55 & 3.50 & 4.65 & 3.31 & 4.81\\
 \bottomrule
@@ -526,9 +537,9 @@ a spectrogram: on held-out sentences the model's error is the same share of a va
 both (0.17 with 2,000 sentences), and far larger for the two codecs (0.46 and 0.47).
 
 \textbf{What differs is the sound.} The simulator's renders keep a predicted quality of 4.1 to
-4.8 at every size. The spectrogram's are at 2.6 to 3.7 where its vocoder gives 4.45 for a real spectrogram, EnCodec's at 1.9 to 3.3 (4.36) and Mimi's at 2.6 to 4.7 (4.81). An error of the same relative size costs the
+4.8 at every size. With the decoders as they are, the spectrogram's are at 2.6 to 3.7 where its vocoder gives 4.45 for a real spectrogram, EnCodec's at 1.9 to 3.3 (4.36) and Mimi's at 2.6 to 4.7 (4.81). An error of the same relative size costs the
 vocoder a point and the simulator nothing: a blurred spectrogram is not the spectrogram of a
-voice, while a blurred articulation is still an articulation. More data does not
+voice, while a blurred articulation is still an articulation. More data alone does not
 close the gap: with all 18,655 sentences the spectrogram's renders are at 3.68, EnCodec's at 2.59
 and Mimi's at 3.31, though all are then read almost without error. Nor is the codecs' quality
 monotone in the data: with 2,000 sentences Mimi's renders reach 4.65 and EnCodec's 3.27, both
@@ -538,17 +549,48 @@ keep 0.61 with 2,000 sentences and 0.49 with all. The track has little detail of
 regression loses. (Every cell is one training run; how much of the codecs' ups and downs is the
 run we cannot say.)
 
+\textbf{The vocoder tuned on what the model writes.} A vocoder has learned from the
+spectrograms of recordings, and the usual remedy for what it makes of a model's is to tune it
+on those~\cite{tacotron2,hifigan}: the spectrograms the model writes for the recordings it
+was taught with, given each recording's durations and pitch, with the recording as the target.
+We did this for every size, with those recordings and no others. UnivNet is trained on as it
+was trained, with its own loss and against its own discriminators, which are in its authors'
+checkpoint: 16 stretches of 0.68\,s a step, 1,500 to 15,000 steps by size. The discriminators
+are needed. Tuned on the spectral error alone, the renders of validation sentences fell from
+3.6 to 2.7; against new discriminators taught for 10,000 steps, to 1.4. The vocoder kept is the
+one NISQA rates highest on validation sentences. Nothing else here is chosen by NISQA, so the
+choice favours the control (the vocoder of the last step gets 4.02 and 4.36 with 200 and 2,000
+sentences; with all, the last step is the one kept).
+
+Tuning raises the spectrogram's renders at every size (Table~\ref{tab:control}, dashed in
+Fig.~\ref{fig:control}): from 2.57 to 2.83 with 20 sentences, 3.53 to 4.13 with 200, 3.64 to
+4.52 with 2,000 and 3.68 to 4.46 with all. What Whisper misreads does not change. With 2,000
+sentences and more the tuned renders are about where the recordings are (4.56), a little under
+what the tuned vocoder gives for real spectrograms (4.62): given two and a half hours of the
+speaker, the remedy works. With less it works less. A variant for little data has each recording's
+spectrogram written by a model that did not learn from it (five folds), so that the vocoder
+meets spectrograms as blurred as a new sentence's. It helps with 20 sentences (3.18) and not
+with more (3.64, 3.92 and 4.30 with 50, 200 and 2,000). Taking the better of the two, the control
+track's renders are ahead by 0.9 with 20 sentences, 0.7 with 50, 0.6 with 200 (15 minutes), and
+0.3 with 2,000 and with all, most of which is the simulator scoring above the recordings
+themselves.
+
 \textbf{Sentences unlike the corpus.} On the twelve sentences from outside the corpus
 (\S\ref{sec:tts}) the controls lose more than on the test sentences: with 200 sentences
 large-v3-turbo gets 4.0\% (spectrogram) and 3.0\% (EnCodec) wrong against 0.4\% for the control
-track. Twelve sentences give wide intervals ([0.8, 9.2], [0.2, 7.5] and [0.0, 1.0]).
+track. Twelve sentences give wide intervals ([0.8, 9.2], [0.2, 7.5] and [0.0, 1.0]). With the tuned
+vocoder the spectrogram's rate is 1.4\% ([0.6, 2.2]).
 
 \textbf{What the control does not say.} The neural decoders give back the speaker, whose voice
 their best is; the simulator has a voice of its own (\S\ref{sec:tts}). They also have none of its
 sharp bursts (0.1 to 0.3 releases a second, 25\,dB under the speech, as in recordings; the
-simulator's 0.5 to 0.6 at 16\,dB). The decoders were used as they are: a vocoder tuned on predicted
-spectrograms, or a generative model of the latent in place of regression, are the usual remedies
-for the sound of the first two and were not tried. And the quality is one predictor's.
+simulator's 0.5 to 0.6 at 16\,dB). Only the spectrogram's decoder was tuned; a generative model of the latent in place of
+regression, the other usual remedy, was not tried. And the quality is one predictor's. NISQA
+has a second model, for the naturalness of synthesized speech, and it ranks the two the other
+way: 2.7 to 2.9 for the simulator's renders at every size, 3.5 to 3.9 for the spectrogram's
+(3.6 to 4.2 with the tuned vocoder) and 4.5 for the recordings. It marks down the voice, not the
+model: encoder I's renders of the recordings get 2.7. The quality score is the one that agreed
+with listening, in \S\ref{sec:voice} and for the renders of this section.
 
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
@@ -562,8 +604,9 @@ on its own found loopholes. \emph{The words are cheap; the sound is
 where the decoder counts.} A plain non-autoregressive model needs a hundredth of the data it
 was given to be understood, and learns a hundred speakers from 35 seconds of each. The control
 shows that this is not the control track's merit: a spectrogram is learned as fast. What the
-physical decoder adds is that the little-taught model still sounds like clean speech, where the
-neural decoders' sound degrades.
+physical decoder adds is that the little-taught model still sounds like clean speech. A neural
+vocoder gets there too once it is tuned on the model's output, but it needs hours of the
+speaker for that; with minutes its sound stays behind.
 
 \textbf{Limitations.} The codec carries what is said, its timing and its pitch, not who says it:
 the voice is told a speaker's sex and median pitch, the timbre is the simulator's, and a
@@ -571,10 +614,11 @@ verification model cannot tell its speakers of one sex apart (\S\ref{sec:tts}). 
 of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
 and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
-quality predictor, with one training run per model, and the listening is one person's. The
-control used the neural decoders as they are, with regression; a vocoder tuned on predicted
-spectrograms or a generative model of the latent would raise their sound, and that comparison
-is still to be made. Accent comes from
+quality predictor, with one training run per model, and the listening is one person's. In the
+control only the spectrogram's decoder was tuned: EnCodec's and Mimi's were used as they are,
+and a generative model of the latent in place of regression was not tried. NISQA's model of
+naturalness rates the simulator's voice below the neural decoders' renders
+(\S\ref{sec:control}). Accent comes from
 Open JTalk's estimate and is wrong where it is.
 
 \section{Conclusion}
@@ -586,8 +630,9 @@ removed through its settings because every part of it means something. And the l
 written from text: a small model matches the encoder, fifteen minutes of one speaker are enough
 for it to be understood, and with a hundred speakers it reads unseen sentences as intelligibly
 as their recordings. That little data suffices is the model's doing, as a control with a
-spectrogram and two neural codecs shows; that the result still sounds like clean speech is the
-physical decoder's.
+spectrogram and two neural codecs shows. What the physical decoder gives is that the result
+sounds like clean speech even when the data is minutes: a neural vocoder tuned on the model's
+output needs hours of the speaker to do the same.
 
 \section*{Acknowledgments}
 We thank Jameson Hodge for CHIMERA, and the authors of the TSP speech database, JVS, JSUT,
@@ -636,6 +681,10 @@ compact multilingual HuBERT model. \emph{Interspeech}, 2024.
 \bibitem{univnet} W.~Jang, D.~Lim, J.~Yoon, B.~Kim, J.~Kim. UnivNet: A neural vocoder with
 multi-resolution spectrogram discriminators for high-fidelity waveform generation.
 \emph{Interspeech}, 2021.
+\bibitem{tacotron2} J.~Shen et al. Natural TTS synthesis by conditioning WaveNet on mel
+spectrogram predictions. \emph{ICASSP}, 2018.
+\bibitem{hifigan} J.~Kong, J.~Kim, J.~Bae. HiFi-GAN: Generative adversarial networks for
+efficient and high fidelity speech synthesis. \emph{NeurIPS}, 2020.
 \bibitem{wavlm} S.~Chen et al. WavLM: Large-scale self-supervised pre-training for full stack
 speech processing. \emph{IEEE JSTSP} 16(6), 2022.
 \bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.
