@@ -13,7 +13,7 @@
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
 | `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe` を持つ |
-| `pmvc/` | 実験スクリプト(Python) |
+| `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts` |
 | `docs/` | 企画メモと関連論文 |
 
 ## セットアップ
@@ -196,22 +196,28 @@ uv run python -m pmvc.encoder encode out/hfcm --models out/transplant/models --n
 uv run python -m pmvc.align train out/hfcm
 uv run python -m pmvc.align write out/hfcm
 #   読みとアクセント(Open JTalk)→ 音素ごとの長さ → 制御列。誤差は、手本の制御列との差と、声の代役を通した録音との聞き比べ
+#   学習の最後に、読点のない位置で話者がポーズするかどうかの判定器も作る(すでにあるモデルには pmvc.tts pauses)
 uv run python -m pmvc.tts train out/hfcm --name tts $V
 #   学習データを減らしたモデル(データが足りないとどう間違えるか)
-uv run python -m pmvc.tts train out/hfcm --name tts200 --limit 200 --epochs 300 --every 25 $V
 uv run python -m pmvc.tts train out/hfcm --name tts2000 --limit 2000 --epochs 100 --every 10 $V
+uv run python -m pmvc.tts train out/hfcm --name tts200 --limit 200 --epochs 300 --every 25 $V
+uv run python -m pmvc.tts train out/hfcm --name tts50 --limit 50 --epochs 600 --every 50 $V
+uv run python -m pmvc.tts train out/hfcm --name tts20 --limit 20 --epochs 1000 --every 100 $V
 #   テストの 100 文: 音素の長さもモデルが決める tts と、長さだけ録音に合わせる ttsd(録音と同じ時間軸になるので、エンコーダと同じ物差しで比べられる)
 IDS=$(ls out/ja/meta | grep hjm | sed 's/.json//' | paste -sd, -)
 uv run python -m pmvc.align write out/ja --models out/hfcm/models --ids $IDS
-uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts --ids $IDS --out tts
 uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts --ids $IDS --out ttsd --timing recording
-uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts200 --ids $IDS --out ttsfew
-uv run python -m pmvc.judge out/ja --variants enci,ttsd,tts,ttsfew --ids $IDS --name results_tts
+for n in tts tts2000 tts200 tts50 tts20; do
+  uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name $n --ids $IDS --out $n
+done
+uv run python -m pmvc.judge out/ja --variants enci,ttsd,tts,tts2000,tts200,tts50,tts20 --ids $IDS --name results_tts
 uv run python -m pmvc.natural out/ja --name results_tts
 #   録音のない文(docs/sentences_ja.txt)
 uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name tts --sentences docs/sentences_ja.txt --out tts
-uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name tts200 --out ttsfew
-uv run python -m pmvc.judge out/say --variants tts,ttsfew
+for n in tts2000 tts200 tts50 tts20; do
+  uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name $n --out $n
+done
+uv run python -m pmvc.judge out/say --variants tts,tts2000,tts200,tts50,tts20
 uv run python -m pmvc.natural out/say
 #   1 文だけ鳴らす
 uv run python -m pmvc.tts say "こんにちは。今日はいい天気ですね。" --out say.wav
@@ -222,7 +228,7 @@ uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-t
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
-日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。手順 8 は、鳴らし直しが 7 分(3,864 本)、代役が 3 分、I が 22 分でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
+日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。手順 8 は、鳴らし直しが 7 分(3,864 本)、代役が 3 分、I が 22 分でした。手順 9 は、録音の取り込みが 1 分、エンコーダ I の制御列が 7 分(18,755 文)、音素の対応付けが学習 4 分と書き出し 4 分、TTS の学習が 1 エポック約 1 分(60 エポック)でした。合成は、4 秒の文でテキストから制御列までが CPU で 17 ms、制御列から音声までが CHIMERA の 1 スレッドで 0.5 秒です。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
 声の設定の調整は CPU で 15 分ほどです。手順 7 の最初の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。クリック音(`pmvc.clicks`)を減点に入れて当てはめ直すこともできますが(`--clicks`、既定 0.3)、開放率を下げて振幅を倍にする、息の雑音を増やして紛らわせる、といった別の逃げ道に行くので、クリック音に効く 4 つの設定は指標を見ながら手で決めています。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。

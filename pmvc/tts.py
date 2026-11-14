@@ -9,6 +9,7 @@ sound of a vocal tract, so its mistakes are mistakes of articulation, not of a w
 usage: python -m pmvc.tts train [dir] [--name tts] [--tracks enci] [--standin standin_2c]
                                 [--models out/transplant/models] [--closed 1.0] [--epochs 60]
                                 [--limit N] [--voice FILE] [--no-wall-air] [--closed-area CM2]
+       python -m pmvc.tts pauses [dir] [--name tts] [--tracks enci] [--limit N]
        python -m pmvc.tts speak [dir] [--name tts] [--models DIR] [--out tts] [--split test]
                                 [--ids ...] [--timing own|recording] [--sentences FILE]
        python -m pmvc.tts say "こんにちは。" [--name tts] [--models DIR] [--out say.wav]
@@ -38,6 +39,12 @@ Every `--every` epochs the voice itself plays the tracks written for validation 
 from the recordings; the weights kept are the ones closest. The voice's options are the ones
 the encoder's tracks were made for; the model remembers them, and the speaker's sex and
 median pitch, which is all the voice is told of the speaker.
+
+A speaker pauses where the text has no comma (`pmvc.align` marks it: `sp`), and a model that
+only pauses at commas runs long sentences together. When the training is done, the model's
+states at the borders of accent phrases are taught to say whether the speaker pauses there
+(`pauses` does this for a model that is already there), and a sentence the model times itself
+gets a short pause where they say so.
 
 `speak` writes <dir>/<out>/<id>.tracks.json and <id>.wav for the sentences of a split's
 recordings (their meta's text). With `--timing recording` each phoneme lasts as long as in the
@@ -76,7 +83,7 @@ from .encoder import (
     pick_device,
     render_track,
 )
-from .japanese import SIZES, Phone, read
+from .japanese import NONE, SIZES, Phone, border, read
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
 from .paths import ROOT
 from .standin import SKIP_HEARD, load_standin
@@ -173,12 +180,27 @@ class Block(nn.Module):
         return x + self.drop(h)
 
 
+class Pausing(nn.Module):
+    """Whether the speaker pauses at an accent phrase's border where the text has no comma,
+    read off the states of the phonemes either side of it."""
+
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(2 * width, width), nn.ReLU(), nn.Linear(width, 1))
+
+    def forward(self, before: torch.Tensor, after: torch.Tensor) -> torch.Tensor:
+        """The states (borders, width) of the phoneme before each border and of the one after
+        it. Returns the logit that the speaker pauses there."""
+        return self.net(torch.cat([before, after], dim=-1))[:, 0]
+
+
 class Speaker(nn.Module):
     """Phonemes in, their durations and the track's channels out."""
 
-    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1) -> None:
+    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False) -> None:
         super().__init__()
         self.phones = phones
+        self.pausing = Pausing(width) if pausing else None
         self.embed = nn.ModuleList([nn.Embedding(n, width) for n in (len(phones), *SIZES)])
         self.text = nn.ModuleList([Block(width, heads, kernel, dropout) for _ in range(text_layers)])
         self.text_norm = nn.LayerNorm(width)
@@ -304,6 +326,87 @@ def write_track(model: Speaker, voice: Voice, phones: list[Phone], device: str, 
         if phones[k].silent and frames[k] >= PAUSE:
             track[ends[k - 1] + PAUSE_IN : ends[k] - PAUSE_OUT, breath] = 0.0
     return track, frames
+
+
+def unpaused(phones: list[Phone]) -> tuple[list[Phone], list[int], list[bool]]:
+    """A recording's phonemes as its text gives them (the speaker's own pauses taken out), the
+    borders of accent phrases there (each as the index of the phoneme after it), and whether
+    the speaker paused at each."""
+    plain: list[Phone] = []
+    paused: set[int] = set()
+    for p in phones:
+        if p.p == "sp":
+            paused.add(len(plain))
+        else:
+            plain.append(p)
+    at = [k for k in range(len(plain)) if border(plain, k)]
+    return plain, at, [k in paused for k in at]
+
+
+@torch.no_grad()
+def border_states(model: Speaker, data: list[Sentence], device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """For every accent phrase's border in `data`: the model's states either side of it (read
+    from the sentence without the speaker's own pauses) and whether the speaker paused."""
+    model.eval()
+    before, after, paused = [], [], []
+    for s in data:
+        plain, at, did = unpaused(s.phones)
+        if at:
+            ids = torch.tensor([[p.ids(model.phones) for p in plain]], device=device)
+            h, _ = model.read(ids, torch.ones(1, len(plain), dtype=torch.bool, device=device))
+            k = torch.tensor(at, device=device)
+            before.append(h[0, k - 1])
+            after.append(h[0, k])
+            paused += did
+    return torch.cat(before), torch.cat(after), torch.tensor(paused, device=device, dtype=torch.float32)
+
+
+def fit_pausing(model: Speaker, fit: list[Sentence], held: list[Sentence], device: str, epochs: int = 40, seed: int = 0) -> dict[str, float]:
+    """Teaches `model.pausing` on the recordings the model learned from; the model itself
+    stays as it is. Every tenth of those recordings is kept aside, and the weights kept are
+    the ones that say best where the speaker pauses in them: from a few hundred pauses a
+    network learns the borders it saw by heart, and then pauses anywhere. Returns what it does
+    at the held-out recordings' borders."""
+    torch.manual_seed(seed)
+    pausing = Pausing(model.out.in_features).to(device)
+    model.pausing = pausing
+    aside = fit[9::10] if len(fit) >= 20 else fit
+    before, after, paused = border_states(model, [s for k, s in enumerate(fit) if k % 10 != 9] if len(fit) >= 20 else fit, device)
+    b0, a0, p0 = border_states(model, aside, device)
+    opt = torch.optim.AdamW(pausing.parameters(), lr=3e-4, weight_decay=0.1)
+    best, kept = float("inf"), {k: v.clone() for k, v in pausing.state_dict().items()}
+    for _ in range(epochs):
+        pausing.train()
+        for part in torch.randperm(len(paused), device=device).split(512):
+            loss = nn.functional.binary_cross_entropy_with_logits(pausing(before[part], after[part]), paused[part])
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        pausing.eval()
+        with torch.no_grad():
+            miss = float(nn.functional.binary_cross_entropy_with_logits(pausing(b0, a0), p0))
+        if miss < best:
+            best, kept = miss, {k: v.clone() for k, v in pausing.state_dict().items()}
+    pausing.load_state_dict(kept)
+    with torch.no_grad():
+        b, a, did = border_states(model, held, device)
+        said = pausing(b, a) > 0.0
+    return {"borders": float(len(did)), "paused": float(did.sum()), "said": float(said.sum()), "right": float((said & (did > 0.5)).sum()),
+            "fit:borders": float(len(paused) + len(p0)), "fit:paused": float(paused.sum() + p0.sum())}  # fmt: skip
+
+
+@torch.no_grad()
+def phrased(model: Speaker, phones: list[Phone], device: str) -> list[Phone]:
+    """The sentence's phonemes with a short pause where the model says the speaker would
+    pause; as they are if the model was not taught to say."""
+    at = [k for k in range(len(phones)) if border(phones, k)]
+    if model.pausing is None or not at:
+        return phones
+    ids = torch.tensor([[p.ids(model.phones) for p in phones]], device=device)
+    h, _ = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device))
+    k = torch.tensor(at, device=device)
+    put = {i for i, logit in zip(at, model.pausing(h[0, k - 1], h[0, k]).tolist()) if logit > 0.0}
+    return [q for i, p in enumerate(phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask), p) if i in put else (p,))]
 
 
 @torch.no_grad()
@@ -464,14 +567,35 @@ def train(a: argparse.Namespace) -> None:
         log.append(row)
         print(f"epoch {epoch:3d}  " + "  ".join(f"{k} {v:.4f}" for k, v in row.items() if k != "epoch") + ("  *" if row.get("listener") == best else ""), flush=True)
         (out_dir / f"{a.name}.json").write_text(json.dumps({"best": best, "epochs": log}, indent=1))
+    teach_pauses(out_dir / f"{a.name}.pt", fit, held, device)
+
+
+def teach_pauses(path: Path, fit: list[Sentence], held: list[Sentence], device: str) -> None:
+    """Adds to the model in `path` its say on where the speaker pauses without a comma."""
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    model, _ = load_model(path, device)
+    r = fit_pausing(model, fit, held, device)
+    ck["state"], ck["pausing"] = model.state_dict(), True
+    torch.save(ck, path)
+    print(f"pauses without a comma: the speaker makes {r['fit:paused']:.0f} at {r['fit:borders']:.0f} borders of accent phrases in the recordings learned from; "
+          f"held out, {r['paused']:.0f} at {r['borders']:.0f}, and the model says {r['said']:.0f}, {r['right']:.0f} of them where the speaker does", flush=True)  # fmt: skip
+
+
+def pauses(a: argparse.Namespace) -> None:
+    d: Path = a.dir
+    fit, _ = sentences(d, a.tracks, "train", a.jobs)
+    held, _ = sentences(d, a.tracks, "valid", a.jobs)
+    if a.limit:
+        fit = [fit[round(k * len(fit) / a.limit)] for k in range(min(a.limit, len(fit)))]
+    teach_pauses(d / "models" / f"{a.name}.pt", fit, held, pick_device())
 
 
 def load_model(path: Path, device: str) -> tuple[Speaker, Voice]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     voice = Voice.of(ck["voice"])
     voice.decoder.quiet_pauses = True
-    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"])
-    model.load_state_dict(ck["state"])
+    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False))
+    model.load_state_dict({k: v for k, v in ck["state"].items() if ck.get("pausing") or not k.startswith("pausing.")})
     return model.to(device).eval(), voice
 
 
@@ -502,7 +626,7 @@ def speak(a: argparse.Namespace) -> None:
             phones, frames = timed[uid]
             track, _ = write_track(model, voice, phones, device, np.array(frames, dtype=np.int64))
         else:
-            track, _ = write_track(model, voice, phonemes(model, json.loads((d / "meta" / f"{uid}.json").read_text())["text"]), device)
+            track, _ = write_track(model, voice, phrased(model, phonemes(model, json.loads((d / "meta" / f"{uid}.json").read_text())["text"]), device), device)
         tracks.append(voice.track(track, not timed))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
@@ -514,7 +638,7 @@ def speak(a: argparse.Namespace) -> None:
 def say(a: argparse.Namespace) -> None:
     device = pick_device()
     model, voice = load_model(a.models / f"{a.name}.pt", device)
-    phones = phonemes(model, a.text)
+    phones = phrased(model, phonemes(model, a.text), device)
     frames, lasting = write_track(model, voice, phones, device)
     track = voice.track(frames, True)
     sf.write(str(a.out), render_track(track), 48000, subtype="PCM_16")
@@ -527,15 +651,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
     t = sub.add_parser("train")
+    u = sub.add_parser("pauses")
     s = sub.add_parser("speak")
     y = sub.add_parser("say")
-    for p in (t, s):
+    for p in (t, u, s):
         p.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "hfcm")
     y.add_argument("text", type=str)
-    for p in (t, s, y):
+    for p in (t, u, s, y):
         p.add_argument("--name", type=str, default="tts")
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
-    t.add_argument("--tracks", type=str, default="enci", help="the variant whose tracks are learned from")
+    for p in (t, u):
+        p.add_argument("--tracks", type=str, default="enci", help="the variant whose tracks are learned from")
+        p.add_argument("--limit", type=int, default=0, help="learn from only so many of the recordings")
     t.add_argument("--models", type=Path, default=ROOT / "out" / "transplant" / "models", help="where the stand-in is")
     t.add_argument("--standin", type=str, default="standin_2c")
     t.add_argument("--closed", type=float, default=1.0, help="the weight of the term through the stand-in; 0 for none")
@@ -550,7 +677,6 @@ def main() -> None:
     t.add_argument("--text-layers", type=int, default=4)
     t.add_argument("--frame-layers", type=int, default=6)
     t.add_argument("--lr", type=float, default=5e-4)
-    t.add_argument("--limit", type=int, default=0, help="learn from only so many of the recordings")
     t.add_argument("--seed", type=int, default=0)
     s.add_argument("--models", type=Path, default=None, help="where the model is, if not <dir>/models")
     s.add_argument("--out", type=str, default="tts")
@@ -562,7 +688,7 @@ def main() -> None:
     y.add_argument("--models", type=Path, default=ROOT / "out" / "hfcm" / "models")
     y.add_argument("--out", type=Path, default=Path("say.wav"))
     a = ap.parse_args()
-    {"train": train, "speak": speak, "say": say}[a.command](a)
+    {"train": train, "pauses": pauses, "speak": speak, "say": say}[a.command](a)
 
 
 if __name__ == "__main__":

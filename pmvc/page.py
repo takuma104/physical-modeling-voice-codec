@@ -3,7 +3,7 @@ with the audio embedded, the scores in tables and what Whisper heard under each 
 
 usage: python -m pmvc.page [dir] [--abroad out/ja] [--notes notes.html] [--notes-ja notes_ja.html]
                            [--notes-tts notes_tts.html] [--say out/say]
-                           [--sentences 12] [--perturbed 4] [--en-url URL] [--ja-url URL]
+                           [--sentences 12] [--perturbed 4] [--en-url URL] [--ja-url URL] [--tts-url URL]
 
 Three pages, since one would be too large to publish: <dir>/listening.html, the experiments on
 TSP's recordings; <dir>/listening_ja.html, the ones on recordings from outside it (the
@@ -12,7 +12,7 @@ reads <dir>/results.json and <dir>/perturb_results.json (`pmvc.evaluate`), <dir>
 (`pmvc.perturb`) and the WAVs, and its later sections appear once their results are there; the
 second reads `pmvc.judge`'s results in `--abroad`; the third reads results_tts.json there and
 `--say`'s results.json. Given the pages' published addresses, the first two point at each
-other and the third at both. `--notes` is an HTML fragment shown at the top (the findings,
+other, the second at the third, and the third at both. `--notes` is an HTML fragment shown at the top (the findings,
 written by whoever ran the experiment). The page is written without <html>/<head>/<body>, as
 an Artifact wants it; browsers open it as it is.
 """
@@ -154,14 +154,20 @@ TTS_LABELS: dict[str, str] = {
     "enci": "エンコーダ I（録音から）",
     "ttsd": "TTS（音素の長さは録音）",
     "tts": "TTS（テキストだけから）",
-    "ttsfew": "TTS（200 文だけで学習）",
 }
 TTS_NOTES: dict[str, str] = {
     "real": "Hi-Fi-CAPTAIN の男性話者",
     "enci": "録音を聞いて書いた制御列。TTS の手本で、ここが上限",
     "ttsd": "テキストから書いた制御列。各音素の長さだけ録音に合わせた",
     "tts": "音素の長さもモデルが決める。録音は使わない",
-    "ttsfew": "学習データを 18,655 文から 200 文に減らしたモデル",
+}
+# the same model taught with fewer of the recordings: the variant, how many, and how long they are together
+TTS_SIZES: dict[str, tuple[str, str]] = {
+    "tts": ("18,655 文", "約 24 時間。上の「TTS（テキストだけから）」"),
+    "tts2000": ("2,000 文", "約 2.6 時間"),
+    "tts200": ("200 文", "約 15 分"),
+    "tts50": ("50 文", "約 4 分"),
+    "tts20": ("20 文", "約 1.5 分"),
 }
 VOICE_LABELS: dict[str, str] = {
     "noiseGlottis": "雑音源のゲイン（声門）",
@@ -848,11 +854,13 @@ def codec_perturbed(d: Path, metas: dict[str, Any], clips: dict[str, str], n: in
 def tts_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
     """Text to speech on the latent: `pmvc.judge`'s results for the test sentences of the
     speaker the model was taught with (`ja`/results_tts.json: the recording, the encoder's
-    render and the model's) and for sentences nobody recorded (`say`/results.json)."""
+    render and the model's, and those of models taught with fewer recordings) and for
+    sentences nobody recorded (`say`/results.json)."""
     results = json.loads((ja / "results_tts.json").read_text())
     speaker = results["utterances"][0]["speaker"]
     summary = results["summary"][speaker]
     variants = [v for v in TTS_LABELS if v in summary]
+    sizes = [v for v in TTS_SIZES if v in summary]
 
     def row(label: str, note: str, cells: str) -> str:
         return f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(note)}</span></th>{cells}</tr>'
@@ -871,16 +879,16 @@ def tts_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
 <tbody>{said}</tbody></table></div>
 {{{{tts_between}}}}
 <div class="scroll"><table>
-<caption>録音との近さと、破裂のクリック音。リスナー距離・ピッチの相関・有声無声の一致は、録音と同じ時間軸の合成音でだけ測れます。</caption>
+<caption>録音との近さと、破裂のクリック音。リスナー距離・ピッチの相関・有声無声の一致は、録音と同じ時間軸の合成音でだけ測れます。クリック音は、どの音もその音自身の発話区間で数えています。</caption>
 <thead><tr><th scope="col">条件</th><th scope="col">リスナー距離</th><th scope="col">ピッチの相関</th><th scope="col">有声・無声の一致 %</th><th scope="col">破裂のクリック音 回/秒</th><th scope="col">その大きさ dB</th></tr></thead>
 <tbody>{along}</tbody></table></div>"""
 
-    def cards(where: Path, rows: list[dict[str, Any]], shown: list[str]) -> str:
+    def cards(where: Path, rows: list[dict[str, Any]], shown: dict[str, str]) -> str:
         out = []
         for r in rows:
             buttons = "".join(
-                button(clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", TTS_LABELS[v], f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
-                for v in shown if v in r["variants"]
+                button(clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", label, f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
+                for v, label in shown.items() if v in r["variants"]
             )  # fmt: skip
             out.append(
                 f"""<article class="sentence">
@@ -896,24 +904,31 @@ def tts_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
     body = f"""<section aria-labelledby="h-test"><h2 id="h-test">1. テストの文</h2>
 {{{{tts_text}}}}
 {tables}
-<div class="stack">{cards(ja, tested[4::10], [v for v in variants if v != "ttsfew"])}</div>
+<div class="stack">{cards(ja, tested[4::10], {v: TTS_LABELS[v] for v in variants})}</div>
 </section>"""
-    if (say / "results.json").exists():
-        free = json.loads((say / "results.json").read_text())
+    free = json.loads((say / "results.json").read_text()) if (say / "results.json").exists() else None
+    if free is not None:
         group = free["summary"]["ja"]
-        rows = "".join(row(TTS_LABELS[v], TTS_NOTES[v], rate_cell(group[v], "rate") + rate_cell(group[v], "rate2") + num_cell(group[v], "quality", ".2f")) for v in TTS_LABELS if v in group)
         body += f"""<section aria-labelledby="h-say"><h2 id="h-say">2. コーパスにない文</h2>
 {{{{say_text}}}}
-<div class="scroll"><table>
-<caption>録音のない {group["n"]} 文。Whisper の 2 列は音素誤り率、角括弧は 95% 区間。</caption>
-<thead><tr><th scope="col">条件</th><th scope="col">Whisper small %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">NISQA</th></tr></thead>
-<tbody>{rows}</tbody></table></div>
-<div class="stack">{cards(say, sorted(free["utterances"], key=lambda r: r["id"]), ["tts"])}</div>
+<div class="stack">{cards(say, sorted(free["utterances"], key=lambda r: r["id"]), {"tts": "TTS"})}</div>
 </section>"""
-        if "ttsfew" in group:
-            body += f"""<section aria-labelledby="h-few"><h2 id="h-few">3. 学習データが足りないとき</h2>
+    if len(sizes) > 1:
+        by_size = "".join(
+            row(TTS_SIZES[v][0], TTS_SIZES[v][1], rate_cell(summary[v], "rate") + rate_cell(summary[v], "rate2") + rate_cell(summary[v], "phoneRate") + num_cell(summary[v], "quality", ".2f")
+                + (rate_cell(group[v], "rate") + rate_cell(group[v], "rate2") if free is not None and v in group else ""))
+            for v in sizes
+        )  # fmt: skip
+        outside = '<th scope="col">録音のない文 small %</th><th scope="col">同 large-v3-turbo %</th>' if free is not None else ""
+        labels = {v: TTS_SIZES[v][0] for v in sizes}
+        more = cards(say, sorted(free["utterances"], key=lambda r: r["id"])[:4], labels) if free is not None else ""
+        body += f"""<section aria-labelledby="h-few"><h2 id="h-few">3. 学習データを減らす</h2>
 {{{{few_text}}}}
-<div class="stack">{cards(say, sorted(free["utterances"], key=lambda r: r["id"])[:6], ["tts", "ttsfew"])}{cards(ja, tested[4::30], ["real", "tts", "ttsfew"])}</div>
+<div class="scroll"><table>
+<caption>学習に使う録音の数を変えた TTS。左の 4 列はテストの {summary["n"]} 文、右の 2 列は第 2 節の録音のない文。Whisper の列は音素誤り率、角括弧は 95% 区間。</caption>
+<thead><tr><th scope="col">学習データ</th><th scope="col">Whisper small %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA</th>{outside}</tr></thead>
+<tbody>{by_size}</tbody></table></div>
+<div class="stack">{cards(ja, tested[9::30], {"real": TTS_LABELS["real"], **labels})}{more}</div>
 </section>"""
     return body
 
@@ -925,11 +940,11 @@ def shell(title: str, lede: str, notes: str, body: str, credits: str, clips: dic
     )  # fmt: skip
 
 
-def pointer(number: int, heading: str, text: str, title: str, url: str) -> str:
-    """A section that only points at the other page, or nothing without its address."""
+def pointer(number: int, heading: str, text: str, title: str, url: str, name: str = "more") -> str:
+    """A section that only points at another page, or nothing without its address."""
     if not url:
         return ""
-    return f'''<section aria-labelledby="h-more"><h2 id="h-more">{number}. {esc(heading)}</h2>
+    return f'''<section aria-labelledby="h-{name}"><h2 id="h-{name}">{number}. {esc(heading)}</h2>
 <p>{esc(text)}<a href="{esc(url)}">{esc(title)}</a></p></section>'''
 
 
@@ -978,7 +993,7 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int, ja_url: str =
     return shell(TITLE_EN, LEDE_EN, notes, body, CREDITS_EN, clips)
 
 
-def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = "") -> str:
+def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = "", tts_url: str = "") -> str:
     """The second page: recordings from outside TSP, the Japanese ones above all."""
     clips: dict[str, str] = {}
     body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
@@ -986,7 +1001,9 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_walls}}", TUNED_WALLS).replace("{{tuned_closure}}", TUNED_CLOSURE).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
     retaught = retaught_section(d, ja, jvs, clips).replace("{{retaught_text}}", RETAUGHT_TEXT).replace("{{retaught_sounds}}", RETAUGHT_SOUNDS)
     body += retaught
-    body += pointer(5 if retaught else 4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
+    last = 5 if retaught else 4
+    said = pointer(last, "テキストからの合成（TTS）", "エンコーダ I の制御列を手本に、テキストから制御列を書くモデルを作った結果は別のページにあります: ", TITLE_TTS, tts_url, "tts")
+    body += said + pointer(last + 1 if said else last, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
 
@@ -1169,10 +1186,14 @@ CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS
 TITLE_TTS = "CHIMERA 日本語 TTS の試聴"
 LEDE_TTS = "テキストから制御列（100 Hz × 21 チャネル）を書くモデルを作り、物理モデル音声合成 CHIMERA に鳴らさせた結果です。合成エンジンは無改造です。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
 CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
-TTS_TEXT = ""
-TTS_BETWEEN = ""
-SAY_TEXT = ""
-FEW_TEXT = ""
+TTS_TEXT = """<p>テキストから制御列を書くモデルです。日本語編のエンコーダは録音を聞いて制御列を書きましたが、こちらは文だけから書きます。鳴らすのは同じ CHIMERA（無改造）で、鳴らし方も日本語編で決めた「調整後の声」です。</p>
+<p>入力は、Open JTalk が読んだ音素の列です。各音素に、アクセント句の中での位置（アクセント核から何モーラ離れているか、句の頭と末から何モーラ目か）と、疑問文かどうかを添えます。モデルはまず音素ごとの長さを決め、その長さぶんのフレームに、エンコーダが書く 16 チャネルとピッチを 100 Hz で書きます。FastSpeech 2 と同じ形の、自己回帰でないモデルです（約 1,900 万パラメータ）。</p>
+<p>学習に使ったのは、Hi-Fi-CAPTAIN の男性話者の録音 18,655 文（約 24 時間）です。手本は、エンコーダ I がその録音から書いた制御列です。誤差は 2 つあります。手本の制御列との差と、書いた制御列が録音と同じに聞こえるかどうかです（声の代役モデルを通した聞き比べ。エンコーダ I の学習と同じ仕組みです）。各音素が録音のどこにあたるかは、録音と読みだけから学習して決めました。</p>
+<p>テストは、日本語編と同じ 100 文です（Hi-Fi-CAPTAIN の評価用の文で、学習にも検証にも使っていません）。「TTS（音素の長さは録音）」は、音素の長さだけを録音から借りた合成音です。録音と同じ時間軸になるので、エンコーダと同じ物差しで比べられます。</p>"""
+TTS_BETWEEN = """<p class="small">「TTS（テキストだけから）」は録音と時間軸が違うので、リスナー距離などは測れません。破裂のクリック音は、日本語編では録音と突き合わせて数えましたが、ここではどの音も、その音自身の発話区間で同じ数え方をしています（実録音と同じ数え方）。</p>"""
+SAY_TEXT = """<p>コーパスにない文を読ませたものです。録音がないので、Whisper の聞き取りだけを添えます（誤り率は第 3 節の表の右 2 列）。早口言葉、外来語、アクセントだけが違う語（箸・橋・端）も入れました。読みとアクセントは Open JTalk の推定をそのまま使っているので、推定が外れた語はその読み、その高さで話します。</p>"""
+FEW_TEXT = """<p>同じモデルを、学習に使う録音を減らして作り直しました。録音はコーパス全体から等間隔に選んでいます。モデルの大きさは同じです。</p>
+<p>このコーデックの仮説は「潜在表現が外れても、人間の発声としてあり得る音になる」でした。データが足りない TTS は制御列を書き損じるので、書き損じがどう聞こえるかをここで確かめられます。</p>"""
 
 
 def main() -> None:
@@ -1192,6 +1213,7 @@ def main() -> None:
     ap.add_argument("--out-tts", type=str, default="listening_tts.html")
     ap.add_argument("--en-url", type=str, default="", help="where the first page is published, for the second to point at")
     ap.add_argument("--ja-url", type=str, default="", help="where the second page is published")
+    ap.add_argument("--tts-url", type=str, default="", help="where the third page is published, for the second to point at")
     a = ap.parse_args()
 
     def notes(path: Path | None) -> str:
@@ -1199,7 +1221,7 @@ def main() -> None:
 
     pages = [(a.dir / a.out, build(a.dir, notes(a.notes), a.sentences, a.perturbed, a.ja_url))]
     if (a.abroad / "results.json").exists():
-        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url)))
+        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url, a.tts_url)))
     if (a.abroad / "results_tts.json").exists():
         pages.append((a.dir / a.out_tts, build_tts(a.abroad, a.say, notes(a.notes_tts), a.en_url, a.ja_url)))
     for out, page in pages:
