@@ -6,7 +6,7 @@
 //! and flows, articulator positions and velocities, glottal phase), so a search can render a
 //! track up to a frame once and try many continuations from there.
 
-use chimera::anatomy::human::{ArticKey, BodyMix, HumanVocalTract, NEUTRAL};
+use chimera::anatomy::human::{ArticKey, BodyMix, HumanBody, HumanVocalTract, NEUTRAL};
 use chimera::control::articulators::ARTIC_SPECS;
 use chimera::control::score::{ControlKey, Gesture, Targets};
 use chimera::math::PI;
@@ -22,6 +22,34 @@ fn bad(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+/// A body from its description: a preset name or `{"female": f, "child": c}`, CHIMERA's own
+/// continuous family, and with any of `scale`, `pharynx`, `tongueRadius` and `lipWidth` beside
+/// them that number of the anatomy as given, in place of the family's (a tract longer than
+/// the adult male's, a throat of another proportion). Also the family's member, for what
+/// CHIMERA keys by it (the pitch a voice idles at).
+fn body_of(s: &str) -> PyResult<(BodyMix, HumanBody)> {
+    let v: serde_json::Value = serde_json::from_str(s).or_else(|_| serde_json::from_str(&format!("{s:?}"))).map_err(bad)?;
+    let mut own = [None; 4];
+    let mut family = v.clone();
+    if let Some(o) = family.as_object_mut() {
+        for (k, key) in ["scale", "pharynx", "tongueRadius", "lipWidth"].iter().enumerate() {
+            if let Some(x) = o.remove(*key) {
+                own[k] = Some(x.as_f64().ok_or_else(|| bad(format!("{key} is not a number")))?);
+            }
+        }
+    }
+    let mix: BodyMix = serde_json::from_value(family).map_err(bad)?;
+    let b = mix.body();
+    let body = HumanBody {
+        name: b.name,
+        scale: own[0].unwrap_or(b.scale),
+        pharynx: own[1].unwrap_or(b.pharynx),
+        tongue_radius: own[2].unwrap_or(b.tongue_radius),
+        lip_width: own[3].unwrap_or(b.lip_width),
+    };
+    Ok((mix, body))
+}
+
 #[pyclass]
 struct Voice {
     v: HumanVoice,
@@ -34,18 +62,19 @@ struct Voice {
 
 #[pymethods]
 impl Voice {
-    /// `body`: a preset name or `{"female": f, "child": c}` as JSON. `source`: a JSON object of
+    /// `body`: a preset name or `{"female": f, "child": c}` as JSON, with `scale`, `pharynx`,
+    /// `tongueRadius` or `lipWidth` beside them for an anatomy of its own (see `body_of`). `source`: a JSON object of
     /// voice source settings (`{"f0": 120, "tension": 0.5, ...}`). `keys`: the track's columns.
     /// `rate`: frames per second. `speed`: how many times faster than their natural rate the
     /// articulators follow the track.
     #[new]
     #[pyo3(signature = (body, source, keys, rate=100.0, speed=6.0))]
     fn new(body: &str, source: &str, keys: Vec<String>, rate: f64, speed: f64) -> PyResult<Self> {
-        let body: BodyMix = serde_json::from_str(body).or_else(|_| serde_json::from_str(&format!("{body:?}"))).map_err(bad)?;
+        let (mix, body) = body_of(body)?;
         let patch: SourcePatch = serde_json::from_str(source).map_err(bad)?;
         chimera::init();
-        let mut v = HumanVoice::new(FS, body.body(), oversample_for(FS));
-        let mut src = SourcePatch::f0(chimera::engine::default_f0(body));
+        let mut v = HumanVoice::new(FS, body, oversample_for(FS));
+        let mut src = SourcePatch::f0(chimera::engine::default_f0(mix));
         src.merge(&patch);
         v.set_source(&src);
         let keys: Vec<ControlKey> = keys.iter().map(|k| ControlKey::from_name(k).ok_or_else(|| bad(format!("unknown key {k:?}")))).collect::<PyResult<_>>()?;
@@ -246,13 +275,13 @@ impl Voice {
 /// for a [`Voice`]; `posture`: a JSON object of articulator values, the rest neutral.
 #[pyfunction]
 fn outline(body: &str, posture: &str) -> PyResult<String> {
-    let body: BodyMix = serde_json::from_str(body).or_else(|_| serde_json::from_str(&format!("{body:?}"))).map_err(bad)?;
+    let (_, body) = body_of(body)?;
     let values: std::collections::BTreeMap<String, f64> = serde_json::from_str(posture).map_err(bad)?;
     let mut a = NEUTRAL;
     for (name, x) in &values {
         a.set(ArticKey::from_name(name).ok_or_else(|| bad(format!("unknown articulator {name:?}")))?, *x);
     }
-    serde_json::to_string(&HumanVocalTract::new(body.body()).compute_new(&a)).map_err(bad)
+    serde_json::to_string(&HumanVocalTract::new(body).compute_new(&a)).map_err(bad)
 }
 
 #[pymodule]

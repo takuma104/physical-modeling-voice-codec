@@ -1,33 +1,43 @@
-"""Fit the voice to a speaker: the body and the glottis under which the speaker's control
-tracks sound most like the speaker.
+"""Fit the voice to a speaker: the body, the glottis and the habits of posture under which
+the speaker's control tracks sound most like the speaker.
 
 Of a speaker the voice is told the sex, which picks one of two bodies, and the median pitch;
 a speaker-verification model then cannot tell its renders of one speaker from those of another
-of the same sex (`pmvc.whose`). But CHIMERA's body is continuous (from the adult male to the
-adult female, and from adult to child: the size of the tract and how much of it is throat), and
-so are the settings of its source that differ between people. Here they are fitted for each
-speaker, a handful of numbers to go with the speaker's tracks:
-  female, child   the body (0 to 1 each; the sex gives 0 or 1 and no child)
+of the same sex (`pmvc.whose`). But CHIMERA's body is continuous, and so are the settings of
+its source that differ between people. Here they are fitted for each speaker, a handful of
+numbers to go with the speaker's tracks:
+  female, child   the body within CHIMERA's own family (0 to 1 each: from the adult male to the
+                  adult female, from adult to child; the sex gives 0 or 1 and no child)
+  scale, pharynx, tongueRadius, lipWidth
+                  the body's four numbers themselves, which the family moves together: the
+                  tract's size (1 the adult male's, and larger than his too), how much of it
+                  is throat, the tongue body's radius and the lips' width (cm)
   openQuotient    the share of a cycle the glottis is open (pressed to breathy)
   brightness      how sharply the glottis closes (the slope of the source's spectrum)
   tension         the folds' tension (what else of the pulse follows from it)
+  epilarynx       how narrow the tube above the glottis is held (0 to 1; the encoder leaves it
+                  at 0): the ring of a voice around 3 kHz
+  larynxShift, velumShift, rootShift
+                  what is added to the encoder's channel in every frame: a larynx carried
+                  higher or lower (cm), a little more or less opening to the nose (cm²), the
+                  tongue root further forward or back (cm)
 
 usage: python -m pmvc.speaker fit [dir] [--tracks enci] [--split train] [--n 6] [--of 20]
-                                  [--only female,child] [--evals 90] [--name speakers]
-                                  [--seconds 4] [--at-once 3] [--speakers a,b]
+                                  [--only female,child] [--start FILE] [--evals 90]
+                                  [--name speakers] [--seconds 4] [--at-once 3] [--speakers a,b]
 
 For each speaker of <dir>: the first `--seconds` of `--n` of the split's recordings (spread
-over them) are rendered from
-their tracks (`--tracks`, an encoder's) under candidate settings, starting from the tracks' own,
-and a verification model (`pmvc.whose`'s) says how close the renders are to the speaker: the
-cosine between a render's vector and the mean vector of `--of` of the speaker's recordings.
-Each setting is first tried on its own over its range, then all are searched together
-(`--evals` renders of the recordings in all). The settings kept are those with the highest
-mean cosine, less GUARD for every unit by which the
-renders move away from their recordings as `pmvc.listener` hears them: a voice more like the
-speaker's must not say something else. `--only` fits these settings and leaves the others as
-the tracks have them. Writes <dir>/<name>.json, a speaker at a time (speakers already in it are
-not fitted again):
+over them) are rendered from their tracks (`--tracks`, an encoder's) under candidate settings,
+starting from the tracks' own (or `--start`'s, an earlier fit's file), and a verification
+model (`pmvc.whose`'s) says how close the renders are to the speaker: the cosine between a
+render's vector and the mean vector of `--of` of the speaker's recordings. Each setting is
+first tried on its own over its range and then a little to either side of where that left
+it, then all are searched together (`--evals` renders of the recordings in all). The settings
+kept are those with the highest mean cosine, less GUARD for every unit by which the renders
+move away from their recordings as `pmvc.listener` hears them: a voice more like the speaker's
+must not say something else. `--only` fits these settings and leaves the others as they are;
+the body is fitted either within the family (female, child) or by its four numbers. Writes
+<dir>/<name>.json, a speaker at a time (speakers already in it are not fitted again):
   speakers.<name>.settings   the fitted settings
   speakers.<name>.fit        the cosine and the listener's distance before and after, on the
                              fitted recordings
@@ -55,36 +65,79 @@ from .listener import FEATURE_RATE, Listener, distance, to16k
 from .paths import ROOT
 from .whose import SR, Verifier
 
-# a setting, the part of a track it is in, its range, and what it is where a track does not
-# say (CHIMERA's own; the open quotient is what the source's defaults make it)
+# a setting, where in a track it is (a part of the track; or a channel of its frames that is
+# `set` to it or `shift`ed by it), its range, and what it is where a track does not say
+# (CHIMERA's own; the open quotient is what the source's defaults make it; the body's four
+# numbers are what its family gives)
 PARAMS: tuple[tuple[str, str, float, float, float], ...] = (
     ("female", "body", 0.0, 1.0, 0.0),
     ("child", "body", 0.0, 0.5, 0.0),
+    ("scale", "body", 0.80, 1.12, float("nan")),
+    ("pharynx", "body", 0.76, 1.10, float("nan")),
+    ("tongueRadius", "body", 2.05, 2.40, float("nan")),
+    ("lipWidth", "body", 3.8, 5.0, float("nan")),
     ("openQuotient", "glottis", 0.45, 0.95, 0.6),
     ("brightness", "source", 0.02, 0.8, 0.25),
     ("tension", "source", 0.02, 0.9, 0.5),
+    ("epilarynx", "set", 0.0, 1.0, 0.0),
+    ("larynxShift", "shift", -0.6, 0.6, 0.0),
+    ("velumShift", "shift", -0.1, 0.3, 0.0),
+    ("rootShift", "shift", -0.5, 0.5, 0.0),
 )
+# the body's four numbers for CHIMERA's adult male, adult female and child
+PRESETS: dict[str, tuple[float, float, float]] = {"scale": (1.0, 0.9, 0.74), "pharynx": (1.0, 0.88, 0.8), "tongueRadius": (2.25, 2.2, 2.15), "lipWidth": (4.6, 4.4, 4.0)}
 # what one unit of the listener's distance to the recordings costs in cosine, and the listener
 GUARD: float = 2.0
 GUARD_LISTENER: tuple[str, int] = ("utter-project/mHuBERT-147", 8)
-# where in its range each setting is tried on its own before the search
-SCAN: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
+# where in its range each setting is tried on its own before the search, and then how far
+# to either side of where that left it
+SCAN: tuple[float, ...] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+NEAR: tuple[float, ...] = (-0.1, 0.1)
+
+
+def family(female: float, child: float) -> dict[str, float]:
+    """The body's four numbers for a member of CHIMERA's family, as its `BodyMix` blends them."""
+    w = ((1 - child) * (1 - female), (1 - child) * female, child)
+    return {k: sum(a * b for a, b in zip(w, v)) for k, v in PRESETS.items()}
 
 
 def settled(track: dict[str, Any], s: dict[str, float]) -> dict[str, Any]:
-    """`track` with a speaker's settings in place of its own."""
+    """`track` with a speaker's settings in place of its own; its frames with the speaker's
+    habits of posture (as a list if they were one)."""
     out = {**track, "body": dict(track["body"]), "source": dict(track["source"]), "glottis": dict(track.get("glottis", {}))}
-    for name, part, _, _, _ in PARAMS:
-        if name in s:
+    frames: NDArray[np.float64] | None = None
+    for name, part, _, _, default in PARAMS:
+        if name not in s:
+            continue
+        if part in ("set", "shift"):
+            if part == "shift" and s[name] == default:
+                continue
+            if frames is None:
+                frames = np.array(track["frames"], dtype=np.float64)
+            k = track["keys"].index(name.removesuffix("Shift"))
+            frames[:, k] = s[name] if part == "set" else frames[:, k] + s[name]
+        else:
             out[part][name] = round(float(s[name]), 5)
     if not out["glottis"]:
         del out["glottis"]
+    if frames is not None:
+        out["frames"] = frames if isinstance(track["frames"], np.ndarray) else np.round(frames, 5).tolist()
     return out
 
 
 def own(track: dict[str, Any]) -> dict[str, float]:
     """The settings a track has."""
-    return {name: float(track.get(part, {}).get(name, default)) for name, part, _, _, default in PARAMS}
+    body = track["body"]
+    of_family = family(float(body.get("female", 0.0)), float(body.get("child", 0.0)))
+    s: dict[str, float] = {}
+    for name, part, _, _, default in PARAMS:
+        if part == "set":
+            s[name] = float(np.mean(np.asarray(track["frames"])[:, track["keys"].index(name)]))
+        elif part == "shift":
+            s[name] = default
+        else:
+            s[name] = float(track.get(part, {}).get(name, of_family.get(name, default)))
+    return s
 
 
 class Judges:
@@ -111,7 +164,7 @@ def chosen(ids: list[str], of: int, n: int) -> tuple[list[str], list[str]]:
     return told, told[:: max(1, len(told) // n)][:n]
 
 
-def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judges: Judges, pool: ThreadPoolExecutor) -> dict[str, Any]:
+def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judges: Judges, pool: ThreadPoolExecutor, before_this: dict[str, float] | None = None) -> dict[str, Any]:
     told, fitted = chosen(ids, a.of, a.n)
     target = np.stack([judges.vector(load(d / "real" / f"{uid}.wav", SR)[0]) for uid in told]).mean(axis=0)
     target /= np.linalg.norm(target)
@@ -123,13 +176,22 @@ def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judge
     spans = [(int(m["span"][0] * FEATURE_RATE), min(int(m["span"][1] * FEATURE_RATE), int(a.seconds * FEATURE_RATE))) for m in metas]
     recorded = [judges.heard(load(d / "real" / f"{uid}.wav", SR)[0]) for uid in fitted]
     start = own(tracks[0])
-    free = [k for k, p in enumerate(PARAMS) if not a.only or p[0] in a.only.split(",")]
+    if before_this is not None:
+        # an earlier fit's settings; the body's four numbers are its family's unless it had them
+        start.update(family(before_this.get("female", start["female"]), before_this.get("child", start["child"])))
+        start.update(before_this)
+    only = a.only.split(",") if a.only else ["female", "child", "openQuotient", "brightness", "tension"]
+    free = [k for k, p in enumerate(PARAMS) if p[0] in only]
+    within = any(name in only for name in ("female", "child"))
+    assert not (within and any(name in only for name in PRESETS)), "the body is fitted within its family or by its four numbers, not both"
 
     def settings(u: NDArray[np.float64]) -> dict[str, float]:
         s = dict(start)
         for k, x in zip(free, u):
             name, _, lo, hi, _ = PARAMS[k]
             s[name] = float(lo + np.clip(x, 0.0, 1.0) * (hi - lo))
+        if within:
+            s.update(family(s["female"], s["child"]))
         return s
 
     def scores(s: dict[str, float]) -> tuple[float, float]:
@@ -148,18 +210,21 @@ def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judge
         like, far = scores(settings(u))
         return -like + GUARD * max(0.0, far - before[1])
 
-    u = np.array([(start[PARAMS[k][0]] - PARAMS[k][2]) / (PARAMS[k][3] - PARAMS[k][2]) for k in free])
+    u = np.clip(np.array([(start[PARAMS[k][0]] - PARAMS[k][2]) / (PARAMS[k][3] - PARAMS[k][2]) for k in free]), 0.0, 1.0)
     least, tries = -before[0], 0
-    # first each setting on its own over its whole range, the others as they stand: a search
-    # that only steps from where it is stays in the nearest dip
-    for i in range(len(free)):
-        for x in SCAN:
-            v = u.copy()
-            v[i] = x
-            c = cost(v)
-            tries += 1
-            if c < least:
-                least, u = c, v
+    # first each setting on its own over its whole range, the others as they stand (a search
+    # that only steps from where it is stays in the nearest dip), then a little to either side
+    for spots in (SCAN, NEAR):
+        for i in range(len(free)):
+            for x in spots:
+                v = u.copy()
+                v[i] = x if spots is SCAN else float(np.clip(u[i] + x, 0.0, 1.0))
+                if abs(v[i] - u[i]) < 1e-9:
+                    continue
+                c = cost(v)
+                tries += 1
+                if c < least:
+                    least, u = c, v
     # then all together, from there: a first simplex that moves each by a tenth of its range, inwards
     simplex = np.vstack([u, *(u + np.eye(len(free))[i] * (0.1 if u[i] < 0.8 else -0.1) for i in range(len(free)))])
     r = minimize(cost, u, method="Nelder-Mead", bounds=[(0.0, 1.0)] * len(free), options={"maxfev": max(len(free) + 2, a.evals - tries), "initial_simplex": simplex, "xatol": 0.01, "fatol": 1e-4})
@@ -176,14 +241,15 @@ def fit(a: argparse.Namespace) -> None:
     for uid in ids_in(d, a.split):
         by.setdefault(json.loads((d / "meta" / f"{uid}.json").read_text())["speaker"], []).append(uid)
     path = d / f"{a.name}.json"
-    out: dict[str, Any] = json.loads(path.read_text()) if path.exists() else {"tracks": a.tracks, "only": a.only, "evals": a.evals, "speakers": {}}
+    out: dict[str, Any] = json.loads(path.read_text()) if path.exists() else {"tracks": a.tracks, "only": a.only, "evals": a.evals, "start": str(a.start or ""), "speakers": {}}
+    earlier: dict[str, Any] = json.loads(a.start.read_text())["speakers"] if a.start else {}
     names = [n for n in sorted(by) if n not in out["speakers"] and (not a.speakers or n in a.speakers.split(","))]
     judges = Judges(pick_device())
     lock = threading.Lock()
     print(f"{len(names)} speakers to fit ({len(out['speakers'])} already are)", flush=True)
 
     def one(name: str) -> None:
-        got = fit_speaker(d, name, by[name], a, judges, pool)
+        got = fit_speaker(d, name, by[name], a, judges, pool, earlier[name]["settings"] if name in earlier else None)
         with lock:
             out["speakers"][name] = got
             path.write_text(json.dumps(out, indent=1))
@@ -203,7 +269,8 @@ def main() -> None:
     f.add_argument("--split", choices=["test", "valid", "train", "all"], default="train")
     f.add_argument("--n", type=int, default=6, help="recordings of a speaker to render")
     f.add_argument("--of", type=int, default=20, help="recordings of a speaker that say who the speaker is")
-    f.add_argument("--only", type=str, default="", help="fit only these settings, comma-separated")
+    f.add_argument("--only", type=str, default="", help="fit these settings, comma-separated (without it: female, child, openQuotient, brightness, tension)")
+    f.add_argument("--start", type=Path, default=None, help="an earlier fit's file: each speaker's search starts from its settings")
     f.add_argument("--evals", type=int, default=90)
     f.add_argument("--seconds", type=float, default=4.0, help="how much of each recording is rendered")
     f.add_argument("--name", type=str, default="speakers")
