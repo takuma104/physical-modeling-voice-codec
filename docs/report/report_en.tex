@@ -48,7 +48,9 @@ by listening to the simulator's own mechanics and removed through its public set
 text-to-speech model that writes the track from phonemes is read as well as the encoder (0.2\%
 against 0.1\%), and it needs very little data: taught with 200 sentences (15 minutes) of one
 speaker it gets 0.5\% of the phonemes wrong, with 20 sentences (1.5 minutes) 7.7\%, and its
-renders still score as clean speech.
+renders still score as clean speech. Taught with a hundred speakers it reads sentences it never
+saw as intelligibly as their recordings are (2.3\% against 2.5\%), although of a speaker only
+the sex and the pitch survive the codec.
 \end{abstract}
 
 \section{Introduction}
@@ -287,8 +289,8 @@ White noise, 20\,dB & 6.2 & Quantized, 5 bits & 4.9\\
 Smooth noise, 20\,dB & 6.2 & \quad 2 bits & 27.8\\
 \quad 10\,dB & 26.2 & Sampled at 50\,Hz & 5.6\\
 \quad 5\,dB & 68.5 & \quad 25\,Hz & 9.6\\
-50\,Hz, 5 bits (4.2\,kbit/s) & 5.2 & \quad 12.5\,Hz & 50.0\\
-50\,Hz, 4 bits (3.4\,kbit/s) & 8.0 & 25\,Hz, 4 bits (1.7) & 10.8\\
+50\,Hz, 5 bits (4.2\,kb/s) & 5.2 & \quad 12.5\,Hz & 50.0\\
+50\,Hz, 4 bits (3.4\,kb/s) & 8.0 & 25\,Hz, 4 bits (1.7) & 10.8\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -335,7 +337,7 @@ skipped the first 15\,ms of a silence); the one that found it assumes nothing ab
 shape and counts, band by band, what a render has that its recording has not.
 
 \begin{table}[t]
-\centering\scriptsize\setlength{\tabcolsep}{2.2pt}
+\centering\scriptsize\setlength{\tabcolsep}{1.7pt}
 \caption{The voice on the Japanese test recordings of women (JVS: 100; Hi-Fi-CAPTAIN and
 JSUT: 200). NISQA; how often per second of speech the render sounds inside the recording's
 silences (S) and clicks as a closure sets in (C); phone mismatch (\%). Rows 2--4 play encoder
@@ -435,6 +437,45 @@ mismatch (27.2\% against 27.1\%) cannot tell the two models apart. The tracks be
 sound like the recording, because the encoder that wrote them was taught to make them so; what
 was essential for the encoder is inherited by the text-to-speech model.
 
+\textbf{A hundred speakers} (Table~\ref{tab:many}). The same model was taught with all of JVS:
+100 speakers (51 women), about 100 sentences and 12 minutes each (9,998 recordings, 20 hours). It
+has a vector for each speaker, added to every phoneme and every frame, and writes each speaker's
+pitch against that speaker's own mean and spread; the voice is told the speaker's sex and median
+pitch, as before. The test is the encoder's: eight speakers reading 25 sentences that nobody
+reads in training. From text alone large-v3-turbo gets 2.3\% of the phonemes wrong, as for the
+recordings (2.5\%) and fewer than for the encoder's renders (3.4\%), for women and men alike, at
+the encoder's predicted quality. With 20 sentences per speaker (two minutes each) it is 3.4\%,
+and with five (35 seconds each) 4.8\%. Borrowing the speakers' durations makes it worse here
+(4.4\%), which it did not for the single speaker; we have not looked into why.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.6pt}
+\caption{Text-to-speech for JVS's 100 speakers, on eight of them reading 25 sentences that nobody
+reads in training (200 recordings). Whisper errors (\% of phonemes), phone mismatch (\%), and
+NISQA for the four women and the four men.}
+\label{tab:many}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+& small & large & phone & \multicolumn{2}{c}{NISQA F / M}\\
+\midrule
+Recordings & 6.4 & 2.5 & -- & 4.80 & 4.87\\
+Another speaker & -- & -- & 32.1 & -- & --\\
+Encoder I (from audio) & 8.2 & 3.4 & 29.3 & 3.91 & 4.25\\
+TTS, speaker's timing & 8.5 & 4.4 & 34.1 & 3.87 & 4.37\\
+TTS, from text alone & 7.0 & 2.3 & 34.2 & 3.89 & 4.39\\
+\quad 20 sentences a speaker & 8.7 & 3.4 & 39.0 & 3.70 & 4.31\\
+\quad 5 sentences a speaker & 9.7 & 4.8 & 42.2 & 3.52 & 4.30\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Whose voice?} The voice is told a speaker's sex and median pitch; whatever else tells
+people apart has to be in the track. A speaker-verification model (WavLM with an x-vector
+head~\cite{wavlm}) that picks the nearest of the 100 speakers is right for 93.7\% of their test
+recordings, for 2.8\% of the encoder's renders of them and for 2.4\% of the text-to-speech
+model's. It never mistakes the sex, so this is chance among the fifty or so speakers of one sex.
+As it stands, the codec has one voice per sex, at any pitch.
+
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
 say the same thing; asking that the track sound right, through a crude model of the simulator,
@@ -444,10 +485,12 @@ distance to it kept falling while the judges did not move. \emph{Listening found
 missed.} Each artifact of \S\ref{sec:voice} was first heard, then located by ear, and only then
 measured, twice with a measure that looked in the wrong place; and a quality predictor optimized
 on its own found loopholes. \emph{The latent is easy to predict.} A plain non-autoregressive model
-matches the encoder, and it needs a hundredth of the data it was given.
+matches the encoder and needs a hundredth of the data it was given; the same model learns a
+hundred speakers from twelve minutes of each, or from 35 seconds.
 
 \textbf{Limitations.} The codec carries what is said, its timing and its pitch, not who says it:
-the voice is told a speaker's sex and median pitch, and the timbre is the simulator's. The bursts
+the voice is told a speaker's sex and median pitch, the timbre is the simulator's, and a
+verification model cannot tell its speakers of one sex apart (\S\ref{sec:tts}). The bursts
 of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
 and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
@@ -462,8 +505,9 @@ or modified: an encoder taught through a learned stand-in writes its control tra
 recording in one pass, and the renders are understood about as well as the recordings. Errors in
 this latent come out as poor articulation. The simulator's own artifacts could be traced and
 removed through its settings because every part of it means something. And the latent is easy
-to write from text: a small model matches the encoder, and fifteen minutes of one speaker are
-enough to teach it.
+to write from text: a small model matches the encoder, fifteen minutes of one speaker are
+enough to teach it, and with a hundred speakers it reads unseen sentences as intelligibly as
+their recordings.
 
 \section*{Acknowledgments}
 We thank Jameson Hodge for CHIMERA, and the authors of the TSP speech database, JVS, JSUT,
@@ -509,6 +553,8 @@ teacher. \emph{Cognitive Science} 16(3), 1992.
 self-supervised learning of speech representations. \emph{NeurIPS}, 2020.
 \bibitem{mhubert} M.~Zanon~Boito, V.~Iyer, N.~Lagos, L.~Besacier, I.~Calapodescu. mHuBERT-147: A
 compact multilingual HuBERT model. \emph{Interspeech}, 2024.
+\bibitem{wavlm} S.~Chen et al. WavLM: Large-scale self-supervised pre-training for full stack
+speech processing. \emph{IEEE JSTSP} 16(6), 2022.
 \bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.
 \emph{ICLR}, 2021.
 \bibitem{ota} R.~Badlani, A.~Łańcucki, K.~J.~Shih, R.~Valle, W.~Ping, B.~Catanzaro. One TTS

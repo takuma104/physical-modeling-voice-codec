@@ -14,7 +14,7 @@
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
 | `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe` を持つ |
 | `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts` |
-| `docs/` | 企画メモと関連論文 |
+| `docs/` | 企画メモと関連論文。`docs/report/` にテクニカルレポートの下書き(英語・日本語) |
 
 ## セットアップ
 
@@ -222,13 +222,46 @@ uv run python -m pmvc.natural out/say
 #   1 文だけ鳴らす
 uv run python -m pmvc.tts say "こんにちは。今日はいい天気ですね。" --out say.wav
 
-# 10. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
+# 10. 複数話者の TTS: JVS の 100 話者(女性 51・男性 49)。話者ではなく文で分ける
+#   全話者が読む 100 文のうち 1〜70 番と、話者ごとに違う 30 文(nonpara30)が学習(9,998 文)、71〜75 番が検証、76〜100 番がテスト
+uv run python -m pmvc.jvs --all                       # → out/jvsall
+uv run python -m pmvc.encoder encode out/jvsall --models out/transplant/models --name enci --out enci --split all $V --quiet-pauses --no-render
+uv run python -m pmvc.align train out/jvsall
+uv run python -m pmvc.align write out/jvsall
+#   話者ごとにベクトルを 1 つ持ち、声の高さは話者ごとの平均と幅を基準に書く。ほかは手順 9 と同じ
+uv run python -m pmvc.tts train out/jvsall --name ttsj --stride 5 $V
+uv run python -m pmvc.tts train out/jvsall --name ttsj2000 --limit 2000 --epochs 100 --every 10 --stride 5 $V   # 1 話者あたり 20 文
+uv run python -m pmvc.tts train out/jvsall --name ttsj500 --limit 500 --epochs 300 --every 25 --stride 5 $V     # 1 話者あたり 5 文
+#   テスト: 手順 6 と同じ 8 話者 × 25 文(out/jvs)。話者の声は学習に出てくるが、文は出てこない
+uv run python -m pmvc.align write out/jvs --models out/jvsall/models --split test
+uv run python -m pmvc.tts speak out/jvs --models out/jvsall/models --name ttsj --split test --out ttsjd --timing recording
+for n in ttsj ttsj2000 ttsj500; do
+  uv run python -m pmvc.tts speak out/jvs --models out/jvsall/models --name $n --split test --out $n
+done
+uv run python -m pmvc.judge out/jvs --variants enci,ttsjd,ttsj,ttsj2000,ttsj500 --split test --name results_tts
+uv run python -m pmvc.natural out/jvs --name results_tts
+#   誰の声に聞こえるか(話者照合モデルによる判定)。8 話者と、全 100 話者のテスト文で
+uv run python -m pmvc.whose out/jvs --variants enci,ttsjd,ttsj,ttsj500 --split test --name whose_tts
+uv run python -m pmvc.encoder revoice out/jvsall --of enci --out encir --split test $V     # エンコーダ I の制御列を鳴らす
+uv run python -m pmvc.tts speak out/jvsall --name ttsj --split test --out ttsj
+uv run python -m pmvc.whose out/jvsall --variants encir,ttsj --split test --name whose_tts
+#   録音のない文を 4 人の声で
+for sp in jvs093 jvs095 jvs097 jvs100; do
+  uv run python -m pmvc.tts speak out/say --models out/jvsall/models --name ttsj --speaker $sp --out ttsj_$sp
+done
+uv run python -m pmvc.judge out/say --variants tts,tts2000,tts200,tts50,tts20,tts2000n,ttsj_jvs093,ttsj_jvs095,ttsj_jvs097,ttsj_jvs100 --add
+uv run python -m pmvc.natural out/say
+
+# 11. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
+
+# 12. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
+bash docs/report/build.sh
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
 学習は GPU があると速く(RTX 5090 で A が 3 分、代役が 4〜5 分、C′ が 12 分ほど)、探索は CPU を使います(16 コアの Mac で 1 時間に約 270 文)。
-日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。手順 8 は、鳴らし直しが 7 分(3,864 本)、代役が 3 分、I が 22 分でした。手順 9 は、録音の取り込みが 1 分、エンコーダ I の制御列が 7 分(18,755 文)、音素の対応付けが学習 4 分と書き出し 4 分、TTS の学習が 1 エポック約 1 分(60 エポック)でした。合成は、4 秒の文でテキストから制御列までが CPU で 17 ms、制御列から音声までが CHIMERA の 1 スレッドで 0.5 秒です。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
+日本語を加えた D・F・G は、同じ GPU で 1 本 25〜40 分でした。手順 8 は、鳴らし直しが 7 分(3,864 本)、代役が 3 分、I が 22 分でした。手順 9 は、録音の取り込みが 1 分、エンコーダ I の制御列が 7 分(18,755 文)、音素の対応付けが学習 4 分と書き出し 4 分、TTS の学習が 1 エポック約 1 分(60 エポック)でした。合成は、4 秒の文でテキストから制御列までが CPU で 17 ms、制御列から音声までが CHIMERA の 1 スレッドで 0.5 秒です。手順 10 は、取り込みが 1 分、制御列が 5 分(12,997 文)、音素の対応付けが学習 4 分と書き出し 3 分、TTS の学習が約 55 分(60 エポック)でした。JVS も話者と文の両方で分けていて、テストの 8 話者と 25 文は学習にも検証にも出てきません。
 声の設定の調整は CPU で 15 分ほどです。手順 7 の最初の `--start` は、設定を 1 つずつ動かして見つけた柔らかい発声の値を、狭い範囲で一度当てはめた結果です。クリック音(`pmvc.clicks`)を減点に入れて当てはめ直すこともできますが(`--clicks`、既定 0.3)、開放率を下げて振幅を倍にする、息の雑音を増やして紛らわせる、といった別の逃げ道に行くので、クリック音に効く 4 つの設定は指標を見ながら手で決めています。
 
 `pmvc.calibrate` は雑音源のゲインと声門音源の設定を実録音に合わせて調整するものですが、未使用のデータでの改善はわずかだったため、コピー合成では既定で使いません(使うときは `--calibrated`)。

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Figures for the technical report (English and Japanese labels).
 
     uv run python docs/report/make_figures.py --font-dir docs/report/fonts
@@ -107,13 +106,16 @@ def main() -> None:
     ap.add_argument("--font-dir", type=Path, default=None, help="where build.sh put the Noto fonts")
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent)
     a = ap.parse_args()
-    family = "DejaVu Sans"
-    if a.font_dir and (a.font_dir / "NotoSansJP-Regular.otf").exists():
+    japanese = a.font_dir is not None and (a.font_dir / "NotoSansJP-Regular.otf").exists()
+    if japanese:
         for name in ("NotoSansJP-Regular.otf", "NotoSansJP-Bold.otf"):
             font_manager.fontManager.addfont(str(a.font_dir / name))
-        family = "Noto Sans JP"
-    plt.rcParams.update({"font.family": family, "pdf.fonttype": 42, "axes.unicode_minus": False})
+    plt.rcParams["axes.unicode_minus"] = False
     for lang in LABELS:
+        # the Latin font as TrueType; the Japanese one's outlines are not TrueType, and only as
+        # Type 3 does the figure keep its glyphs when the report's PDF is made
+        plt.rcParams["pdf.fonttype"] = 3 if lang == "ja" and japanese else 42
+        plt.rcParams["font.family"] = "Noto Sans JP" if lang == "ja" and japanese else "DejaVu Sans"
         figure(lang, a.out / f"fig_data_{lang}.pdf")
         print(a.out / f"fig_data_{lang}.pdf")
 
