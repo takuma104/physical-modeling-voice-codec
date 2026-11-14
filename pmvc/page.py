@@ -188,10 +188,12 @@ MANY_NOTES: dict[str, str] = {
 }
 # the control: the same model on the latents of neural decoders (`pmvc.control`). For each, the
 # label, a note, the variant of the model taught with so many recordings ("" for all), and the
-# variant that is the decoder's best (a recording through it and back; the encoder's render)
+# variant that is the decoder's best (a recording through it and back; the encoder's render; ""
+# where that was not made)
 CONTROL_LATENTS: dict[str, tuple[str, str, str, str]] = {
     "track": ("CHIMERA の制御列", "物理モデル。対照と同じ誤差で学習（代役なし）", "tts{}n", "enci"),
     "mel": ("メルスペクトログラム", "UnivNet ボコーダで音にする。この形のモデルの標準の出力先", "ctlmel{}", "copy_mel"),
+    "melv": ("メル + 調整したボコーダ", "上と同じモデル。UnivNet を、モデルの学習と同じ録音で調整", "ctlmel{}vp", ""),
     "encodec": ("EnCodec の潜在表現", "量子化前の連続値。128 次元、75 Hz", "ctlencodec{}", "copy_encodec"),
     "mimi": ("Mimi の潜在表現", "32 コードブックが表すベクトル。512 次元、12.5 Hz", "ctlmimi{}", "copy_mimi"),
 }
@@ -1363,7 +1365,8 @@ CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だから�
 <li><b>EnCodec の潜在表現</b>（量子化前の連続値、128 次元、75 Hz）。</li>
 <li><b>Mimi の潜在表現</b>（32 コードブックが表すベクトル、512 次元、12.5 Hz）。Pocket TTS が使うコーデックの公開版です。</li>
 </ul>
-<p>どれも公開されているモデルをそのまま使い、24 kHz で動かしています。対照のモデルには、FastSpeech 2 のピッチ予測器を付けました。制御列にはピッチのチャネルがありますが、これらの潜在表現にはないためです。物理モデルの側は、条件を揃えるために、代役を通した誤差を外して学習し直しました（18,655 文の列だけは、第 1 節のモデルです）。残す重みの選び方は、どのモデルも同じです。</p>"""
+<p><b>調整したボコーダ</b>の行は、メルの対照を強くしたものです。ボコーダは実録音のメルで学習されていて、モデルが書くぼやけたメルを見たことがありません。そこでこの分野の通常の手順どおり、モデルの学習に使ったのと同じ録音だけで、ボコーダを調整しました。入力は、モデルがその録音について書いたメル（録音の音素長とピッチで書かせたもの）、目標は録音の音です。UnivNet の学習に使われた識別器（作者が公開しているチェックポイントに入っています）と、同じ誤差を使いました。残す重みは、検証の文で NISQA が最も高いものです。NISQA で選んでいるのはこの行だけで、対照に有利な選び方です。</p>
+<p>ほかはどれも公開されているモデルをそのまま使い、24 kHz で動かしています。対照のモデルには、FastSpeech 2 のピッチ予測器を付けました。制御列にはピッチのチャネルがありますが、これらの潜在表現にはないためです。物理モデルの側は、条件を揃えるために、代役を通した誤差を外して学習し直しました（18,655 文の列だけは、第 1 節のモデルです）。残す重みの選び方は、どのモデルも同じです。</p>"""
 CONTROL_BETWEEN = """<p class="small">NISQA は、実録音を 4.56 と付けます。物理モデルの合成音がそれより高いのは、CHIMERA の音が雑音のないきれいな音だからで、話者に似ているからではありません。ニューラルデコーダの上限（録音を潜在表現にして戻した音）は、話者の声そのものです。</p>"""
 CONTROL_SOUNDS = """<p>下のカードで、20 文、200 文、18,655 文で学習したモデルを、出力先ごとに聞き比べられます。最後のカードは、第 2 節の録音のない文です。</p>"""
 MANY_TEXT = """<p>同じモデルを、JVS の 100 話者（女性 51 人、男性 49 人）で学習しました。話者ごとにベクトルを 1 つ持たせ、すべての音素とフレームに足します。声の高さは、話者ごとの平均と幅を基準に書きます。ほかは第 1 節のモデルと同じです。</p>

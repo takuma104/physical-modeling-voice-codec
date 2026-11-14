@@ -12,8 +12,8 @@
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe` を持つ |
-| `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts` |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe`、ある姿勢での声道の断面の輪郭を返す `outline()`(レポートの図 1 はこれで描く)を持つ |
+| `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts`、ニューラルデコーダとの対照は `pmvc.control` と `pmvc.vocoder` |
 | `docs/` | 企画メモと関連論文。`docs/report/` にテクニカルレポートの下書き(英語・日本語) |
 
 ## セットアップ
@@ -282,6 +282,25 @@ uv run python -m pmvc.judge out/ja --variants enci,copy_mel,copy_encodec,copy_mi
 uv run python -m pmvc.natural out/ja --name results_ctl
 uv run python -m pmvc.judge out/say --variants $N --name results_ctl
 uv run python -m pmvc.natural out/say --name results_ctl
+#   対照を強くする: メルのボコーダ(UnivNet)を、モデルが書いたスペクトログラムで調整する(この分野の通常の手順)
+#   UnivNet の学習に使われた識別器が要る。transformers 版には入っていないので、作者が公開している学習チェックポイント
+#   (github.com/maum-ai/univnet の UnivNet-c32、Google Drive)から読む。生成器は transformers 版と同じもの
+mkdir -p out/univnet && uvx gdown 1QZFprpvYEhLWCDF90gSl6Dpn0gonS_Rv -O out/univnet/univ_c32.pt
+tune() {  # tune モデル ステップ数 確認の間隔: 学習に使った録音のスペクトログラムを録音の音素長とピッチで書かせ、それでボコーダを調整する
+  uv run python -m pmvc.control write out/hfcm --name $1 --folds 0 --out ${1}p
+  uv run python -m pmvc.vocoder tune out/hfcm --model $1 --written ${1}p --name ${1}vp --steps $2 --every $3 --quality 30
+  uv run python -m pmvc.control speak out/ja --models out/hfcm/models --name $1 --vocoder ${1}vp --out ${1}vp --ids $IDS
+  uv run python -m pmvc.control speak out/say --models out/hfcm/models --name $1 --vocoder ${1}vp --out ${1}vp
+}
+tune ctlmel20 1500 250; tune ctlmel50 2000 250; tune ctlmel200 3000 250; tune ctlmel2000 6000 500; tune ctlmel 15000 1000
+uv run python -m pmvc.control copy out/ja --latent mel --vocoder ctlmelvp --models out/hfcm/models --out copy_melvp --ids $IDS   # 調整したボコーダの上限
+V2="ctlmelvp,ctlmel2000vp,ctlmel200vp,ctlmel50vp,ctlmel20vp"
+uv run python -m pmvc.judge out/ja --variants copy_melvp,$V2 --ids $IDS --name results_ctl --add
+uv run python -m pmvc.natural out/ja --name results_ctl
+uv run python -m pmvc.judge out/say --variants $V2 --name results_ctl --add
+uv run python -m pmvc.natural out/say --name results_ctl
+#   各録音のスペクトログラムを、その録音を学習していないモデルに書かせる版も試した(良くならなかった):
+#   pmvc.control train ... --name ctlmel200f$i --fold $i/5 を i = 0..4 で学習し、pmvc.control write --folds 5、pmvc.vocoder tune
 
 # 12. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html

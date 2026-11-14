@@ -14,13 +14,16 @@ three latents that a neural network decodes:
 All three come with `transformers`, run at 24 kHz and are used as they are.
 
 usage: python -m pmvc.control copy [dir] --latent mel [--out copy_mel] [--split test] [--ids ...]
+                                   [--vocoder NAME --models DIR]
        python -m pmvc.control train [dir] --latent mel [--name ctl_mel] [--limit N] [--epochs 60]
-                                    [--no-pitch]
+                                    [--no-pitch] [--fold I/K]
+       python -m pmvc.control write [dir] --name ctl_mel [--folds 5] [--out ctl_mel]
        python -m pmvc.control speak [dir] [--name ctl_mel] [--models DIR] [--out ctl_mel]
                                     [--split test] [--ids ...] [--timing own|recording]
-                                    [--sentences FILE]
+                                    [--sentences FILE] [--vocoder NAME]
 
-`copy` is what the decoder can do at best: a recording into the latent and back.
+`copy` is what the decoder can do at best: a recording into the latent and back (`--vocoder`:
+with a vocoder that `pmvc.vocoder tune` tuned, in `--models`).
 
 `train` learns from the recordings `pmvc.tts train` learns from (those of <dir> that
 `pmvc.align write` aligned), each heard as the encoder hears it (LEAD of silence, the
@@ -41,7 +44,17 @@ sentences are written with the speaker's durations and decoded, and `pmvc.listen
 far they are from the recordings.
 
 `speak` is `pmvc.tts speak` for such a model: <dir>/<out>/<id>.wav at 24 kHz, and beside it a
-note for `pmvc.judge` saying whether the timing is the model's own.
+note for `pmvc.judge` saying whether the timing is the model's own. `--vocoder` decodes with a
+vocoder that `pmvc.vocoder tune` tuned (the mel latent only).
+
+`write` is for that tuning: what the model writes for the recordings it learned from, with
+each recording's own durations and pitch so that it lines up with the sound, into
+<dir>/written/<out>/<id>.npy. A model has all but memorised what it learned from, and writes
+those recordings far better than it writes a new sentence. So with `--folds K` each recording
+is written by a model that did not learn from it: <name>f0 … <name>f(K-1), each trained with
+`--fold I/K`, which leaves out every K-th of the recordings from the I-th on. The validation
+recordings are written by the model itself, twice: with the recording's pitch (<id>.npy) and
+with the model's own (<id>.own.npy).
 """
 
 import argparse
@@ -112,6 +125,10 @@ class Mel(Latent):
         self.device = device
         self.features = UnivNetFeatureExtractor.from_pretrained("dg845/univnet-dev")
         self.model = UnivNetModel.from_pretrained("dg845/univnet-dev").to(device).eval()  # type: ignore[arg-type]
+
+    def tuned(self, path: Path) -> None:
+        """Take the vocoder that `pmvc.vocoder tune` left at `path`."""
+        self.model.load_state_dict(torch.load(path, map_location="cpu", weights_only=False)["state"])
 
     def encode(self, x: Audio) -> NDArray[np.float32]:
         return np.asarray(self.features(x, sampling_rate=SR, pad_end=False, return_tensors="np")["input_features"][0], dtype=np.float32)
@@ -252,16 +269,20 @@ class Pitched(Speaker):
 
 
 @torch.no_grad()
-def write_latent(model: Pitched, norm: dict[str, Any], phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
+def write_latent(
+    model: Pitched, norm: dict[str, Any], phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None, pitch: NDArray[np.float32] | None = None
+) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
     """The latent for a sentence, and how many of the model's frames each phoneme got:
-    `frames` if given (the speaker's own timing), or else the model's."""
+    `frames` if given (the speaker's own timing), or else the model's. With `pitch` (each of
+    the model's frames, in octaves) the frames are told that pitch and not the model's own."""
     ids = torch.tensor([[p.ids(model.phones) for p in phones]], device=device)
     h, lasting = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device))
     if frames is None:
         scale = np.array([1.0 if k in (0, len(phones) - 1) else norm["pace"][1] if p.silent else norm["pace"][0] for k, p in enumerate(phones)])
         frames = np.maximum(1, np.round(np.exp(lasting[0].cpu().numpy()) * scale)).astype(np.int64)
         frames[0] = max(frames[0], OPENING)
-    out, _, _, _ = model.write_with(h, torch.from_numpy(frames).to(device)[None])
+    told = None if pitch is None else ((torch.from_numpy(pitch).to(device) - norm["pitch"][0]) / norm["pitch"][1])[None]
+    out, _, _, _ = model.write_with(h, torch.from_numpy(frames).to(device)[None], told)
     return out[0].cpu().numpy() * np.array(norm["std"], dtype=np.float32) + np.array(norm["mean"], dtype=np.float32), frames
 
 
@@ -283,6 +304,9 @@ def train(a: argparse.Namespace) -> None:
     phones = sorted({p.p for s in fit for p in s.phones})
     held = [s for s in held if all(p.p in phones for p in s.phones)]
     fit = fewer(fit, a.limit)
+    if a.fold:
+        first, every = (int(n) for n in a.fold.split("/"))
+        fit = [s for j, s in enumerate(fit) if j % every != first]
     pitches = dict(zip((s.uid for s in (*fit, *held)), learn_latents(d, [*fit, *held], latent, a.jobs)))
     hear(d, held, listener, a.jobs)
 
@@ -365,6 +389,8 @@ def train(a: argparse.Namespace) -> None:
         log.append(row)
         print(f"epoch {epoch:3d}  " + "  ".join(f"{k} {v:.4f}" for k, v in row.items() if k != "epoch") + ("  *" if row.get("listener") == best else ""), flush=True)
         (out_dir / f"{a.name}.json").write_text(json.dumps({"best": best, "epochs": log}, indent=1))
+    if a.fold:
+        return
     # where the speaker pauses without a comma, as `pmvc.tts` teaches it
     ck = torch.load(out_dir / f"{a.name}.pt", map_location="cpu", weights_only=False)
     model, _, _ = load_model(out_dir / f"{a.name}.pt", device)
@@ -382,6 +408,29 @@ def load_model(path: Path, device: str) -> tuple[Pitched, dict[str, Any], str]:
     return model.to(device).eval(), ck["norm"], ck["latent"]
 
 
+def write(a: argparse.Namespace) -> None:
+    d: Path = a.dir
+    device = pick_device()
+    path = d / "models" / f"{a.name}.pt"
+    model, norm, name = load_model(path, device)
+    latent = LATENTS[name](device)
+    limit = int(torch.load(path, map_location="cpu", weights_only=False)["args"]["limit"])
+    fit = fewer(sentences(d, "train"), limit)
+    held = [s for s in sentences(d, "valid") if all(p.p in model.phones for p in s.phones)]
+    pitches = dict(zip((s.uid for s in (*fit, *held)), learn_latents(d, [*fit, *held], latent, a.jobs)))
+    out = d / "written" / (a.out or a.name)
+    out.mkdir(parents=True, exist_ok=True)
+    # each recording by a model that did not learn from it; without folds, by the one that did
+    for i in range(max(1, a.folds)):
+        writer, its = load_model(d / "models" / f"{a.name}f{i}.pt", device)[:2] if a.folds else (model, norm)
+        for s in fit[i :: max(1, a.folds)]:
+            np.save(out / f"{s.uid}.npy", write_latent(writer, its, s.phones, device, s.frames, pitches[s.uid])[0].astype(np.float16))
+    for s in held:
+        np.save(out / f"{s.uid}.npy", write_latent(model, norm, s.phones, device, s.frames, pitches[s.uid])[0].astype(np.float16))
+        np.save(out / f"{s.uid}.own.npy", write_latent(model, norm, s.phones, device, s.frames)[0].astype(np.float16))
+    print(f"{len(fit)} recordings to tune on ({a.folds or 'no'} folds), {len(held)} held out → {out}")
+
+
 def note(path: Path, **what: Any) -> None:
     """Beside a clip, what `pmvc.judge` has to know of it: how far it runs behind the
     recording, or that its timing is its own (`free`)."""
@@ -393,6 +442,9 @@ def speak(a: argparse.Namespace) -> None:
     device = pick_device()
     model, norm, name = load_model((a.models or d / "models") / f"{a.name}.pt", device)
     latent = LATENTS[name](device)
+    if a.vocoder:
+        assert isinstance(latent, Mel), "only the mel latent's vocoder is tuned"
+        latent.tuned((a.models or d / "models") / f"{a.vocoder}.pt")
     if a.sentences:
         (d / "meta").mkdir(parents=True, exist_ok=True)
         for k, text in enumerate(filter(None, (line.strip() for line in a.sentences.read_text(encoding="utf-8").splitlines())), 1):
@@ -417,6 +469,9 @@ def speak(a: argparse.Namespace) -> None:
 def copy(a: argparse.Namespace) -> None:
     d: Path = a.dir
     latent = LATENTS[a.latent](pick_device())
+    if a.vocoder:
+        assert isinstance(latent, Mel), "only the mel latent's vocoder is tuned"
+        latent.tuned((a.models or d / "models") / f"{a.vocoder}.pt")
     ids = a.ids.split(",") if a.ids else ids_in(d, a.split)
     out = a.out or f"copy_{a.latent}"
     (d / out).mkdir(exist_ok=True)
@@ -430,8 +485,8 @@ def copy(a: argparse.Namespace) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
-    c, t, s = sub.add_parser("copy"), sub.add_parser("train"), sub.add_parser("speak")
-    for p in (c, t, s):
+    c, t, s, w = sub.add_parser("copy"), sub.add_parser("train"), sub.add_parser("speak"), sub.add_parser("write")
+    for p in (c, t, s, w):
         p.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "hfcm")
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     for p in (c, t):
@@ -445,6 +500,7 @@ def main() -> None:
     t.add_argument("--standin", type=str, default="standin_2c")
     t.add_argument("--no-pitch", action="store_true", help="no pitch predictor: the latent has to carry the pitch alone")
     t.add_argument("--limit", type=int, default=0, help="learn from only so many of the recordings")
+    t.add_argument("--fold", type=str, default="", help="I/K: leave out every K-th of them from the I-th on, for `write --folds K`")
     t.add_argument("--epochs", type=int, default=60)
     t.add_argument("--every", type=int, default=5)
     t.add_argument("--stride", type=int, default=2)
@@ -455,17 +511,22 @@ def main() -> None:
     t.add_argument("--lr", type=float, default=5e-4)
     t.add_argument("--seed", type=int, default=0)
     s.add_argument("--name", type=str, required=True)
-    s.add_argument("--models", type=Path, default=None, help="where the model is, if not <dir>/models")
+    for p in (c, s):
+        p.add_argument("--models", type=Path, default=None, help="where the model is, if not <dir>/models")
+        p.add_argument("--vocoder", type=str, default="", help="a vocoder `pmvc.vocoder tune` tuned, in the models' directory")
     s.add_argument("--out", type=str, default="")
     s.add_argument("--timing", choices=["own", "recording"], default="own")
     s.add_argument("--sentences", type=Path, default=None)
     s.add_argument("--set", type=str, default="say")
+    w.add_argument("--name", type=str, required=True)
+    w.add_argument("--folds", type=int, default=5, help="0: every recording by the model that learned from it")
+    w.add_argument("--out", type=str, default="")
     a = ap.parse_args()
     if a.command == "train":
         a.name = a.name or f"ctl_{a.latent}"
     if a.command == "speak":
         a.out = a.out or a.name
-    {"copy": copy, "train": train, "speak": speak}[a.command](a)
+    {"copy": copy, "train": train, "speak": speak, "write": write}[a.command](a)
 
 
 if __name__ == "__main__":
