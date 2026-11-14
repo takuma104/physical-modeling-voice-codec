@@ -169,6 +169,25 @@ TTS_SIZES: dict[str, tuple[str, str]] = {
     "tts50": ("50 文", "約 4 分"),
     "tts20": ("20 文", "約 1.5 分"),
 }
+# text to speech for JVS's hundred speakers: the variants in `--jvs`'s results_tts.json
+MANY_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "enci": "エンコーダ I（録音から）",
+    "ttsjd": "TTS（音素の長さは録音）",
+    "ttsj": "TTS（テキストだけから）",
+    "ttsj2000": "TTS（2,000 文で学習）",
+    "ttsj500": "TTS（500 文で学習）",
+}
+MANY_NOTES: dict[str, str] = {
+    "real": "JVS のテストの 8 話者",
+    "enci": "録音を聞いて書いた制御列。TTS の手本",
+    "ttsjd": "テキストと話者から書いた制御列。各音素の長さだけ録音に合わせた",
+    "ttsj": "100 話者の 9,998 文（約 26 時間）で学習。録音は使わない",
+    "ttsj2000": "1 話者あたり 20 文（約 3 分）",
+    "ttsj500": "1 話者あたり 5 文（約 40 秒）",
+}
+# the speakers whose voices the page's cards are in
+MANY_VOICES: dict[str, str] = {"jvs093": "女性 jvs093", "jvs095": "女性 jvs095", "jvs097": "男性 jvs097", "jvs100": "男性 jvs100"}
 VOICE_LABELS: dict[str, str] = {
     "noiseGlottis": "雑音源のゲイン（声門）",
     "noiseConstriction": "雑音源のゲイン（狭め）",
@@ -933,6 +952,66 @@ def tts_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
     return body
 
 
+def many_section(jvs: Path, say: Path, clips: dict[str, str]) -> str:
+    """Text to speech for JVS's hundred speakers: `pmvc.judge`'s results for the eight test
+    speakers' test sentences (`jvs`/results_tts.json), `pmvc.whose`'s say on whose voice the
+    renders are (`jvs`/whose_tts.json), and sentences nobody recorded in four of the voices
+    (`say`/results.json, variants ttsj_<speaker>). Nothing before the first exists."""
+    if not (jvs / "results_tts.json").exists():
+        return ""
+    results = json.loads((jvs / "results_tts.json").read_text())
+    summary = results["summary"]
+    variants = [v for v in MANY_LABELS if v in summary["ja"]]
+    sets = [("JVS 女性（4 話者）", summary["ja-F"]), ("JVS 男性（4 話者）", summary["ja-M"])]
+    tables = (
+        grid(sets, variants, MANY_LABELS, MANY_NOTES, "Whisper large-v3-turbo の音素誤り率 %。角括弧は 95% 区間。", "rate2")
+        + grid(sets, variants, MANY_LABELS, MANY_NOTES, "Whisper small の音素誤り率 %。", "rate")
+        + grid(sets, variants, MANY_LABELS, MANY_NOTES, "音声記号の不一致 %。", "phoneRate", other=True)
+        + grid(sets, variants, MANY_LABELS, MANY_NOTES, "NISQA が予測する品質（1〜5）。", "quality")
+    )
+    whose = ""
+    if (jvs / "whose_tts.json").exists():
+        w = json.loads((jvs / "whose_tts.json").read_text())
+        lines = "".join(
+            f'<tr><th scope="row">{esc(MANY_LABELS[v])}</th><td class="num">{m["own"]:.3f}</td><td class="num">{m["other"]:.3f}</td><td class="num">{100 * m["top1"]:.1f}</td><td class="num">{100 * m["top1sex"]:.1f}</td></tr>'
+            for v, m in w["variants"].items() if v in MANY_LABELS
+        )  # fmt: skip
+        whose = f"""{{{{many_whose}}}}
+<div class="scroll"><table>
+<caption>誰の声に聞こえるか。話者照合モデル（WavLM の x-vector）が、{w["speakers"]} 話者の {w["clips"]} 文について判定したもの。類似度はコサイン類似度、右の 2 列は「最も近い話者が本人だった」割合 %。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">本人との類似度</th><th scope="col">同性の他人との類似度</th><th scope="col">{w["speakers"]} 話者の中で本人</th><th scope="col">同性の中で本人</th></tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    def card(where: Path, r: dict[str, Any], label: str, shown: dict[str, str]) -> str:
+        buttons = "".join(
+            button(clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", name, f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
+            for v, name in shown.items() if v in r["variants"]
+        )  # fmt: skip
+        return f"""<article class="sentence">
+<p class="meta">{esc(label)}</p>
+<p class="text">{esc(r["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+
+    tested: list[dict[str, Any]] = sorted(results["utterances"], key=lambda r: r["id"])
+    shown: dict[str, str] = {v: label for v, label in (("real", "実録音"), ("enci", "エンコーダ I"), ("ttsj", "TTS"), ("ttsj500", "TTS（500 文で学習）")) if v in variants}
+    # each of the four voices on a different sentence
+    picked = [[r for r in tested if r["speaker"] == name][3 + 5 * k] for k, name in enumerate(MANY_VOICES)]
+    cards = "".join(card(jvs, r, f"{r['id']} · {MANY_VOICES[r['speaker']]}", shown) for r in picked)
+    free = json.loads((say / "results.json").read_text())["utterances"] if (say / "results.json").exists() else []
+    voices = {"tts": "男性（Hi-Fi-CAPTAIN、第 1 節の TTS）", **{f"ttsj_{name}": label for name, label in MANY_VOICES.items()}}
+    spoken = "".join(card(say, r, r["id"], voices) for r in sorted(free, key=lambda r: r["id"])[:5] if any(v in r["variants"] for v in voices if v != "tts"))
+    return f"""<section aria-labelledby="h-many"><h2 id="h-many">4. JVS の 100 話者</h2>
+{{{{many_text}}}}
+{tables}
+{whose}
+<div class="stack">{cards}</div>
+{{{{many_say}}}}
+<div class="stack">{spoken}</div>
+</section>"""
+
+
 def shell(title: str, lede: str, notes: str, body: str, credits: str, clips: dict[str, str]) -> str:
     return (
         PAGE.replace("{{title}}", esc(title)).replace("{{lede}}", esc(lede)).replace("{{notes}}", notes).replace("{{body}}", body)
@@ -1007,10 +1086,11 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
 
 
-def build_tts(ja: Path, say: Path, notes: str, en_url: str = "", ja_url: str = "") -> str:
+def build_tts(ja: Path, say: Path, jvs: Path, notes: str, en_url: str = "", ja_url: str = "") -> str:
     """The third page: text to speech on the latent."""
     clips: dict[str, str] = {}
     body = tts_section(ja, say, clips).replace("{{tts_text}}", TTS_TEXT).replace("{{tts_between}}", TTS_BETWEEN).replace("{{say_text}}", SAY_TEXT).replace("{{few_text}}", FEW_TEXT)
+    body += many_section(jvs, say, clips).replace("{{many_text}}", MANY_TEXT).replace("{{many_whose}}", MANY_WHOSE).replace("{{many_say}}", MANY_SAY)
     links = "".join(f'<li><a href="{esc(url)}">{esc(title)}</a>：{esc(what)}</li>' for title, url, what in ((TITLE_JA, ja_url, "エンコーダと声の調整（日本語の録音）"), (TITLE_EN, en_url, "韻律移植、摂動、最初のエンコーダ（英語の録音）")) if url)
     if links:
         body += f'<section aria-labelledby="h-more"><h2 id="h-more">これまでの実験</h2><ul>{links}</ul></section>'
@@ -1185,7 +1265,10 @@ CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS
 
 TITLE_TTS = "CHIMERA 日本語 TTS の試聴"
 LEDE_TTS = "テキストから制御列（100 Hz × 21 チャネル）を書くモデルを作り、物理モデル音声合成 CHIMERA に鳴らさせた結果です。合成エンジンは無改造です。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
-CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者と、JVS（東京大学 猿渡研究室。一部の音声だけを載せています）。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+MANY_TEXT = ""
+MANY_WHOSE = ""
+MANY_SAY = ""
 TTS_TEXT = """<p>テキストから制御列を書くモデルです。日本語編のエンコーダは録音を聞いて制御列を書きましたが、こちらは文だけから書きます。鳴らすのは同じ CHIMERA（無改造）で、鳴らし方も日本語編で決めた「調整後の声」です。</p>
 <p>入力は、Open JTalk が読んだ音素の列です。各音素に、アクセント句の中での位置（アクセント核から何モーラ離れているか、句の頭と末から何モーラ目か）と、疑問文かどうかを添えます。モデルはまず音素ごとの長さを決め、その長さぶんのフレームに、エンコーダが書く 16 チャネルとピッチを 100 Hz で書きます。FastSpeech 2 と同じ形の、自己回帰でないモデルです（約 1,900 万パラメータ）。</p>
 <p>学習に使ったのは、Hi-Fi-CAPTAIN の男性話者の録音 18,655 文（約 24 時間）です。手本は、エンコーダ I がその録音から書いた制御列です。誤差は 2 つあります。手本の制御列との差と、書いた制御列が録音と同じに聞こえるかどうかです（声の代役モデルを通した聞き比べ。エンコーダ I の学習と同じ仕組みです）。各音素が録音のどこにあたるかは、録音と読みだけから学習して決めました。</p>
@@ -1223,7 +1306,7 @@ def main() -> None:
     if (a.abroad / "results.json").exists():
         pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url, a.tts_url)))
     if (a.abroad / "results_tts.json").exists():
-        pages.append((a.dir / a.out_tts, build_tts(a.abroad, a.say, notes(a.notes_tts), a.en_url, a.ja_url)))
+        pages.append((a.dir / a.out_tts, build_tts(a.abroad, a.say, a.jvs, notes(a.notes_tts), a.en_url, a.ja_url)))
     for out, page in pages:
         out.write_text(page)
         print(f"{out}: {len(page) / 1e6:.1f} MB")

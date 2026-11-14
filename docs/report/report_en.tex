@@ -1,0 +1,517 @@
+% Technical report (English, draft). Build: bash docs/report/build.sh
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[margin=17mm,columnsep=6mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\usepackage{xeCJK}
+\setCJKmainfont[Path=fonts/,BoldFont=NotoSerifJP-Bold.otf]{NotoSerifJP-Regular.otf}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\newcommand{\pt}{\,pt}
+\setlength{\emergencystretch}{1.5em}
+
+\title{\bfseries A Physical Voice Model as the Decoder of a Speech Codec:\\
+Encoders and Text-to-Speech on Its Control Tracks}
+\author{Claude (Anthropic)\thanks{Claude (Fable 5.2), working in Claude Code, planned and implemented
+the experiments, ran them, analyzed the results and wrote this report. Takuma Mori proposed the idea
+(a physical model of the voice as the decoder of a neural codec, after finding that a small neural
+codec makes sounds no vocal tract can make), chose the simulator, the corpora and the quality
+predictor, provided the machines, and did the listening: his verdicts set the direction at every
+step, found the stray sounds before an utterance and the thin timbre of the high voice, located the
+tongue-smacking sound of \S\ref{sec:voice} by muting stretches of a render in an audio editor, and
+chose the voice.}\qquad Takuma Mori}
+\date{{\small Technical report (draft), November 2026}\\
+{\small\url{https://github.com/takuma104/physical-modeling-voice-codec}}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A neural speech codec decodes any latent into sound, and when a model that predicts its latents
+errs, the result can be a sound no vocal tract makes. We study a codec whose decoder cannot do
+that: CHIMERA, an open-source physical model of the human voice (lungs, vocal folds, a branched
+vocal tract), used without modification. The latent is its control track, 21 channels at 100\,Hz:
+the positions of jaw, tongue, lips and velum, the state of the glottis, the breath and the pitch.
+An encoder writes this track from a recording in one pass. It is taught without transcripts and
+without searching for tracks, through a network that stands in for the simulator, which cannot be
+differentiated. On English speakers it never heard, Whisper misreads 3.2\% of the words of its
+renders (recordings: 1.6\%); on Japanese, 0.4\% of the phonemes (0.2\%). Noise on the track,
+4-bit quantization and 25\,Hz sampling degrade the speech gradually, and to the ear the errors
+are those of a person who articulates poorly. Two sounds that recordings do not have were traced
+by listening to the simulator's own mechanics and removed through its public settings. A
+text-to-speech model that writes the track from phonemes is read as well as the encoder (0.2\%
+against 0.1\%), and it needs very little data: taught with 200 sentences (15 minutes) of one
+speaker it gets 0.5\% of the phonemes wrong, with 20 sentences (1.5 minutes) 7.7\%, and its
+renders still score as clean speech.
+\end{abstract}
+
+\section{Introduction}
+Neural audio codecs~\cite{encodec,moshi} are the interface of today's speech generation: a language
+or flow model predicts latents and a neural decoder turns them into a waveform. The decoder
+accepts any latent. When the predictor is small or has seen little data, its errors come out as
+whatever the decoder makes of an off-distribution latent: buzzing, metallic consonants, sounds
+with no source in a mouth. One of us met this while adapting Pocket TTS, built on the Mimi codec,
+to Japanese~\cite{pocketja}.
+
+This report asks what happens if the decoder is a physical model of the voice. A simulator of
+airflow through vocal folds and a vocal tract can only produce what such a system produces. If
+its control parameters are the latent, an error in the latent is a tongue in the wrong place or a
+glottis that closes late: a mistake of articulation, which is how people err too. The hypothesis
+is that such a codec fails more gracefully, and that its latent, being close to what speech is
+made of, is easy to predict from text.
+
+Speech coding through articulation has a long history, and recent neural work encodes speech into
+articulatory trajectories and decodes them with a neural vocoder: SPARC~\cite{sparc} (12
+articulator coordinates, pitch and loudness at 50\,Hz, HiFi-GAN decoder) and
+ARTI-6~\cite{arti6} (six features from real-time MRI). There the decoder is still a network.
+Differentiable simulation of the tract~\cite{difftlm} recovers a tract shape from audio by
+optimizing each utterance. Articulatory synthesizers such as VocalTractLab~\cite{vtl} are driven
+by rules or by analysis-by-synthesis.
+
+We take a physical synthesizer as it is, CHIMERA~\cite{chimera}, and build the rest around it:
+\begin{itemize}
+\item an \textbf{encoder} that writes the simulator's control track from a recording in one pass,
+taught without transcripts through a learned stand-in for the simulator (\S\ref{sec:encoder});
+\item evidence that \textbf{errors in the latent stay human}: noise, quantization and decimation
+of the track (\S\ref{sec:perturb});
+\item two \textbf{artifacts of the simulator} found by listening, traced to its mechanics and
+removed through its settings, and settings for high voices (\S\ref{sec:voice});
+\item a \textbf{text-to-speech model} on the latent that matches the encoder and learns from
+minutes of speech (\S\ref{sec:tts}).
+\end{itemize}
+Code is at the address above. The engine's code is unchanged throughout.
+
+\section{The decoder and its latent}\label{sec:decoder}
+\textbf{CHIMERA}~\cite{chimera} is a physical-modeling voice synthesizer written in Rust (MIT
+license), made as an instrument for the browser. It simulates an airway in the time domain at
+48\,kHz: a lung pressure, vocal folds whose area waveform drives a glottal port (the flow follows
+from the pressure across it, so pulse skew and devoicing under a closed mouth come out of the
+physics), a branched tract with nasal and lateral passages, radiation at lips, nose and walls,
+and band-limited noise where the flow passes a constriction, the teeth or the glottis. A
+\emph{body} parameter blends male, female and child tract sizes. Its own front end turns English
+text into gestures by rule.
+
+\textbf{The control track.} We bypass the front end. A small wrapper (PyO3) schedules one
+frame of 21 control values every 10\,ms as targets for the engine's articulators and source
+(Table~\ref{tab:channels}).
+Besides the track the voice is told two things about a speaker: the sex, which picks the body,
+and the median pitch. Speaker identity beyond that is not part of the latent
+(\S\ref{sec:discussion}).
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{The control track: 21 channels at 100\,Hz. The encoder writes the 16 that vary in
+speech; pitch comes from a pitch tracker; four are never used.}
+\label{tab:channels}
+\begin{tabular}{@{}p{0.52\columnwidth}p{0.42\columnwidth}@{}}
+\toprule
+Channels & What they move\\
+\midrule
+jaw; tbX, tbY; ttX, ttY, ttCurl; root & jaw; tongue body, tip, root\\
+lipAp, lipProt, lipWidth, labiodental & lips\\
+velum; larynx; lateral & nasal port; larynx height; side passage\\
+abduction; breath & glottal opening; lung pressure\\
+f0 & pitch (Hz)\\
+epilarynx, ventricular, dorsum, closure & constant here\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Is the track enough?} Rendering CHIMERA's rule-made speech again from its own control
+track at 100\,Hz changes little: the mel-cepstral distance to the original is 0.7\,dB and the
+voicing agrees in 97\% of the frames. One CPU thread renders a 4\,s sentence in 0.5\,s.
+
+\textbf{Data and judges.} English: the TSP speech database~\cite{tsp} (Harvard sentences read in an
+anechoic room); four speakers (240 recordings) are held out for testing and two for validation,
+with the sentence lists they read, leaving 1,012 recordings. Japanese: JVS~\cite{jvs} (100
+speakers), Hi-Fi-CAPTAIN~\cite{hificaptain} (one woman, one man) and JSUT~\cite{jsut}. Every result
+is judged by models that no training or tuning in this work optimizes: Whisper~\cite{whisper}
+small (small.en for English) and large-v3-turbo, with greedy decoding, scored in words for English
+and in phonemes of Open JTalk's~\cite{openjtalk} reading for Japanese; and a multilingual phone
+recognizer~\cite{xlsrphone} that knows no text, which writes down a recording and its render in IPA
+(\emph{phone mismatch}: the share of the recording's phones the render changes; another person
+reading the same sentence scores 24--32\% on Japanese). Predicted quality is
+NISQA~\cite{nisqa}, which is used once for tuning (\S\ref{sec:voice}) and reported on other
+recordings.
+
+\section{Encoders}\label{sec:encoder}
+\begin{figure}[t]
+\centering\footnotesize
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, minimum height=6mm, inner xsep=2pt, align=center, font=\scriptsize},
+  phys/.style={box, fill=black!8},
+  arr/.style={-{Stealth[length=1.6mm]}, semithick},
+  learn/.style={-{Stealth[length=1.6mm]}, semithick, densely dashed}]
+\node[box] (rec) {recording};
+\node[box, right=3.5mm of rec] (enc) {encoder};
+\node[box, right=3.5mm of enc, fill=blue!8] (trk) {control track\\21\,ch $\times$ 100\,Hz};
+\node[phys, right=3.5mm of trk] (sim) {CHIMERA\\(unchanged)};
+\node[box, below=7mm of enc] (tts) {TTS model};
+\node[box, left=3.5mm of tts] (txt) {phonemes,\\accent};
+\node[box, below=7mm of sim] (std) {stand-in};
+\node[box, above=7mm of trk] (lis) {listener features};
+\draw[arr] (rec) -- (enc); \draw[arr] (enc) -- (trk); \draw[arr] (trk) -- (sim);
+\draw[arr] (txt) -- (tts); \draw[arr] (tts) -| (trk);
+\draw[learn] (trk.south east) -- (std.north west);
+\draw[learn] (std.east) -- ++(2mm,0) |- (lis.east);
+\draw[learn] (rec.north) |- (lis.west);
+\node[right=2.5mm of sim, font=\scriptsize, inner sep=1pt] (out) {sound};
+\draw[arr] (sim) -- (out);
+\end{tikzpicture}
+\caption{The codec. Solid: inference. Dashed: training. The stand-in predicts what a listener
+model would hear of the track's render, so that the distance to what it hears in the recording
+can be differentiated back into the encoder or the text-to-speech (TTS) model.}
+\label{fig:system}
+\end{figure}
+
+\textbf{The network.} The encoder hears the recording through a self-supervised speech model (a
+learned mix of its layers; in the later encoders the top six are tuned) and through three plain
+features per frame: whether a pitch tracker~\cite{praat} calls the frame voiced, its pitch relative to the
+speaker's median, and its level. Two bidirectional LSTM layers (width 256) write the 16 moving
+channels at 100\,Hz. Pitch is not learned: the pitch channel is the tracker's contour. Encoding a
+3\,s sentence takes about 0.08\,s.
+
+\textbf{Three things to learn from} (Fig.~\ref{fig:system}, Table~\ref{tab:english}).
+\emph{Renders.} CHIMERA's own speech gives exact pairs of sound and track without limit. An
+encoder taught with them alone (A) already works on recordings, but no better than the rule
+synthesis it learned from. \emph{Searched tracks.} A search that drives the simulator and
+adjusts a track until a listener model finds the render close to the recording cuts A's word
+errors from 34.6\% to 13.3\%, at one to two minutes per sentence. An encoder taught to copy such tracks (B) stalls: its
+listener distance went from 0.18 to 0.17 when the tracks to copy grew from 170 to 1,012. Many
+tracks make the same sound, and their average need not. \emph{The voice itself.} The remedy is
+the distal teacher~\cite{distal}: teach the encoder through a model of what its output does.
+CHIMERA is not differentiable, but its renders are free and exact, so a network (three
+bidirectional LSTM layers, width 512) learns to map a track to what a listener would hear of its
+render: the frame-level features of wav2vec\,2.0~\cite{wav2vec2}, later of
+mHuBERT-147~\cite{mhubert}. The encoder's loss is then the distance (one minus cosine, frame
+against frame) between what this \emph{stand-in} says of the track it wrote and what the listener
+hears in the recording, plus a weak pull towards a reference track. The stand-in is crude, and
+it suffices (C). The reference tracks need not be searched: A's own outputs serve (C$'$), which
+removes the search from the recipe. Training takes 20--25 minutes on one GPU. The weights kept
+are those of the epoch after which the simulator itself, driven by the encoder on validation
+recordings, comes closest to them.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{Encoders taught with English (TSP), on four held-out speakers (240 sentences). Word
+error rate (\%) of Whisper small.en and large-v3-turbo; listener distance to the recording.}
+\label{tab:english}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+& small.en & large & Dist.\\
+\midrule
+Recordings & 2.6 & 1.6 & --\\
+CHIMERA's rule synthesis from text & 36.2 & 25.5 & --\\
+A: renders only & 34.6 & 31.0 & 0.28\\
+Search from A's track (1--2 min/sentence) & 13.3 & 11.5 & 0.10\\
+B: copies searched tracks & 19.5 & 15.1 & 0.19\\
+C: B + stand-in loss & 6.5 & 5.2 & 0.11\\
+C$'$: stand-in loss, no search & 7.9 & 6.0 & 0.13\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The search reaches the smallest distance and yet reads worse than C: it fits each sentence to the
+listener, while the encoder has to find what all sentences share. The encoder's articulators also
+move more slowly than the rules' (the top 1\% of channel speeds is about 0.6 of theirs): it does
+not win by shaking the tract in ways a recognizer likes.
+
+\textbf{Japanese} (Table~\ref{tab:japanese}). C$'$, taught with English only, makes Japanese that
+is understood but foreign: /o/ and /e/ come out as English vowels, and affricates and voiced
+fricatives are lost (6--12\% of ざ-row consonants, じ, ち, つ and geminates). Three changes help,
+and their gains add up: Japanese recordings in the closed loop (86 JVS speakers $\times$ 10
+sentences, 1.9\,h, beside the English ones; D); a multilingual listener, mHuBERT-147 layer 8, in
+place of the English wav2vec\,2.0 (E); both (F); and mHuBERT also as the encoder's front end (G).
+The English listener had not been hearing the errors: it rated C$'$'s Japanese closer to the
+recording than another person's reading of the sentence, while mHuBERT and the phone recognizer
+rate it farther. With G the phone mismatch equals that of another real speaker, and English
+improves as well.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.6pt}
+\caption{Encoders on speakers and sentences they never heard. JVS: 8 speakers $\times$ 25
+sentences; HFC+JSUT: Hi-Fi-CAPTAIN's two Japanese speakers and JSUT, 300 sentences; TSP: as in
+Table~\ref{tab:english}. Whisper large-v3-turbo errors (\%, phonemes for Japanese, words for
+English) and phone mismatch (\%). I is played by the voice of \S\ref{sec:voice}, the others by
+CHIMERA's default.}
+\label{tab:japanese}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{JVS} & \multicolumn{2}{c}{HFC+JSUT} & \multicolumn{2}{c}{TSP (en)}\\
+& err. & phone & err. & phone & err. & phone\\
+\midrule
+Recordings & 2.5 & -- & 0.2 & -- & 1.6 & --\\
+Another speaker & -- & 32.1 & -- & 24.1 & -- & 8.9\\
+C$'$ (English only) & 6.6 & 42.6 & 2.9 & 40.8 & 6.0 & 10.9\\
+G (+ Japanese, mHuBERT) & 3.9 & 28.0 & 0.4 & 26.6 & 3.5 & 8.5\\
+H (+ silences) & 3.6 & 28.3 & 0.5 & 26.8 & 3.9 & 8.9\\
+I (for the settled voice) & 3.4 & 29.3 & 0.4 & 27.3 & 3.2 & 9.4\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Silence.} G voiced a sound before the speech in 51\% of the JVS recordings. The closed
+loop compares only where the recording has speech; outside it the reference track was A's output,
+and A starts to breathe as soon as it hears the room. In H the reference has no breath outside
+the speech, and the stray sounds are gone (0\%) at the same intelligibility.
+
+\section{Errors in the latent}\label{sec:perturb}
+The hypothesis is about what errors sound like. We perturb the tracks that C$'$ writes for 40 test
+sentences and render them (Table~\ref{tab:perturb}). The simulator never diverged or produced an
+over-loud sound under any condition. Noise at a tenth of each channel's movement (20\,dB) leaves the
+word error rate where it was; at a third (10\,dB) the speech becomes hard to follow. Four bits per channel or half
+the frame rate cost little, so a naive code of 17 channels (the 16 and the pitch) $\times$
+50\,Hz $\times$ 5\,bits, 4.2\,kbit/s with no entropy coding, reads as well as the unquantized
+track.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2pt}
+\caption{Perturbing encoder C$'$'s tracks (40 sentences of the test speakers). Word error rate
+of Whisper small.en (\%), with 95\% bootstrap intervals for the two references. Noise levels
+are signal-to-noise ratios against how far each channel moves in speech; smooth noise varies
+below 4\,Hz, an error that drifts.}
+\label{tab:perturb}
+\begin{tabular}{@{}lr@{\hspace{7pt}}lr@{}}
+\toprule
+\multicolumn{2}{@{}l}{Unperturbed: 5.2 [2.7, 8.1]} & \multicolumn{2}{l}{Recordings: 1.9 [0.6, 3.8]}\\
+\midrule
+White noise, 20\,dB & 6.2 & Quantized, 5 bits & 4.9\\
+\quad 10\,dB & 17.0 & \quad 4 bits & 6.5\\
+\quad 5\,dB & 34.0 & \quad 3 bits & 10.8\\
+Smooth noise, 20\,dB & 6.2 & \quad 2 bits & 27.8\\
+\quad 10\,dB & 26.2 & Sampled at 50\,Hz & 5.6\\
+\quad 5\,dB & 68.5 & \quad 25\,Hz & 9.6\\
+50\,Hz, 5 bits (4.2\,kbit/s) & 5.2 & \quad 12.5\,Hz & 50.0\\
+50\,Hz, 4 bits (3.4\,kbit/s) & 8.0 & 25\,Hz, 4 bits (1.7) & 10.8\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+What the numbers cannot say is how the failures sound. To the listener among us, the perturbed
+renders sound ``like a person with poor articulation'', not like the artifacts of a codec; even
+white noise on the controls, the most artificial condition, is not grating. The same holds for a
+text-to-speech model that has seen too little data (\S\ref{sec:tts}).
+
+\section{The voice}\label{sec:voice}
+The simulator's fixed settings matter little for intelligibility, but three properties of its
+sound did not survive listening. Each was traced to a mechanism and changed through settings the
+engine exposes; the engine's code stayed as it is.
+
+\textbf{High voices.} The male renders sounded real and the female ones thin. NISQA agrees: male
+renders score like recordings (4.6--4.9), female ones 2.8--3.3. Over 17 speakers the score follows
+the speaker's median pitch (correlation $-0.9$), whatever the sex, and lowering the pitch of a
+woman's track by an octave restores it (2.9 to 4.4). The cause is the glottis: the engine's open
+quotient is about 0.6 at every pitch, where real high voices open longer. Setting it to 0.85
+directly, with a vibration amplitude of 1.4 and the source's tension, brightness and roughness
+lowered, fitted on 16 sentences of one woman, raises the women of all three tests (Table~\ref{tab:voice}).
+The settings harm low voices, so a speaker gets them in proportion to the median pitch: not at
+all up to 150\,Hz, fully from 175\,Hz. Fitting to NISQA alone finds loopholes (louder noise
+sources, which mask rather than mend), and the final values were set by ear.
+
+\textbf{Sounds inside silences.} With the high voice fixed, a wet, tongue-smacking sound remained.
+Muting stretches of a render in an audio editor showed that it lived in unvoiced stretches. One
+part of it is air: CHIMERA lets the air that moving walls displace flow into the tract, so a
+track played with no breath at all is not silent but thumps below a few hundred hertz, some
+40\,dB under the speech (30\,dB for the male body), where a recording's closures and pauses are
+silent. The engine has a switch for this flow, and the encoder's tracks are given no breath in
+the recording's pauses.
+
+\textbf{The click of a closure.} The smacking survived that. It was finally located in six
+stretches of about 35\,ms next to voiced sound, above 2\,kHz, in one sentence. There, as the tongue
+closes for a stop, the render has a click of one or two milliseconds that reaches 16\,kHz, 25--35\,dB
+under the speech, where the recording has nothing. Turning off every noise source changes it by
+less than 0.1\,dB: it is not turbulence. Tracing the engine's state sample by sample showed that
+it treats a constriction below $2\cdot10^{-4}$\,cm$^2$ as closed and sets the flow through it to
+zero within one sample, while about 1\,cm$^3$/s is still flowing. With the threshold at
+$10^{-6}$\,cm$^2$ the flow has died away by itself. Our first two measures had missed the click
+(one looked only below 9\,kHz and for bursts that stand out of the 20\,ms before them, the other
+skipped the first 15\,ms of a silence); the one that found it assumes nothing about place or
+shape and counts, band by band, what a render has that its recording has not.
+
+\begin{table}[t]
+\centering\scriptsize\setlength{\tabcolsep}{2.2pt}
+\caption{The voice on the Japanese test recordings of women (JVS: 100; Hi-Fi-CAPTAIN and
+JSUT: 200). NISQA; how often per second of speech the render sounds inside the recording's
+silences (S) and clicks as a closure sets in (C); phone mismatch (\%). Rows 2--4 play encoder
+H's tracks.}
+\label{tab:voice}
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+& \multicolumn{4}{c}{JVS} & \multicolumn{4}{c}{HFC+JSUT}\\
+& NISQA & S & C & ph. & NISQA & S & C & ph.\\
+\midrule
+Recordings & 4.80 & -- & -- & -- & 4.57 & -- & -- & --\\
+Default voice & 3.02 & .57 & .71 & 30.1 & 3.32 & .55 & 1.27 & 28.1\\
++ wall air off, closed area & 2.95 & .03 & .11 & 30.8 & 3.38 & .03 & .23 & 29.1\\
++ high-voice settings & 3.84 & .06 & .25 & 33.1 & 4.09 & .05 & .40 & 31.2\\
+Encoder I, same voice & 3.91 & .02 & .28 & 31.3 & 4.10 & .03 & .44 & 28.9\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{An encoder for the voice.} H was taught through a stand-in for the default voice, and
+under the new one it confuses voiced and voiceless stops more often (278 against 141 confusions in
+500 Japanese sentences). Rendering the 3,864 training tracks again under the settled voice,
+teaching a new stand-in from them and the encoder through it (I; 32 minutes in all) brings the
+confusions down to 200 and the phone mismatch most of the way back, with the sound unchanged
+(Tables~\ref{tab:japanese} and~\ref{tab:voice}).
+
+\textbf{What remains.} The bursts when a stop is released are sharper than in recordings: at the
+speaker's releases the render is as strong as the recording above 4\,kHz but 5--7\,dB weaker
+below. Opening speed, lung pressure, breath during the closure, abduction and noise gains were
+tried and none brings them closer without a side effect.
+
+\section{Text-to-speech on the latent}\label{sec:tts}
+\textbf{Model.} A sentence is read by Open JTalk~\cite{openjtalk} into phonemes; each carries
+where its mora stands in its accent phrase (how far from the accent nucleus, how far from the
+phrase's start and end) and whether the sentence asks. The model has the shape of
+FastSpeech\,2~\cite{fastspeech2}: four self-attention blocks over the phonemes, a predictor of
+each phoneme's duration, and six blocks over the frames that write the track: the 16 channels
+and the pitch, which the encoder took from a tracker and which is written here too (width 256,
+18.8M weights). Durations for training come from an alignment learned from the recordings and
+their phonemes alone~\cite{ota}, with no external aligner.
+
+\textbf{Data and losses.} The targets are encoder I's tracks for 18,655 sentences (24 hours) of
+Hi-Fi-CAPTAIN's Japanese man; the 100 sentences of the corpus's evaluation set are the test. The
+loss is the error against those tracks, the error of the log durations, and the encoder's
+stand-in loss against the recording (Fig.~\ref{fig:system}). Two corrections make the timing the
+speaker's. Log durations are short of the speaker's in sum, so they are scaled by a constant
+(1.02). And the speaker pauses where the text has no comma, about 0.4 times per sentence for a
+third of a second: the aligner marks such pauses, which would otherwise make a 390\,ms /d/, and
+a small classifier on the model's states at accent-phrase borders decides where to pause at
+inference (it places 27 pauses where the speaker makes 44 in the test sentences).
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.2pt}
+\caption{Text-to-speech on the 100 test sentences. Whisper errors (\% of phonemes), phone
+mismatch (\%), NISQA; listener distance and pitch correlation with the recording, where the
+render shares its timing.}
+\label{tab:tts}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& small & large & phone & NISQA & dist. & $r_{F0}$\\
+\midrule
+Recordings & 0.5 & 0.1 & -- & 4.56 & -- & --\\
+Encoder I (from audio) & 1.3 & 0.1 & 24.2 & 4.75 & 0.192 & 0.99\\
+TTS, speaker's timing & 0.7 & 0.1 & 24.6 & 4.80 & 0.207 & 0.92\\
+TTS, from text alone & 0.8 & 0.2 & 24.7 & 4.78 & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Results} (Table~\ref{tab:tts}). From text alone the model's renders are read as well as
+those of the encoder, which hears the recording, and score the same quality. The intonation is not
+flattened: the pitch range is 97\% of the encoder's, and with the speaker's durations the pitch
+correlates 0.92 with the recording's. On twelve sentences from outside the corpus large-v3-turbo
+gets 0.4\% of the phonemes wrong; the one clear slip is /py/ (コンピューター comes out as
+コンユーター), which occurs 35 times among the corpus's 951k phonemes. Writing the track for a 4\,s
+sentence takes 17\,ms on a CPU.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_data_en.pdf}
+\caption{The same text-to-speech model taught with fewer recordings of the speaker, on the 100
+test sentences. Dashed: encoder I's renders of the recordings; dotted: the recordings.}
+\label{fig:data}
+\end{figure}
+
+\textbf{Fewer recordings} (Fig.~\ref{fig:data}). The same model taught with 200 sentences, 15
+minutes of speech, is still read almost without error (0.5\%), and with 20 sentences, a minute
+and a half, large-v3-turbo still gets 92\% of the phonemes. A model that small has not heard
+every sound of the language, and it mispronounces; but its renders keep a predicted quality of
+4.16, and to the ear they are a person slurring words, barely but still intelligible. We take
+this as the strongest support for the hypothesis so far, and as the most useful property of the
+latent: sixteen slowly moving channels with a simple relation to phonemes need little data.
+
+\textbf{Does the stand-in matter here?} At 2,000 sentences, dropping the stand-in loss raises the
+listener distance it aims at from 0.217 to 0.234, but Whisper (0.3\% against 0.2\%) and the phone
+mismatch (27.2\% against 27.1\%) cannot tell the two models apart. The tracks being copied already
+sound like the recording, because the encoder that wrote them was taught to make them so; what
+was essential for the encoder is inherited by the text-to-speech model.
+
+\section{Discussion}\label{sec:discussion}
+\textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
+say the same thing; asking that the track sound right, through a crude model of the simulator,
+took the encoder from 19.5\% to 6.5\% word errors and made the search unnecessary. \emph{The
+listener decides what is learned.} An English listener did not hear Japanese errors, and
+distance to it kept falling while the judges did not move. \emph{Listening found what the measures
+missed.} Each artifact of \S\ref{sec:voice} was first heard, then located by ear, and only then
+measured, twice with a measure that looked in the wrong place; and a quality predictor optimized
+on its own found loopholes. \emph{The latent is easy to predict.} A plain non-autoregressive model
+matches the encoder, and it needs a hundredth of the data it was given.
+
+\textbf{Limitations.} The codec carries what is said, its timing and its pitch, not who says it:
+the voice is told a speaker's sex and median pitch, and the timbre is the simulator's. The bursts
+of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
+second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
+and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
+quality predictor, with one training run per model, and the listening is one person's. The
+perturbation test and the comparison of training sizes say how this codec fails, not how a
+neural codec trained on the same data would; that comparison is the next step. Accent comes from
+Open JTalk's estimate and is wrong where it is.
+
+\section{Conclusion}
+A physical model of the voice can be the decoder of a speech codec without being differentiable
+or modified: an encoder taught through a learned stand-in writes its control track from a
+recording in one pass, and the renders are understood about as well as the recordings. Errors in
+this latent come out as poor articulation. The simulator's own artifacts could be traced and
+removed through its settings because every part of it means something. And the latent is easy
+to write from text: a small model matches the encoder, and fifteen minutes of one speaker are
+enough to teach it.
+
+\section*{Acknowledgments}
+We thank Jameson Hodge for CHIMERA, and the authors of the TSP speech database, JVS, JSUT,
+Hi-Fi-CAPTAIN, wav2vec\,2.0, mHuBERT-147, Whisper, NISQA and Open JTalk.
+
+\begin{thebibliography}{99}\footnotesize
+\setlength{\itemsep}{0pt}
+\bibitem{encodec} A.~Défossez, J.~Copet, G.~Synnaeve, Y.~Adi. High fidelity neural audio
+compression. \emph{TMLR}, 2023.
+\bibitem{moshi} A.~Défossez et al. Moshi: a speech-text foundation model for real-time dialogue.
+arXiv:2410.00037, 2024.
+\bibitem{pocketja} Claude, T.~Mori. Pocket TTS learns Japanese: Training data and distillation for
+a drop-in 100M-parameter model. Technical report, 2026.
+\bibitem{sparc} C.~J.~Cho, P.~Wu, T.~S.~Prabhune, D.~Agarwal, G.~K.~Anumanchipalli. Coding speech
+through vocal tract kinematics. arXiv:2406.12998, 2024.
+\bibitem{arti6} J.~Lee et al. ARTI-6: Towards six-dimensional articulatory speech encoding.
+arXiv:2509.21447, 2025.
+\bibitem{difftlm} E.~M.~Chen, J.~W.~Lee, V.~Sitzmann. Reconstructing the vocal tract with
+differentiable acoustic simulation. arXiv:2609.36737, 2026.
+\bibitem{vtl} P.~Birkholz. VocalTractLab. \url{https://www.vocaltractlab.de}.
+\bibitem{chimera} J.~Hodge. CHIMERA: a physical-modeling voice synthesizer.
+\url{https://github.com/jamesondh/chimera-vocal-synth}, 2026.
+\bibitem{tsp} P.~Kabal. TSP speech database. Technical report, McGill University, 2002.
+\bibitem{jvs} S.~Takamichi et al. JVS corpus: free Japanese multi-speaker voice corpus.
+arXiv:1908.06248, 2019.
+\bibitem{hificaptain} NICT. Hi-Fi-CAPTAIN corpus.
+\url{https://ast-astrec.nict.go.jp/en/release/hi-fi-captain/}.
+\bibitem{jsut} R.~Sonobe, S.~Takamichi, H.~Saruwatari. JSUT corpus: free large-scale Japanese
+speech corpus for end-to-end speech synthesis. arXiv:1711.00354, 2017.
+\bibitem{whisper} A.~Radford et al. Robust speech recognition via large-scale weak supervision.
+\emph{ICML}, 2023.
+\bibitem{openjtalk} Open JTalk. \url{https://open-jtalk.sourceforge.net}.
+\bibitem{xlsrphone} Q.~Xu, A.~Baevski, M.~Auli. Simple and effective zero-shot cross-lingual
+phoneme recognition. \emph{Interspeech}, 2022.
+\bibitem{nisqa} G.~Mittag, B.~Naderi, A.~Chehadi, S.~Möller. NISQA: A deep CNN-self-attention
+model for multidimensional speech quality prediction with crowdsourced datasets.
+\emph{Interspeech}, 2021.
+\bibitem{praat} P.~Boersma. Accurate short-term analysis of the fundamental frequency and the
+harmonics-to-noise ratio of a sampled sound. \emph{IFA Proceedings} 17, 1993.
+\bibitem{distal} M.~I.~Jordan, D.~E.~Rumelhart. Forward models: Supervised learning with a distal
+teacher. \emph{Cognitive Science} 16(3), 1992.
+\bibitem{wav2vec2} A.~Baevski, Y.~Zhou, A.~Mohamed, M.~Auli. wav2vec 2.0: A framework for
+self-supervised learning of speech representations. \emph{NeurIPS}, 2020.
+\bibitem{mhubert} M.~Zanon~Boito, V.~Iyer, N.~Lagos, L.~Besacier, I.~Calapodescu. mHuBERT-147: A
+compact multilingual HuBERT model. \emph{Interspeech}, 2024.
+\bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.
+\emph{ICLR}, 2021.
+\bibitem{ota} R.~Badlani, A.~Łańcucki, K.~J.~Shih, R.~Valle, W.~Ping, B.~Catanzaro. One TTS
+alignment to rule them all. \emph{ICASSP}, 2022.
+\end{thebibliography}
+\end{document}

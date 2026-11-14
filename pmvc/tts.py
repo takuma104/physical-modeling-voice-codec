@@ -12,7 +12,9 @@ usage: python -m pmvc.tts train [dir] [--name tts] [--tracks enci] [--standin st
        python -m pmvc.tts pauses [dir] [--name tts] [--tracks enci] [--limit N]
        python -m pmvc.tts speak [dir] [--name tts] [--models DIR] [--out tts] [--split test]
                                 [--ids ...] [--timing own|recording] [--sentences FILE]
+                                [--speaker NAME]
        python -m pmvc.tts say "こんにちは。" [--name tts] [--models DIR] [--out say.wav]
+                              [--speaker NAME]
 
 The model is of the plainest kind that needs no alignment at run time (FastSpeech 2's shape):
   - the sentence as `pmvc.japanese` reads it, phonemes with their places against the pitch
@@ -45,6 +47,13 @@ only pauses at commas runs long sentences together. When the training is done, t
 states at the borders of accent phrases are taught to say whether the speaker pauses there
 (`pauses` does this for a model that is already there), and a sentence the model times itself
 gets a short pause where they say so.
+
+The recordings may be of several speakers (their metas say whose each is; `pmvc.jvs --all`
+lays out a hundred). The model then has a vector for each speaker, added to every phoneme
+and to every frame, and writes each speaker's pitch against that speaker's own mean and
+spread. Of a speaker the voice is still told only the sex and the median pitch: what else
+makes the speakers differ is in the tracks, or it is lost. `speak` gives a recording's
+sentence its own speaker's voice, or `--speaker`'s.
 
 `speak` writes <dir>/<out>/<id>.tracks.json and <id>.wav for the sentences of a split's
 recordings (their meta's text). With `--timing recording` each phoneme lasts as long as in the
@@ -102,6 +111,12 @@ class Sentence:
     phones: list[Phone]
     frames: NDArray[np.int64]
     track: NDArray[np.float32]
+    # who reads it: the name, the sex and the recording's median pitch from its meta, and the
+    # speaker's place among the model's (`Voice.talkers`)
+    speaker: str = ""
+    sex: str = "M"
+    f0: float = 0.0
+    who: int = 0
     heard: NDArray[np.float16] | None = None
     span: tuple[int, int] = (0, 0)
 
@@ -123,7 +138,8 @@ def sentences(d: Path, tracks: str, split: str, jobs: int) -> tuple[list[Sentenc
         frames = np.array(lasting, dtype=np.int64)
         frames[-1] += len(track) - frames.sum()
         if frames[-1] >= 1:
-            out.append(Sentence(uid, phones, frames, track))
+            meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+            out.append(Sentence(uid, phones, frames, track, meta["speaker"], meta["sex"], meta["f0Median"]))
     keys: list[str] = json.loads((d / tracks / f"{ids[0]}.tracks.json").read_text())["keys"]
     return out, keys
 
@@ -146,6 +162,23 @@ def hear(d: Path, data: list[Sentence], listener: Listener, jobs: int) -> None:
                 np.save(d / "heard" / tag / f"{s.uid}.npy", heard)
             meta = json.loads((d / "meta" / f"{s.uid}.json").read_text())
             s.heard, s.span = heard, (int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE))
+
+
+def fewer(data: list[Sentence], limit: int) -> list[Sentence]:
+    """So many of the recordings (all of them for 0): of each speaker a share, spread evenly
+    over the speaker's recordings and starting at another place for each speaker, so that
+    speakers who read the same sentences are heard reading different ones."""
+    if not limit or limit >= len(data):
+        return data
+    by: dict[str, list[Sentence]] = {}
+    for s in data:
+        by.setdefault(s.speaker, []).append(s)
+    out: list[Sentence] = []
+    for k, theirs in enumerate(by.values()):
+        n = max(1, round(limit * len(theirs) / len(data)))
+        start = round(k * 0.618 * len(theirs))
+        out += [theirs[(start + round(j * len(theirs) / n)) % len(theirs)] for j in range(min(n, len(theirs)))]
+    return out
 
 
 def turn(x: torch.Tensor) -> torch.Tensor:
@@ -197,10 +230,13 @@ class Pausing(nn.Module):
 class Speaker(nn.Module):
     """Phonemes in, their durations and the track's channels out."""
 
-    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False) -> None:
+    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1) -> None:
         super().__init__()
         self.phones = phones
         self.pausing = Pausing(width) if pausing else None
+        # a model of several speakers is told which one speaks: a vector for each, added to
+        # every phoneme before the text is read and to every frame before the track is written
+        self.who = nn.Embedding(speakers, width) if speakers > 1 else None
         self.embed = nn.ModuleList([nn.Embedding(n, width) for n in (len(phones), *SIZES)])
         self.text = nn.ModuleList([Block(width, heads, kernel, dropout) for _ in range(text_layers)])
         self.text_norm = nn.LayerNorm(width)
@@ -214,11 +250,15 @@ class Speaker(nn.Module):
         self.frame_norm = nn.LayerNorm(width)
         self.out = nn.Linear(width, channels)
 
-    def read(self, ids: torch.Tensor, real: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """`ids` (batch, phonemes, 5) as `Phone.ids` gives them. Returns each phoneme's state
-        and the logarithm of its frames."""
+    def read(self, ids: torch.Tensor, real: torch.Tensor, who: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """`ids` (batch, phonemes, 5) as `Phone.ids` gives them, and `who` (batch,) speaks, for
+        a model of several speakers. Returns each phoneme's state and the logarithm of its
+        frames."""
         h = sum(e(ids[..., k]) for k, e in enumerate(self.embed))
         assert isinstance(h, torch.Tensor)
+        if self.who is not None:
+            assert who is not None, "a model of several speakers has to be told who speaks"
+            h = h + self.who(who)[:, None]
         for block in self.text:
             h = block(h, real)
         h = self.text_norm(h)
@@ -227,7 +267,7 @@ class Speaker(nn.Module):
             g = self.lasting_drop(norm(torch.relu(conv((g * real[..., None]).transpose(1, 2)).transpose(1, 2))))
         return h, self.lasting_out(g)[..., 0]
 
-    def write(self, h: torch.Tensor, frames: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def write(self, h: torch.Tensor, frames: torch.Tensor, who: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """`h` (batch, phonemes, width) and each phoneme's `frames` (0 on the padding). Returns
         the channels, (batch, frames, channels), normalised, and which frames are real."""
         ends = frames.cumsum(dim=1)
@@ -239,15 +279,31 @@ class Speaker(nn.Module):
         since = (at - (ends - frames).gather(1, which)).float()
         place = torch.stack([(since + 0.5) / long, since / 50.0, long.log() / 4.0], dim=-1)
         x = h.gather(1, which[..., None].expand(-1, -1, h.shape[2])) + self.place(place)
+        if self.who is not None:
+            assert who is not None
+            x = x + self.who(who)[:, None]
         for block in self.frame:
             x = block(x, real)
         return self.out(self.frame_norm(x)), real
 
 
 @dataclass
+class Talker:
+    """A speaker as a model knows them: the name; the sex and the median pitch (Hz), which
+    are all the voice is told of a speaker (its body, and what its source idles at and which
+    settings it gets); and the mean and spread of the log2 pitch, which the model's pitch is
+    written against."""
+
+    name: str
+    sex: str
+    f0: float
+    pitch: tuple[float, float]
+
+
+@dataclass
 class Voice:
     """What a trained model needs beside its weights to write a track the voice can play: the
-    channels and their spread, the speaker, and how the voice is to play it."""
+    channels and their spread, the speakers, and how the voice is to play it."""
 
     keys: list[str]
     mean: Array
@@ -255,46 +311,59 @@ class Voice:
     lo: Array
     hi: Array
     learned: list[int]
-    # the speaker's log2 pitch: its mean and spread
-    pitch: tuple[float, float]
-    sex: str
-    f0: float
+    talkers: list[Talker]
     decoder: Decoder
     # what the model's durations are multiplied by: for phonemes, and for pauses inside a sentence
     pace: tuple[float, float] = (1.0, 1.0)
 
     def state(self) -> dict[str, Any]:
         return {"keys": self.keys, "mean": self.mean.tolist(), "std": self.std.tolist(), "lo": self.lo.tolist(), "hi": self.hi.tolist(), "learned": self.learned,
-                "pitch": list(self.pitch), "sex": self.sex, "f0": self.f0, "pace": list(self.pace),
+                "talkers": [{"name": t.name, "sex": t.sex, "f0": t.f0, "pitch": list(t.pitch)} for t in self.talkers], "pace": list(self.pace),
                 "decoder": {"fitted": self.decoder.fitted, "wall_air": self.decoder.wall_air, "closed_area": self.decoder.closed_area}}  # fmt: skip
 
     @classmethod
     def of(cls, s: dict[str, Any]) -> "Voice":
-        return cls(s["keys"], np.array(s["mean"]), np.array(s["std"]), np.array(s["lo"]), np.array(s["hi"]), s["learned"], (s["pitch"][0], s["pitch"][1]), s["sex"], s["f0"], Decoder(**s["decoder"]), (s.get("pace", [1.0, 1.0])[0], s.get("pace", [1.0, 1.0])[1]))
+        # a model of one speaker from before there were several says of the speaker what a talker does
+        talkers = s.get("talkers") or [{"name": "", "sex": s["sex"], "f0": s["f0"], "pitch": s["pitch"]}]
+        pace = s.get("pace", [1.0, 1.0])
+        return cls(s["keys"], np.array(s["mean"]), np.array(s["std"]), np.array(s["lo"]), np.array(s["hi"]), s["learned"],
+                   [Talker(t["name"], t["sex"], t["f0"], (t["pitch"][0], t["pitch"][1])) for t in talkers], Decoder(**s["decoder"]), (pace[0], pace[1]))  # fmt: skip
 
-    def frames(self, out: NDArray[np.float32]) -> Array:
+    def who(self, name: str) -> int:
+        """A speaker's place among the model's; a model of one speaker has only that one."""
+        if len(self.talkers) == 1:
+            return 0
+        names = [t.name for t in self.talkers]
+        if name not in names:
+            raise ValueError(f"the model has no speaker {name!r}: it has {', '.join(names[:5])}, ... ({len(names)})")
+        return names.index(name)
+
+    def frames(self, out: NDArray[np.float32], who: int = 0) -> Array:
         """The model's channels as a track's frames, in the voice's units."""
         f0 = self.keys.index("f0")
+        pitch = self.talkers[who].pitch
         frames = np.tile(self.mean, (len(out), 1))
         frames[:, self.learned] = out[:, :-1] * self.std[self.learned] + self.mean[self.learned]
-        frames[:, f0] = 2.0 ** (out[:, -1] * self.pitch[1] + self.pitch[0])
+        frames[:, f0] = 2.0 ** (out[:, -1] * pitch[1] + pitch[0])
         return np.clip(frames, self.lo, self.hi)
 
-    def track(self, frames: Array, free: bool) -> dict[str, Any]:
+    def track(self, frames: Array, free: bool, who: int = 0) -> dict[str, Any]:
         """The frames as a track for the speaker's voice."""
-        body = {"female": 1.0 if self.sex == "F" else 0.0, "child": 0.0}
-        track = self.decoder.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(self.f0, 2)}, "keys": self.keys}, self.f0)
+        t = self.talkers[who]
+        body = {"female": 1.0 if t.sex == "F" else 0.0, "child": 0.0}
+        track = self.decoder.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(t.f0, 2)}, "keys": self.keys}, t.f0)
         return {**track, "shift": LEAD, **({"free": True} if free else {}), "frames": np.round(frames, 5).tolist()}
 
 
-def collate(batch: list[Sentence], phones: list[str], device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def collate(batch: list[Sentence], phones: list[str], device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The phonemes, their frames, which are real, and who speaks."""
     n = max(len(s.phones) for s in batch)
     ids = torch.zeros(len(batch), n, 5, dtype=torch.long)
     frames = torch.zeros(len(batch), n, dtype=torch.long)
     for i, s in enumerate(batch):
         ids[i, : len(s.phones)] = torch.tensor([p.ids(phones) for p in s.phones])
         frames[i, : len(s.phones)] = torch.from_numpy(s.frames)
-    return ids.to(device), frames.to(device), (frames > 0).to(device)
+    return ids.to(device), frames.to(device), (frames > 0).to(device), torch.tensor([s.who for s in batch], device=device)
 
 
 def chunks(data: list[Sentence], size: int, rng: np.random.Generator | None) -> list[list[Sentence]]:
@@ -304,17 +373,18 @@ def chunks(data: list[Sentence], size: int, rng: np.random.Generator | None) -> 
 
 
 @torch.no_grad()
-def write_track(model: Speaker, voice: Voice, phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None) -> tuple[Array, NDArray[np.int64]]:
-    """The track for a sentence, and how many frames each phoneme got: `frames` if given (the
-    speaker's own timing), or else the model's."""
+def write_track(model: Speaker, voice: Voice, phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None, who: int = 0) -> tuple[Array, NDArray[np.int64]]:
+    """The track for a sentence in the voice of the model's speaker `who`, and how many
+    frames each phoneme got: `frames` if given (the speaker's own timing), or else the model's."""
     ids = torch.tensor([[p.ids(model.phones) for p in phones]], device=device)
-    h, lasting = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device))
+    speaker = torch.tensor([who], device=device)
+    h, lasting = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device), speaker)
     if frames is None:
         pace = np.array([1.0 if k in (0, len(phones) - 1) else voice.pace[1] if p.silent else voice.pace[0] for k, p in enumerate(phones)])
         frames = np.maximum(1, np.round(np.exp(lasting[0].cpu().numpy()) * pace)).astype(np.int64)
         frames[0] = max(frames[0], OPENING)
-    out, _ = model.write(h, torch.from_numpy(frames).to(device)[None])
-    track = voice.frames(out[0].cpu().numpy())
+    out, _ = model.write(h, torch.from_numpy(frames).to(device)[None], speaker)
+    track = voice.frames(out[0].cpu().numpy(), who)
     if not voice.decoder.quiet_pauses:
         return track, frames
     # as the encoder's tracks have it: no breath before and after the sentence, nor in a pause
@@ -353,7 +423,7 @@ def border_states(model: Speaker, data: list[Sentence], device: str) -> tuple[to
         plain, at, did = unpaused(s.phones)
         if at:
             ids = torch.tensor([[p.ids(model.phones) for p in plain]], device=device)
-            h, _ = model.read(ids, torch.ones(1, len(plain), dtype=torch.bool, device=device))
+            h, _ = model.read(ids, torch.ones(1, len(plain), dtype=torch.bool, device=device), torch.tensor([s.who], device=device))
             k = torch.tensor(at, device=device)
             before.append(h[0, k - 1])
             after.append(h[0, k])
@@ -396,14 +466,14 @@ def fit_pausing(model: Speaker, fit: list[Sentence], held: list[Sentence], devic
 
 
 @torch.no_grad()
-def phrased(model: Speaker, phones: list[Phone], device: str) -> list[Phone]:
-    """The sentence's phonemes with a short pause where the model says the speaker would
-    pause; as they are if the model was not taught to say."""
+def phrased(model: Speaker, phones: list[Phone], device: str, who: int = 0) -> list[Phone]:
+    """The sentence's phonemes with a short pause where the model says the speaker `who`
+    would pause; as they are if the model was not taught to say."""
     at = [k for k in range(len(phones)) if border(phones, k)]
     if model.pausing is None or not at:
         return phones
     ids = torch.tensor([[p.ids(model.phones) for p in phones]], device=device)
-    h, _ = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device))
+    h, _ = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device), torch.tensor([who], device=device))
     k = torch.tensor(at, device=device)
     put = {i for i, logit in zip(at, model.pausing(h[0, k - 1], h[0, k]).tolist()) if logit > 0.0}
     return [q for i, p in enumerate(phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask), p) if i in put else (p,))]
@@ -418,8 +488,8 @@ def pace(model: Speaker, data: list[Sentence], device: str, batch: int = 32) -> 
     model.eval()
     said, written = np.zeros(2), np.zeros(2)
     for part in chunks(data, batch, None):
-        ids, _, real = collate(part, model.phones, device)
-        _, lasting = model.read(ids, real)
+        ids, _, real, who = collate(part, model.phones, device)
+        _, lasting = model.read(ids, real, who)
         for i, s in enumerate(part):
             inner = np.arange(len(s.phones))[1:-1]
             pause = np.array([p.silent for p in s.phones])[inner]
@@ -440,7 +510,7 @@ class Check:
 
     def __call__(self, model: Speaker) -> float:
         model.eval()
-        tracks = [self.voice.track(write_track(model, self.voice, s.phones, self.device, s.frames)[0], False) for s in self.data]
+        tracks = [self.voice.track(write_track(model, self.voice, s.phones, self.device, s.frames, s.who)[0], False, s.who) for s in self.data]
         with ThreadPoolExecutor(self.jobs) as pool:
             renders = list(pool.map(render_track, tracks))
         out: list[float] = []
@@ -464,33 +534,44 @@ def train(a: argparse.Namespace) -> None:
     held, _ = sentences(d, a.tracks, "valid", a.jobs)
     # every phoneme of the corpus has a place, whether or not it is among the recordings learned from
     phones = sorted({p.p for s in fit for p in s.phones})
-    if a.limit:
-        # so many of the recordings, spread evenly over the corpus
-        fit = [fit[round(k * len(fit) / a.limit)] for k in range(min(a.limit, len(fit)))]
+    everyone = fit
+    fit = fewer(fit, a.limit)
     hear(d, fit, listener, a.jobs)
     hear(d, held, listener, a.jobs)
 
-    # the speaker, and how the voice plays the tracks
-    metas = [json.loads((d / "meta" / f"{s.uid}.json").read_text()) for s in fit[:: max(1, len(fit) // 500)]]
+    # the speakers, and how the voice plays the tracks
     decoder = Decoder.of(a)
     decoder.quiet_pauses = True
     f0 = keys.index("f0")
+    by: dict[str, list[Sentence]] = {}
+    for s in everyone:
+        by.setdefault(s.speaker, []).append(s)
+    talkers: list[Talker] = []
+    for name, theirs in sorted(by.items()):
+        octaves = np.log2(np.concatenate([s.track[:, f0] for s in theirs]).astype(np.float64))
+        talkers.append(Talker(name, theirs[0].sex, float(np.median([s.f0 for s in theirs])), (float(octaves.mean()), float(octaves.std()))))
+    places = {t.name: k for k, t in enumerate(talkers)}
+    held = [s for s in held if s.speaker in places and all(p.p in phones for p in s.phones)]
+    for s in (*fit, *held):
+        s.who = places[s.speaker]
     pooled = np.concatenate([s.track for s in fit[:: max(1, len(fit) // 2000)]]).astype(np.float64)
     mean, std = pooled.mean(axis=0), pooled.std(axis=0)
     learned = [c for c in range(len(keys)) if c != f0 and std[c] > 1e-6]
-    octaves = np.log2(pooled[:, f0])
-    voice = Voice(keys, mean, std, pooled.min(axis=0), pooled.max(axis=0), learned, (float(octaves.mean()), float(octaves.std())), metas[0]["sex"], float(np.median([m["f0Median"] for m in metas])), decoder)
-    share = decoder.share(voice.f0)
+    voice = Voice(keys, mean, std, pooled.min(axis=0), pooled.max(axis=0), learned, talkers, decoder)
     assert (standin.inp.in_features == len(keys) + 2) == (decoder.fitted is not None), "the stand-in and --voice do not go together"
-    who = torch.tensor([1.0 if voice.sex == "F" else 0.0, share][: 2 if decoder.fitted else 1], device=device)
+    # what the stand-in is told of each speaker: the body, and the share of the fitted voice
+    told = torch.tensor([[1.0 if t.sex == "F" else 0.0, decoder.share(t.f0)][: 2 if decoder.fitted else 1] for t in talkers], device=device)
+    # each speaker's log2 pitch: its mean and spread
+    centre = torch.tensor([t.pitch[0] for t in talkers], device=device, dtype=torch.float32)
+    spread = torch.tensor([t.pitch[1] for t in talkers], device=device, dtype=torch.float32)
 
-    held = [s for s in held if all(p.p in phones for p in s.phones)]
-    model = Speaker(phones, len(learned) + 1, a.width, text_layers=a.text_layers, frame_layers=a.frame_layers).to(device)
+    model = Speaker(phones, len(learned) + 1, a.width, text_layers=a.text_layers, frame_layers=a.frame_layers, speakers=len(talkers)).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
     steps = a.epochs * len(chunks(fit, a.batch, None))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.05)
+    women = sum(t.sex == "F" for t in talkers)
     print(f"{len(fit)} recordings to fit ({sum(len(s.track) for s in fit) / FRAME_RATE / 3600:.1f} hours), {len(held)} held out; {len(phones)} phonemes, {len(learned)} channels and pitch; "
-          f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f} M weights; the speaker: {voice.sex}, {voice.f0:.0f} Hz, {share:.2f} of the fitted voice; {device}", flush=True)  # fmt: skip
+          f"{sum(p.numel() for p in model.parameters()) / 1e6:.1f} M weights; {len(talkers)} speaker(s), {women} of them women, median pitch {min(t.f0 for t in talkers):.0f}-{max(t.f0 for t in talkers):.0f} Hz; {device}", flush=True)  # fmt: skip
 
     mu = torch.tensor(mean[learned], device=device, dtype=torch.float32)
     sd = torch.tensor(std[learned], device=device, dtype=torch.float32)
@@ -501,26 +582,27 @@ def train(a: argparse.Namespace) -> None:
     rest = torch.tensor(mean, device=device, dtype=torch.float32)
 
     def losses(batch: list[Sentence]) -> dict[str, torch.Tensor]:
-        ids, frames, real = collate(batch, phones, device)
-        h, lasting = model.read(ids, real)
-        out, there = model.write(h, frames)
+        ids, frames, real, who = collate(batch, phones, device)
+        h, lasting = model.read(ids, real, who)
+        out, there = model.write(h, frames, who)
         n = out.shape[1]
+        middle, wide = centre[who][:, None], spread[who][:, None]
         target = torch.zeros(len(batch), n, len(keys), device=device)
         for i, s in enumerate(batch):
             target[i, : len(s.track)] = torch.from_numpy(s.track).to(device)
         count = there.sum()
         parts = {
             "track": (((out[..., :-1] - (target[..., learned] - mu) / sd).abs().mean(dim=-1)) * there).sum() / count,
-            "pitch": ((out[..., -1] - (torch.log2(target[..., f0].clamp(min=1.0)) - voice.pitch[0]) / voice.pitch[1]).abs() * there).sum() / count,
+            "pitch": ((out[..., -1] - (torch.log2(target[..., f0].clamp(min=1.0)) - middle) / wide).abs() * there).sum() / count,
             "durations": (((lasting - frames.clamp(min=1).float().log()) ** 2) * real).sum() / real.sum(),
         }
         if a.closed > 0.0:
             # the track written, as the stand-in reads it: in the voice's units, the pitch in
             # octaves, past a clip's end its first frame (the voice at rest), the speaker last
-            written = torch.cat([out[..., :-1] * sd + mu, out[..., -1:] * voice.pitch[1] + voice.pitch[0]], dim=-1)
+            written = torch.cat([out[..., :-1] * sd + mu, (out[..., -1] * wide + middle)[..., None]], dim=-1)
             track = rest.expand(len(batch), n, -1).index_copy(-1, index, torch.minimum(torch.maximum(written, lo), hi))
             track = torch.where(there[..., None], track, track[:, :1])
-            said = standin(torch.cat([track, who.expand(len(batch), n, -1)], dim=-1))[:, SKIP_HEARD:]
+            said = standin(torch.cat([track, told[who][:, None].expand(-1, n, -1)], dim=-1))[:, SKIP_HEARD:]
             total = out.new_zeros(())
             for i, s in enumerate(batch):
                 assert s.heard is not None
@@ -573,7 +655,11 @@ def train(a: argparse.Namespace) -> None:
 def teach_pauses(path: Path, fit: list[Sentence], held: list[Sentence], device: str) -> None:
     """Adds to the model in `path` its say on where the speaker pauses without a comma."""
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    model, _ = load_model(path, device)
+    model, voice = load_model(path, device)
+    names = {t.name for t in voice.talkers}
+    held = [s for s in held if len(names) == 1 or s.speaker in names]
+    for s in (*fit, *held):
+        s.who = voice.who(s.speaker)
     r = fit_pausing(model, fit, held, device)
     ck["state"], ck["pausing"] = model.state_dict(), True
     torch.save(ck, path)
@@ -585,26 +671,31 @@ def pauses(a: argparse.Namespace) -> None:
     d: Path = a.dir
     fit, _ = sentences(d, a.tracks, "train", a.jobs)
     held, _ = sentences(d, a.tracks, "valid", a.jobs)
-    if a.limit:
-        fit = [fit[round(k * len(fit) / a.limit)] for k in range(min(a.limit, len(fit)))]
-    teach_pauses(d / "models" / f"{a.name}.pt", fit, held, pick_device())
+    teach_pauses(d / "models" / f"{a.name}.pt", fewer(fit, a.limit), held, pick_device())
 
 
 def load_model(path: Path, device: str) -> tuple[Speaker, Voice]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     voice = Voice.of(ck["voice"])
     voice.decoder.quiet_pauses = True
-    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False))
+    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False), speakers=len(voice.talkers))
     model.load_state_dict({k: v for k, v in ck["state"].items() if ck.get("pausing") or not k.startswith("pausing.")})
     return model.to(device).eval(), voice
 
 
 def phonemes(model: Speaker, text: str) -> list[Phone]:
-    phones = read(text)
-    unknown = sorted({p.p for p in phones if p.p not in model.phones})
-    if unknown:
-        raise ValueError(f"the model was not taught the phoneme(s) {', '.join(unknown)} of {text!r}")
-    return phones
+    """The sentence's phonemes, as the model knows them. A palatalised or labialised consonant
+    the model never met (kw in クィ, say) is said as the consonant and the glide; any other
+    stranger cannot be said."""
+    out: list[Phone] = []
+    for p in read(text):
+        if p.p in model.phones:
+            out.append(p)
+        elif len(p.p) > 1 and p.p[-1] in "yw" and p.p[:-1] in model.phones:
+            out += [Phone(p.p[:-1], p.a1, p.a2, p.a3, p.ask), Phone(p.p[-1], p.a1, p.a2, p.a3, p.ask)]
+        else:
+            raise ValueError(f"the model was not taught the phoneme {p.p} of {text!r}")
+    return out
 
 
 def speak(a: argparse.Namespace) -> None:
@@ -615,19 +706,22 @@ def speak(a: argparse.Namespace) -> None:
         # sentences nobody recorded: all there is of each is its text
         (d / "meta").mkdir(parents=True, exist_ok=True)
         for k, text in enumerate(filter(None, (line.strip() for line in a.sentences.read_text(encoding="utf-8").splitlines())), 1):
-            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": voice.sex, "lang": "ja", "text": text, "split": "test"}
+            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": voice.talkers[voice.who(a.speaker)].sex, "lang": "ja", "text": text, "split": "test"}
             (d / "meta" / f"{meta['id']}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
     ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang") == "ja"]
     timed = aligned(d) if a.timing == "recording" else {}
     (d / a.out).mkdir(exist_ok=True)
     tracks: list[dict[str, Any]] = []
     for uid in ids:
+        meta = json.loads((d / "meta" / f"{uid}.json").read_text())
+        # in the voice asked for, or else the recording's own speaker's
+        who = voice.who(a.speaker or meta["speaker"])
         if timed:
             phones, frames = timed[uid]
-            track, _ = write_track(model, voice, phones, device, np.array(frames, dtype=np.int64))
+            track, _ = write_track(model, voice, phones, device, np.array(frames, dtype=np.int64), who)
         else:
-            track, _ = write_track(model, voice, phrased(model, phonemes(model, json.loads((d / "meta" / f"{uid}.json").read_text())["text"]), device), device)
-        tracks.append(voice.track(track, not timed))
+            track, _ = write_track(model, voice, phrased(model, phonemes(model, meta["text"]), device, who), device, None, who)
+        tracks.append(voice.track(track, not timed, who))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, x in zip(ids, pool.map(render_track, tracks)):
@@ -638,9 +732,10 @@ def speak(a: argparse.Namespace) -> None:
 def say(a: argparse.Namespace) -> None:
     device = pick_device()
     model, voice = load_model(a.models / f"{a.name}.pt", device)
-    phones = phrased(model, phonemes(model, a.text), device)
-    frames, lasting = write_track(model, voice, phones, device)
-    track = voice.track(frames, True)
+    who = voice.who(a.speaker)
+    phones = phrased(model, phonemes(model, a.text), device, who)
+    frames, lasting = write_track(model, voice, phones, device, None, who)
+    track = voice.track(frames, True, who)
     sf.write(str(a.out), render_track(track), 48000, subtype="PCM_16")
     a.out.with_suffix(".tracks.json").write_text(json.dumps(track))
     print(" ".join(f"{p.p}:{n}" for p, n in zip(phones, lasting)))
@@ -685,6 +780,8 @@ def main() -> None:
     s.add_argument("--timing", choices=["own", "recording"], default="own")
     s.add_argument("--sentences", type=Path, default=None, help="a file with a sentence a line, to lay out under <dir> and speak")
     s.add_argument("--set", type=str, default="say", help="a name for those sentences: their ids start with it")
+    for p in (s, y):
+        p.add_argument("--speaker", type=str, default="", help="which of the model's speakers speaks (a model of several): for sentences nobody recorded, or instead of a recording's own speaker")
     y.add_argument("--models", type=Path, default=ROOT / "out" / "hfcm" / "models")
     y.add_argument("--out", type=Path, default=Path("say.wav"))
     a = ap.parse_args()

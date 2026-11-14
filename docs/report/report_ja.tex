@@ -1,0 +1,492 @@
+% テクニカルレポート（日本語版、下書き）。ビルド: bash docs/report/build.sh
+\documentclass[10pt,a4paper,twocolumn]{article}
+\usepackage[margin=17mm,columnsep=6mm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,calc}
+\usepackage[font=small,labelfont=bf,labelsep=quad]{caption}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=*}
+\usepackage{xeCJK}
+\setCJKmainfont[Path=fonts/,BoldFont=NotoSerifJP-Bold.otf]{NotoSerifJP-Regular.otf}
+\setCJKsansfont[Path=fonts/,BoldFont=NotoSansJP-Bold.otf]{NotoSansJP-Regular.otf}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\renewcommand{\abstractname}{概要}
+\renewcommand{\refname}{参考文献}
+\renewcommand{\figurename}{図}
+\renewcommand{\tablename}{表}
+\newcommand{\pt}{\,pt}
+\setlength{\emergencystretch}{1.5em}
+\linespread{1.03}
+
+\title{\Large\bfseries 声の物理モデルをデコーダにした音声コーデック:\\
+制御列を書くエンコーダと、制御列の上の音声合成}
+\author{Claude（Anthropic）\thanks{Claude（Fable 5.2）が Claude Code 上で、実験の計画と実装、実行、
+結果の分析、本稿の執筆を行った。森 琢磨は、着想（小さなニューラルコーデックが声道では出せない音を
+出すことから、声の物理モデルをニューラルコーデックのデコーダにする）を出し、シミュレータ、コーパス、
+品質の予測モデルを選び、計算機を用意し、試聴を行った。試聴の判断が各段階の方針を決めた。発話の前の
+余計な音と高い声の音色の薄さを見つけ、\ref{sec:voice} 節の舌を鳴らすような音の場所を、合成音の
+区間を波形編集ソフトで無音にして特定し、声を選んだ。}\qquad 森 琢磨}
+\date{{\small テクニカルレポート（下書き）、2026 年 11 月}\\
+{\small\url{https://github.com/takuma104/physical-modeling-voice-codec}}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+ニューラル音声コーデックは、どんな潜在表現も音に変える。潜在表現を予測するモデルが誤ると、声道では
+出せない音が出ることがある。本稿では、それができないデコーダを持つコーデックを調べる。デコーダは、
+人の声の物理モデル CHIMERA（肺、声帯、枝分かれした声道。オープンソース）で、改造せずに使う。
+潜在表現はその制御列で、100\,Hz・21 チャネルである。顎、舌、唇、軟口蓋の位置と、声門の状態、
+息、声の高さを表す。エンコーダは、録音からこの制御列を 1 回の推論で書く。学習には文の書き起こしも
+制御列の探索も使わない。シミュレータは微分できないので、その代役となるネットワークを通して教える。
+学習に使っていない英語の話者で、合成音を Whisper が読み誤る単語は 3.2\%（実録音は 1.6\%）、
+日本語では音素の 0.4\%（同 0.2\%）である。制御列へのノイズ、4 bit の量子化、25\,Hz への間引きでは
+音声は少しずつ崩れ、耳には滑舌の悪い人の誤りに聞こえる。実録音にない 2 種類の音を、試聴を手がかりに
+シミュレータ自身の仕組みまでたどり、公開されている設定で取り除いた。音素から制御列を書く音声合成
+モデルは、エンコーダと同じだけ聞き取れる（0.2\% 対 0.1\%）。必要なデータはごく少ない。1 話者の
+200 文（15 分）で学習すると音素の誤りは 0.5\%、20 文（1.5 分）でも 7.7\% で、合成音の予測品質は
+きれいな音声のままである。
+\end{abstract}
+
+\section{はじめに}
+ニューラル音声コーデック~\cite{encodec,moshi} は、現在の音声生成の接点になっている。言語モデルや
+フローモデルが潜在表現を予測し、ニューラルデコーダが波形に変える。デコーダはどんな潜在表現でも
+受け取る。予測するモデルが小さいか、データが少ないと、その誤りは「分布から外れた潜在表現を
+デコーダがどう鳴らすか」として現れる。うなり、金属的な子音、口の中に音源のない音である。著者の
+1 人は、Mimi コーデックの上に作られた Pocket TTS を日本語に対応させる中でこれに出会った~\cite{pocketja}。
+
+本稿は、デコーダを声の物理モデルにしたらどうなるかを調べる。声帯と声道を通る空気の流れの
+シミュレータは、そういう系が出せる音しか出せない。その制御パラメータを潜在表現にすれば、潜在表現の
+誤りは、舌の位置のずれや声門の閉じ遅れになる。つまり調音の誤りで、人の誤り方と同じである。仮説は、
+そういうコーデックは崩れ方が穏やかであり、また、その潜在表現は音声を作っているものに近いので、
+テキストから予測しやすい、というものである。
+
+調音を介した音声符号化には長い歴史がある。近年のニューラルな研究は、音声を調音の軌跡に符号化し、
+ニューラルボコーダで復号する。SPARC~\cite{sparc}（調音器官の 12 座標と声の高さ、音量を 50\,Hz で。
+デコーダは HiFi-GAN）や ARTI-6~\cite{arti6}（リアルタイム MRI から得た 6 特徴）である。これらの
+デコーダはネットワークのままである。声道の微分可能なシミュレーション~\cite{difftlm} は、発話ごとの
+最適化で音声から声道の形を復元する。VocalTractLab~\cite{vtl} のような調音合成器は、規則か、
+合成による分析で駆動される。
+
+本稿では、物理合成器 CHIMERA~\cite{chimera} をそのまま使い、残りをその周りに作る。
+\begin{itemize}
+\item 録音からシミュレータの制御列を 1 回の推論で書く\textbf{エンコーダ}。書き起こしを使わず、
+シミュレータの代役を学習して、それを通して教える（\ref{sec:encoder} 節）。
+\item \textbf{潜在表現の誤りが人の声のままである}ことの確認。制御列へのノイズ、量子化、間引き
+（\ref{sec:perturb} 節）。
+\item 試聴で見つけた\textbf{シミュレータ由来の 2 種類の音}を、仕組みまでたどって設定で取り除く
+こと、および高い声のための設定（\ref{sec:voice} 節）。
+\item 潜在表現の上の\textbf{音声合成モデル}。エンコーダと同じだけ聞き取れ、数分の音声から
+学習できる（\ref{sec:tts} 節）。
+\end{itemize}
+コードは上記のリポジトリにある。エンジンのコードは一切変更していない。
+
+\section{デコーダと潜在表現}\label{sec:decoder}
+\textbf{CHIMERA}~\cite{chimera} は、Rust で書かれた物理モデルの音声合成器（MIT ライセンス）で、
+ブラウザで鳴らす楽器として作られている。気道を時間領域で、48\,kHz でシミュレートする。肺の圧力、
+声帯（その面積の波形が声門の開口を動かし、流量は前後の圧力差から決まるので、パルスの歪みや、口を
+閉じたときの無声化は物理から出てくる）、鼻腔と側面の通路を持つ枝分かれした声道、唇・鼻・壁からの
+放射、そして流れが狭め・歯・声門を通るところの帯域制限された雑音である。\emph{体格}のパラメータが、
+男性・女性・子どもの声道の大きさを連続的に混ぜる。付属のフロントエンドは、英語のテキストを規則で
+ジェスチャに変える。
+
+\textbf{制御列。}フロントエンドは使わない。小さなラッパー（PyO3）が、10\,ms ごとに 21 個の制御値の
+フレームを、エンジンの調音器官と音源の目標値として予約する（表~\ref{tab:channels}）。制御列のほかに
+声に伝える話者の情報は 2 つだけである。体格を選ぶ性別と、声の高さの中央値である。それ以上の
+話者性は、潜在表現に含まれない（\ref{sec:discussion} 節）。
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{制御列。100\,Hz・21 チャネル。エンコーダは発話の中で動く 16 個を書く。声の高さは
+ピッチ抽出器から取る。4 個は使わない。}
+\label{tab:channels}
+\begin{tabular}{@{}p{0.52\columnwidth}p{0.42\columnwidth}@{}}
+\toprule
+チャネル & 動かすもの\\
+\midrule
+jaw; tbX, tbY; ttX, ttY, ttCurl; root & 顎、舌の本体・先・根\\
+lipAp, lipProt, lipWidth, labiodental & 唇\\
+velum; larynx; lateral & 鼻への通路、喉頭の高さ、側面の通路\\
+abduction; breath & 声門の開き、肺の圧力\\
+f0 & 声の高さ（Hz）\\
+epilarynx, ventricular, dorsum, closure & ここでは一定\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{制御列で足りるか。}CHIMERA の規則による合成音を、その制御列（100\,Hz）から鳴らし直しても、
+ほとんど変わらない。元の音とのメルケプストラム距離は 0.7\,dB で、有声・無声は 97\% のフレームで
+一致する。CPU の 1 スレッドで、4 秒の文を 0.5 秒で鳴らせる。
+
+\textbf{データと物差し。}英語は TSP speech database~\cite{tsp}（無響室で読まれた Harvard sentences）
+で、4 話者（240 録音）をテストに、2 話者を検証に、その話者が読む文リストごと取り置き、1,012 録音が
+残る。日本語は JVS~\cite{jvs}（100 話者）、Hi-Fi-CAPTAIN~\cite{hificaptain}（女性 1 人、男性 1 人）、
+JSUT~\cite{jsut} である。結果はすべて、本稿のどの学習も調整も最適化の対象にしていないモデルで測る。
+Whisper~\cite{whisper} の small（英語は small.en）と large-v3-turbo を貪欲復号で使い、英語は単語、
+日本語は Open JTalk~\cite{openjtalk} の読みの音素で数える。もう 1 つは、テキストを知らない多言語の
+音声記号認識器~\cite{xlsrphone} で、録音と合成音を国際音声記号で書き取らせる（\emph{音声記号の
+不一致}: 録音側の記号のうち合成音側で変わった割合。同じ文を別の人が読んだ録音は、日本語で
+24--32\% になる）。予測品質は NISQA~\cite{nisqa} で、調整に 1 度だけ使い（\ref{sec:voice} 節）、
+数値は調整に使っていない録音のものを載せる。
+
+\section{エンコーダ}\label{sec:encoder}
+\begin{figure}[t]
+\centering\footnotesize
+\begin{tikzpicture}[
+  box/.style={draw, rounded corners=2pt, minimum height=6mm, inner xsep=2pt, align=center, font=\scriptsize},
+  phys/.style={box, fill=black!8},
+  arr/.style={-{Stealth[length=1.6mm]}, semithick},
+  learn/.style={-{Stealth[length=1.6mm]}, semithick, densely dashed}]
+\node[box] (rec) {録音};
+\node[box, right=3.5mm of rec] (enc) {エンコーダ};
+\node[box, right=3.5mm of enc, fill=blue!8] (trk) {制御列\\21\,ch $\times$ 100\,Hz};
+\node[phys, right=3.5mm of trk] (sim) {CHIMERA\\（無改造）};
+\node[box, below=7mm of enc] (tts) {TTS モデル};
+\node[box, left=3.5mm of tts] (txt) {音素、\\アクセント};
+\node[box, below=7mm of sim] (std) {声の代役};
+\node[box, above=7mm of trk] (lis) {リスナーの特徴};
+\draw[arr] (rec) -- (enc); \draw[arr] (enc) -- (trk); \draw[arr] (trk) -- (sim);
+\draw[arr] (txt) -- (tts); \draw[arr] (tts) -| (trk);
+\draw[learn] (trk.south east) -- (std.north west);
+\draw[learn] (std.east) -- ++(2mm,0) |- (lis.east);
+\draw[learn] (rec.north) |- (lis.west);
+\node[right=2.5mm of sim, font=\scriptsize, inner sep=1pt] (out) {音};
+\draw[arr] (sim) -- (out);
+\end{tikzpicture}
+\caption{コーデック。実線は推論、破線は学習。声の代役は、制御列を鳴らした音がリスナーのモデルに
+どう聞こえるかを予測する。これにより、録音の聞こえ方との距離を、エンコーダや音声合成（TTS）
+モデルまで微分で戻せる。}
+\label{fig:system}
+\end{figure}
+
+\textbf{ネットワーク。}エンコーダは、自己教師あり学習の音声モデル（各層の学習された混合。後半の
+エンコーダでは上位 6 層も学習する）を通して録音を聞く。加えて、フレームごとの素朴な特徴を 3 つ
+受け取る。ピッチ抽出器~\cite{praat} がそのフレームを有声としたか、話者の中央値に対する声の高さ、
+音量である。双方向 LSTM 2 層（幅 256）が、動く 16 チャネルを 100\,Hz で書く。声の高さは学習しない。
+高さのチャネルは抽出器の曲線そのものである。3 秒の文の符号化は約 0.08 秒である。
+
+\textbf{学習の手がかりは 3 つある}（図~\ref{fig:system}、表~\ref{tab:english}）。
+\emph{合成音。}CHIMERA 自身の合成音からは、音と制御列の正確な対がいくらでも得られる。これだけで
+学習したエンコーダ（A）も録音に通用するが、もとにした規則合成より良くはならない。
+\emph{探索した制御列。}シミュレータを動かしながら、リスナーのモデルに「録音に近い」と聞こえるまで
+制御列を直す探索は、A の単語誤り率を 34.6\% から 13.3\% に下げる。1 文に 1〜2 分かかる。その制御列を
+真似るように学習したエンコーダ（B）は頭打ちになる。手本を 170 文から 1,012 文に増やしても、
+リスナー距離は 0.18 から 0.17 にしか縮まなかった。同じ音になる制御列は何通りもあり、その平均が
+同じ音になるとは限らない。
+\emph{声そのもの。}対策は distal teacher~\cite{distal} である。出力がもたらす結果のモデルを通して
+エンコーダを教える。CHIMERA は微分できないが、合成音はいくらでも正確に作れる。そこで、制御列から
+「それを鳴らした音がリスナーにどう聞こえるか」への写像を、ネットワーク（双方向 LSTM 3 層、幅 512）に
+学習させる。聞こえ方は wav2vec\,2.0~\cite{wav2vec2}（のちに mHuBERT-147~\cite{mhubert}）のフレーム
+単位の特徴である。エンコーダの誤差は、書いた制御列についてこの\emph{代役}が言う聞こえ方と、
+リスナーが録音から聞くものとの距離（フレームごとの 1 $-$ コサイン類似度）に、参照の制御列への弱い
+引き戻しを加えたものになる。代役の予測は粗いが、それで足りた（C）。参照の制御列は探索したもので
+なくてよく、A の出力で足りる（C$'$）。これで探索は手順から消える。学習は GPU 1 台で 20〜25 分である。
+残す重みは、検証用の録音についてエンコーダが書いた制御列でシミュレータ自身を鳴らし、録音に最も
+近かったエポックのものである。
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{英語（TSP）で学習したエンコーダ。学習に使っていない 4 話者（240 文）。Whisper small.en と
+large-v3-turbo の単語誤り率（\%）と、録音とのリスナー距離。}
+\label{tab:english}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+& small.en & large & 距離\\
+\midrule
+実録音 & 2.6 & 1.6 & --\\
+CHIMERA の規則によるテキストからの合成 & 36.2 & 25.5 & --\\
+A: 合成音だけで学習 & 34.6 & 31.0 & 0.28\\
+A の制御列からの探索（1 文 1〜2 分） & 13.3 & 11.5 & 0.10\\
+B: 探索した制御列を真似る & 19.5 & 15.1 & 0.19\\
+C: B + 代役を通した誤差 & 6.5 & 5.2 & 0.11\\
+C$'$: 代役を通した誤差、探索なし & 7.9 & 6.0 & 0.13\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+探索はリスナー距離が最も小さいのに、C より聞き取りにくい。探索は 1 文ごとにリスナーへ合わせ込むが、
+エンコーダはすべての文に共通するものを見つけなければならない。また、エンコーダの制御列では、
+調音器官の動きは規則の制御列より遅い（各チャネルの上位 1\% の速度が約 0.6 倍）。声道を細かく
+震わせて認識器に合わせているわけではない。
+
+\textbf{日本語}（表~\ref{tab:japanese}）。英語だけで学習した C$'$ は、日本語を、通じはするが外国語
+なまりの音にする。「お」「え」が英語の母音になり、破擦音と有声摩擦音が落ちる（ざ行の子音、じ、ち、
+つ、促音の 6--12\%）。3 つの変更がそれぞれ効き、効果は足し合わさる。閉ループ学習に日本語の録音を
+加える（JVS の 86 話者 $\times$ 10 文、1.9 時間を英語に追加。D）。リスナーを英語の wav2vec\,2.0 から
+多言語の mHuBERT-147 第 8 層に替える（E）。その両方（F）。さらに mHuBERT をエンコーダの入口にも使う
+（G）。英語のリスナーは誤りを聞き分けていなかった。C$'$ の日本語を「同じ文の別人の読み上げより
+録音に近い」と聞くのに対し、mHuBERT と音声記号認識器は「別人より遠い」と聞く。G では、音声記号の
+不一致が別の実話者と同じ水準になり、英語も良くなる。
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.6pt}
+\caption{学習に使っていない話者と文でのエンコーダ。JVS: 8 話者 $\times$ 25 文。HFC+JSUT:
+Hi-Fi-CAPTAIN の日本語 2 話者と JSUT、300 文。TSP: 表~\ref{tab:english} と同じ。Whisper
+large-v3-turbo の誤り率（\%。日本語は音素、英語は単語）と、音声記号の不一致（\%）。I は
+\ref{sec:voice} 節の声で、ほかは CHIMERA の既定の声で鳴らした。}
+\label{tab:japanese}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{JVS} & \multicolumn{2}{c}{HFC+JSUT} & \multicolumn{2}{c}{TSP（英語）}\\
+& 誤り & 記号 & 誤り & 記号 & 誤り & 記号\\
+\midrule
+実録音 & 2.5 & -- & 0.2 & -- & 1.6 & --\\
+別の実話者 & -- & 32.1 & -- & 24.1 & -- & 8.9\\
+C$'$（英語だけ） & 6.6 & 42.6 & 2.9 & 40.8 & 6.0 & 10.9\\
+G（+ 日本語、mHuBERT） & 3.9 & 28.0 & 0.4 & 26.6 & 3.5 & 8.5\\
+H（+ 無音） & 3.6 & 28.3 & 0.5 & 26.8 & 3.9 & 8.9\\
+I（調整後の声で学習） & 3.4 & 29.3 & 0.4 & 27.3 & 3.2 & 9.4\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{無音。}G は、JVS の録音の 51\% で、発話の前に有声音を出した。閉ループ学習が聞き比べるのは
+録音に発話がある区間だけで、その外では A の出力を参照にしていた。A は、部屋の音が聞こえ始めると
+息を出し始める。H では、発話の外の参照を「息なし」にした。余計な音はなくなり（0\%）、聞き取り
+やすさは変わらない。
+
+\section{潜在表現の誤り}\label{sec:perturb}
+仮説は、誤りがどう聞こえるかについてのものである。C$'$ がテストの 40 文に書いた制御列を乱して
+鳴らした（表~\ref{tab:perturb}）。どの条件でも、シミュレータが発散したり、過大な音を出したりする
+ことはなかった。各チャネルの動きの 1 割のノイズ（20\,dB）では単語誤り率は変わらず、3 割（10\,dB）で
+聞き取りにくくなる。チャネルあたり 4 bit や、フレームレートの半減の影響は小さい。17 チャネル
+（16 個と声の高さ）$\times$ 50\,Hz $\times$ 5\,bit の素朴な符号、つまりエントロピー符号化なしの
+4.2\,kbit/s でも、量子化しない制御列と同じだけ聞き取れる。
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2pt}
+\caption{エンコーダ C$'$ の制御列への摂動（テスト話者の 40 文）。Whisper small.en の単語誤り率
+（\%）。基準の 2 つには 95\% ブートストラップ区間を付けた。ノイズの大きさは、各チャネルが発話の中で
+動く幅に対する SN 比。滑らかなノイズは 4\,Hz 以下でゆっくり変わる、流れていく誤差である。}
+\label{tab:perturb}
+\begin{tabular}{@{}lr@{\hspace{7pt}}lr@{}}
+\toprule
+\multicolumn{2}{@{}l}{摂動なし: 5.2 [2.7, 8.1]} & \multicolumn{2}{l}{実録音: 1.9 [0.6, 3.8]}\\
+\midrule
+白色ノイズ、20\,dB & 6.2 & 量子化、5 bit & 4.9\\
+\quad 10\,dB & 17.0 & \quad 4 bit & 6.5\\
+\quad 5\,dB & 34.0 & \quad 3 bit & 10.8\\
+滑らかなノイズ、20\,dB & 6.2 & \quad 2 bit & 27.8\\
+\quad 10\,dB & 26.2 & 間引き、50\,Hz & 5.6\\
+\quad 5\,dB & 68.5 & \quad 25\,Hz & 9.6\\
+50\,Hz・5 bit（4.2\,kbit/s） & 5.2 & \quad 12.5\,Hz & 50.0\\
+50\,Hz・4 bit（3.4\,kbit/s） & 8.0 & 25\,Hz・4 bit（1.7） & 10.8\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+崩れた音がどう聞こえるかは、数値からは分からない。著者のうち試聴した 1 人には、摂動を加えた
+合成音は「滑舌の悪い人」のように聞こえ、コーデックのアーティファクトには聞こえなかった。最も
+人工的な条件である白色ノイズでも、耳障りではない。データが足りない音声合成モデルでも同じである
+（\ref{sec:tts} 節）。
+
+\section{声}\label{sec:voice}
+シミュレータの固定の設定は、聞き取りやすさにはほとんど効かない。しかし、音の性質のうち 3 つは
+試聴で問題になった。それぞれ仕組みまでたどり、エンジンが公開している設定で変えた。エンジンの
+コードはそのままである。
+
+\textbf{高い声。}男性の合成音は本物らしく、女性の合成音は薄く聞こえた。NISQA も同じ判定をする。
+男性の合成音は実録音並み（4.6--4.9）で、女性は 2.8--3.3 である。17 話者で見ると、点数は性別に
+よらず話者の声の高さの中央値に従い（相関 $-0.9$）、女性の制御列の高さを 1 オクターブ下げると点数は
+戻る（2.9 から 4.4）。原因は声門にある。エンジンの声門は、1 周期のうち開いている割合（開放率）が
+声の高さによらず約 0.6 だが、実際の高い声はもっと長く開く。開放率を直接 0.85 にし、振動の振幅を
+1.4 倍にして、音源の張り・明るさ・ゆらぎを下げる。この設定を女性 1 人の 16 文に合わせて決めると、
+3 つのテストすべての女性で点数が上がる（表~\ref{tab:voice}）。低い声には逆効果なので、話者の声の
+高さの中央値に応じて使う。150\,Hz 以下では使わず、175\,Hz 以上ではそのまま使い、その間は混ぜる。
+NISQA だけに合わせると抜け道を見つける（雑音源を大きくして、直すのではなく紛らわせる）ので、
+最終的な値は耳で決めた。
+
+\textbf{無音区間の中の音。}高い声を直しても、舌を鳴らすような湿った音が残った。合成音の区間を
+波形編集ソフトで無音にしていくと、その音は無声の区間にあると分かった。一部は空気である。
+CHIMERA は、動く壁が押しのけた空気を声道に流す。そのため、息を完全に止めた制御列でも無音にならず、
+数百 Hz 以下で、発話より 40\,dB ほど小さい（男性の体格では 30\,dB）鈍い音が出る。実録音は、閉鎖や
+ポーズでは無音である。エンジンにはこの流れを切るスイッチがある。また、エンコーダの制御列には、
+録音のポーズでは息を出させない。
+
+\textbf{閉鎖のクリック音。}それでも舌を鳴らす音は消えなかった。最終的に、ある 1 文の、有声区間に
+隣り合う約 35\,ms の 6 区間、2\,kHz 以上にあると特定された。そこでは、破裂音のために舌が閉じる
+ときに、合成音に 1〜2\,ms のクリック音があり、16\,kHz まで届く。発話より 25--35\,dB 小さい音だが、
+実録音には何もない。雑音源をすべて切っても 0.1\,dB も変わらないので、乱流ではない。エンジンの
+状態を 1 サンプルずつ追うと、狭めの面積が $2\cdot10^{-4}$\,cm$^2$ を下回ると閉じたとみなし、まだ
+1\,cm$^3$/s ほど流れているのに、1 サンプルで流量を 0 にしていた。しきい値を $10^{-6}$\,cm$^2$ に
+すると、流れは切られる前に自然に止まる。最初の 2 つの計測はこのクリック音を見落としていた
+（1 つは 9\,kHz 以下で、直前の 20\,ms から突き出る音だけを数え、もう 1 つは無音区間の最初の
+15\,ms を除外していた）。見つけた計測は、場所や形を仮定せず、「合成音にあって録音にない音」を
+帯域ごとに数える。
+
+\begin{table}[t]
+\centering\scriptsize\setlength{\tabcolsep}{2.2pt}
+\caption{日本語のテストの女性の録音での声（JVS: 100 文。Hi-Fi-CAPTAIN と JSUT: 200 文）。NISQA、
+録音が無音の区間の中で合成音が鳴る回数（S）と閉鎖のクリック音の回数（C。どちらも発話 1 秒
+あたり）、音声記号の不一致（\%）。2〜4 行目はエンコーダ H の制御列を鳴らしたもの。}
+\label{tab:voice}
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+& \multicolumn{4}{c}{JVS} & \multicolumn{4}{c}{HFC+JSUT}\\
+& NISQA & S & C & 記号 & NISQA & S & C & 記号\\
+\midrule
+実録音 & 4.80 & -- & -- & -- & 4.57 & -- & -- & --\\
+既定の声 & 3.02 & .57 & .71 & 30.1 & 3.32 & .55 & 1.27 & 28.1\\
++ 壁の空気なし、閉鎖の面積 & 2.95 & .03 & .11 & 30.8 & 3.38 & .03 & .23 & 29.1\\
++ 高い声の設定 & 3.84 & .06 & .25 & 33.1 & 4.09 & .05 & .40 & 31.2\\
+エンコーダ I、同じ声 & 3.91 & .02 & .28 & 31.3 & 4.10 & .03 & .44 & 28.9\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{その声のためのエンコーダ。}H は既定の声の代役を通して学習したので、新しい声では、破裂音の
+有声・無声の取り違えが増える（日本語 500 文で 141 件が 278 件に）。学習用の制御列 3,864 本を
+調整後の声で鳴らし直し、そこから代役を作り直し、それを通してエンコーダを学習する（I。合わせて
+32 分）。取り違えは 200 件に減り、音声記号の不一致は大部分が戻る。音は変わらない
+（表~\ref{tab:japanese}、\ref{tab:voice}）。
+
+\textbf{残っているもの。}破裂音で舌や唇が離れる瞬間の音は、実録音より鋭い。話者の破裂の位置で
+比べると、合成音は 4\,kHz 以上では実録音と同じ強さだが、それ以下では 5--7\,dB 弱い。開く速さ、
+肺の圧力、閉鎖中の息、声門の開き、雑音源のゲインを試したが、副作用なしに近づける設定は
+見つかっていない。
+
+\section{潜在表現の上の音声合成}\label{sec:tts}
+\textbf{モデル。}文を Open JTalk~\cite{openjtalk} で音素に直す。各音素には、そのモーラがアクセント
+句のどこにあるか（アクセント核からの距離、句の頭と末からの位置）と、疑問文かどうかを添える。
+モデルは FastSpeech\,2~\cite{fastspeech2} と同じ形である。音素の列に自己注意のブロックを 4 つ、
+音素ごとの長さの予測器、そしてフレームの列にブロックを 6 つ置き、制御列を書く。書くのは 16 チャネルと
+声の高さである（エンコーダでは抽出器から取っていた高さも、ここでは書く。幅 256、1,880 万
+パラメータ）。学習用の音素の長さは、録音と音素列だけから学習したアライメント~\cite{ota} で決める。
+外部のアライナは使わない。
+
+\textbf{データと誤差。}手本は、Hi-Fi-CAPTAIN の日本語男性話者の 18,655 文（24 時間）にエンコーダ I が
+書いた制御列である。テストは、コーパスの評価用の 100 文である。誤差は、手本の制御列との差、音素の
+長さの対数の誤差、そしてエンコーダと同じ、代役を通した録音との距離である（図~\ref{fig:system}）。
+タイミングを話者に合わせるための補正が 2 つある。対数で学習した長さは、合計すると話者より短く
+なるので、定数（1.02）を掛ける。また、話者は読点のない位置でも、1 文に 0.4 回ほど、約 3 分の 1 秒の
+ポーズを置く。アライナはこのポーズに印を付ける（付けないと 390\,ms の /d/ ができる）。推論時には、
+モデルの状態からアクセント句の境界ごとにポーズの有無を決める小さな判定器を使う（テストの文で、
+話者の 44 回に対して 27 回入れる）。
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.2pt}
+\caption{テストの 100 文での音声合成。Whisper の誤り率（音素の \%）、音声記号の不一致（\%）、
+NISQA。録音と同じ時間軸の合成音では、リスナー距離と、録音とのピッチの相関も。}
+\label{tab:tts}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& small & large & 記号 & NISQA & 距離 & $r_{F0}$\\
+\midrule
+実録音 & 0.5 & 0.1 & -- & 4.56 & -- & --\\
+エンコーダ I（録音から） & 1.3 & 0.1 & 24.2 & 4.75 & 0.192 & 0.99\\
+TTS、長さは話者のもの & 0.7 & 0.1 & 24.6 & 4.80 & 0.207 & 0.92\\
+TTS、テキストだけから & 0.8 & 0.2 & 24.7 & 4.78 & -- & --\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{結果}（表~\ref{tab:tts}）。テキストだけから書いた制御列の合成音は、録音を聞いて書く
+エンコーダの合成音と同じだけ聞き取れ、予測品質も同じである。抑揚は平らになっていない。ピッチの
+幅はエンコーダの 97\% あり、長さを話者に合わせると、ピッチは録音と 0.92 で相関する。コーパスにない
+12 文では、large-v3-turbo の音素誤り率は 0.4\% である。はっきりした言い損ないは /py/ の 1 つで
+（コンピューターがコンユーターになる）、この音素はコーパスの 95 万音素のうち 35 個しかない。4 秒の
+文の制御列を書くのにかかる時間は、CPU で 17\,ms である。
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_data_ja.pdf}
+\caption{同じ音声合成モデルを、話者の録音を減らして学習した結果（テストの 100 文）。破線は
+エンコーダ I が録音から作った合成音、点線は実録音。}
+\label{fig:data}
+\end{figure}
+
+\textbf{録音を減らす}（図~\ref{fig:data}）。同じモデルを 200 文、つまり 15 分の音声で学習しても、
+ほとんど誤りなく読まれる（0.5\%）。20 文、1 分半でも、large-v3-turbo は音素の 92\% を聞き取る。
+ここまで小さいと、モデルはその言語の音をすべては聞いておらず、発音を誤る。それでも合成音の
+予測品質は 4.16 あり、耳には、言葉を言い損なっている人に聞こえ、ぎりぎり聞き取れる。これは、
+ここまでで仮説を最も強く支持する結果であり、この潜在表現の最も役に立つ性質だと考える。音素との
+関係が単純な、ゆっくり動く 16 チャネルは、少ないデータで学習できる。
+
+\textbf{代役はここでも効くか。}2,000 文の学習で、代役を通した誤差を外すと、その誤差が下げようと
+するリスナー距離は 0.217 から 0.234 に上がる。しかし Whisper（0.3\% と 0.2\%）と音声記号の不一致
+（27.2\% と 27.1\%）では、2 つのモデルの区別はつかない。手本の制御列は、それを書いたエンコーダが
+「録音と同じに聞こえる」ように学習しているので、すでにそう聞こえる。エンコーダに不可欠だった
+ものを、音声合成モデルは手本から受け継いでいる。
+
+\section{考察}\label{sec:discussion}
+\textbf{効いたこと。}\emph{声を通して教える。}制御列を真似ると、同じことの言い方の平均を取って
+しまう。シミュレータの粗いモデルを通して「その制御列が正しく聞こえるか」を教えると、エンコーダの
+単語誤り率は 19.5\% から 6.5\% に下がり、探索は要らなくなった。
+\emph{何を学ぶかはリスナーが決める。}英語のリスナーは日本語の誤りを聞き分けず、それとの距離が
+下がり続けても、物差しは動かなかった。
+\emph{計測が見落としたものを、試聴が見つけた。}\ref{sec:voice} 節の音はどれも、まず耳で聞かれ、
+耳で場所が特定され、そのあとで計測された。計測は 2 度、違う場所を見ていた。また、品質の予測
+モデルだけに合わせると、抜け道を見つけた。
+\emph{潜在表現は予測しやすい。}素朴な非自己回帰モデルがエンコーダと並び、与えたデータの
+100 分の 1 で足りる。
+
+\textbf{限界。}このコーデックが運ぶのは、言葉とそのタイミングと声の高さであり、誰が話しているか
+ではない。声に伝えるのは話者の性別と声の高さの中央値だけで、音色はシミュレータのものである。
+破裂音の音は話者より鋭く、音声合成モデルの合成音ではさらに多い（1 秒に 0.61 回で発話より
+15.4\,dB 小さい。エンコーダは 0.54 回と 16.3\,dB、実録音は 0.27 回と 25.8\,dB）。日本語の「え」の
+音色はまだ外れている。点数は ASR と 1 つの品質予測モデルによるもので、各モデルの学習は 1 回ずつ、
+試聴は 1 人である。摂動テストと学習データ量の比較が示すのは、このコーデックの崩れ方であり、同じ
+データで学習したニューラルコーデックがどう崩れるかではない。その比較が次の段階である。
+アクセントは Open JTalk の推定によるので、推定が外れたところでは外れる。
+
+\section{おわりに}
+声の物理モデルは、微分可能でなくても、改造しなくても、音声コーデックのデコーダになる。学習した
+代役を通して教えたエンコーダは、録音からその制御列を 1 回の推論で書き、合成音は実録音に近い
+水準で聞き取れる。この潜在表現の誤りは、滑舌の悪さとして現れる。シミュレータ由来の音を仕組みまで
+たどって設定で取り除けたのは、そのどの部分にも意味があるからである。そして、この潜在表現は
+テキストから書きやすい。小さなモデルがエンコーダと並び、1 話者の 15 分の音声で学習できる。
+
+\section*{謝辞}
+CHIMERA を公開している Jameson Hodge 氏、および TSP speech database、JVS、JSUT、Hi-Fi-CAPTAIN、
+wav2vec\,2.0、mHuBERT-147、Whisper、NISQA、Open JTalk の作者の方々に感謝する。
+
+\begin{thebibliography}{99}\footnotesize
+\setlength{\itemsep}{0pt}
+\bibitem{encodec} A.~Défossez, J.~Copet, G.~Synnaeve, Y.~Adi. High fidelity neural audio
+compression. \emph{TMLR}, 2023.
+\bibitem{moshi} A.~Défossez et al. Moshi: a speech-text foundation model for real-time dialogue.
+arXiv:2410.00037, 2024.
+\bibitem{pocketja} Claude, T.~Mori. Pocket TTS learns Japanese: Training data and distillation for
+a drop-in 100M-parameter model. Technical report, 2026.
+\bibitem{sparc} C.~J.~Cho, P.~Wu, T.~S.~Prabhune, D.~Agarwal, G.~K.~Anumanchipalli. Coding speech
+through vocal tract kinematics. arXiv:2406.12998, 2024.
+\bibitem{arti6} J.~Lee et al. ARTI-6: Towards six-dimensional articulatory speech encoding.
+arXiv:2509.21447, 2025.
+\bibitem{difftlm} E.~M.~Chen, J.~W.~Lee, V.~Sitzmann. Reconstructing the vocal tract with
+differentiable acoustic simulation. arXiv:2609.36737, 2026.
+\bibitem{vtl} P.~Birkholz. VocalTractLab. \url{https://www.vocaltractlab.de}.
+\bibitem{chimera} J.~Hodge. CHIMERA: a physical-modeling voice synthesizer.
+\url{https://github.com/jamesondh/chimera-vocal-synth}, 2026.
+\bibitem{tsp} P.~Kabal. TSP speech database. Technical report, McGill University, 2002.
+\bibitem{jvs} S.~Takamichi et al. JVS corpus: free Japanese multi-speaker voice corpus.
+arXiv:1908.06248, 2019.
+\bibitem{hificaptain} NICT. Hi-Fi-CAPTAIN corpus.
+\url{https://ast-astrec.nict.go.jp/en/release/hi-fi-captain/}.
+\bibitem{jsut} R.~Sonobe, S.~Takamichi, H.~Saruwatari. JSUT corpus: free large-scale Japanese
+speech corpus for end-to-end speech synthesis. arXiv:1711.00354, 2017.
+\bibitem{whisper} A.~Radford et al. Robust speech recognition via large-scale weak supervision.
+\emph{ICML}, 2023.
+\bibitem{openjtalk} Open JTalk. \url{https://open-jtalk.sourceforge.net}.
+\bibitem{xlsrphone} Q.~Xu, A.~Baevski, M.~Auli. Simple and effective zero-shot cross-lingual
+phoneme recognition. \emph{Interspeech}, 2022.
+\bibitem{nisqa} G.~Mittag, B.~Naderi, A.~Chehadi, S.~Möller. NISQA: A deep CNN-self-attention
+model for multidimensional speech quality prediction with crowdsourced datasets.
+\emph{Interspeech}, 2021.
+\bibitem{praat} P.~Boersma. Accurate short-term analysis of the fundamental frequency and the
+harmonics-to-noise ratio of a sampled sound. \emph{IFA Proceedings} 17, 1993.
+\bibitem{distal} M.~I.~Jordan, D.~E.~Rumelhart. Forward models: Supervised learning with a distal
+teacher. \emph{Cognitive Science} 16(3), 1992.
+\bibitem{wav2vec2} A.~Baevski, Y.~Zhou, A.~Mohamed, M.~Auli. wav2vec 2.0: A framework for
+self-supervised learning of speech representations. \emph{NeurIPS}, 2020.
+\bibitem{mhubert} M.~Zanon~Boito, V.~Iyer, N.~Lagos, L.~Besacier, I.~Calapodescu. mHuBERT-147: A
+compact multilingual HuBERT model. \emph{Interspeech}, 2024.
+\bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.
+\emph{ICLR}, 2021.
+\bibitem{ota} R.~Badlani, A.~Łańcucki, K.~J.~Shih, R.~Valle, W.~Ping, B.~Catanzaro. One TTS
+alignment to rule them all. \emph{ICASSP}, 2022.
+\end{thebibliography}
+\end{document}
