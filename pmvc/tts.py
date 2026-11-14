@@ -213,6 +213,23 @@ class Block(nn.Module):
         return x + self.drop(h)
 
 
+def at_rate(x: torch.Tensor, total: torch.Tensor, step: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Frame states (batch, frames, width), of which each clip's first `total` are real, at a
+    lower rate: each new frame is the mean over `step` of the old ones (`step` need not be
+    whole). Returns the new states and which of them are real."""
+    b, t, w = x.shape
+    m = (total.float() / step).round().long().clamp(min=1)
+    edges = torch.arange(int(m.max()) + 1, device=x.device)[None] * step
+    e = torch.minimum(edges.expand(b, -1), total[:, None].float())
+    # the sum of a clip's states up to a point between two frames: the whole frames before
+    # it, and the part of the frame it falls in
+    summed = torch.cat([x.new_zeros(b, 1, w), x.cumsum(dim=1)], dim=1)
+    lo = e.floor().long().clamp(max=t - 1)
+    upto = summed.gather(1, lo[..., None].expand(-1, -1, w)) + (e - lo)[..., None] * x.gather(1, lo[..., None].expand(-1, -1, w))
+    out = (upto[:, 1:] - upto[:, :-1]) / (e[:, 1:] - e[:, :-1]).clamp(min=1e-6)[..., None]
+    return out, torch.arange(out.shape[1], device=x.device)[None] < m[:, None]
+
+
 class Pausing(nn.Module):
     """Whether the speaker pauses at an accent phrase's border where the text has no comma,
     read off the states of the phonemes either side of it."""
@@ -230,9 +247,12 @@ class Pausing(nn.Module):
 class Speaker(nn.Module):
     """Phonemes in, their durations and the track's channels out."""
 
-    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1) -> None:
+    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1, rate: float = float(FRAME_RATE)) -> None:
         super().__init__()
         self.phones = phones
+        # how many of the model's own frames (FRAME_RATE a second) one frame of what it writes
+        # takes: 1 for a control track; more for a latent with fewer frames a second (`pmvc.control`)
+        self.step = FRAME_RATE / rate
         self.pausing = Pausing(width) if pausing else None
         # a model of several speakers is told which one speaks: a vector for each, added to
         # every phoneme before the text is read and to every frame before the track is written
@@ -267,9 +287,10 @@ class Speaker(nn.Module):
             g = self.lasting_drop(norm(torch.relu(conv((g * real[..., None]).transpose(1, 2)).transpose(1, 2))))
         return h, self.lasting_out(g)[..., 0]
 
-    def write(self, h: torch.Tensor, frames: torch.Tensor, who: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """`h` (batch, phonemes, width) and each phoneme's `frames` (0 on the padding). Returns
-        the channels, (batch, frames, channels), normalised, and which frames are real."""
+    def states(self, h: torch.Tensor, frames: torch.Tensor, who: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """`h` (batch, phonemes, width) and each phoneme's `frames` (0 on the padding): each
+        phoneme's state for as many frames as it lasts, with where each frame is in it and who
+        speaks. Returns the frames' states, which are real, and how many each clip has."""
         ends = frames.cumsum(dim=1)
         total = ends[:, -1]
         at = torch.arange(int(total.max()), device=h.device)[None].expand(len(h), -1)
@@ -282,9 +303,22 @@ class Speaker(nn.Module):
         if self.who is not None:
             assert who is not None
             x = x + self.who(who)[:, None]
+        return x, real, total
+
+    def finish(self, x: torch.Tensor, real: torch.Tensor, total: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The frames' states through the frame layers and out, at the rate of what is written.
+        Returns the channels, (batch, frames, channels), normalised, and which frames are real."""
         for block in self.frame:
             x = block(x, real)
-        return self.out(self.frame_norm(x)), real
+        x = self.frame_norm(x)
+        if self.step != 1.0:
+            x, real = at_rate(x, total, self.step)
+        return self.out(x), real
+
+    def write(self, h: torch.Tensor, frames: torch.Tensor, who: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """`h` (batch, phonemes, width) and each phoneme's `frames` (0 on the padding). Returns
+        the channels, (batch, frames, channels), normalised, and which frames are real."""
+        return self.finish(*self.states(h, frames, who))
 
 
 @dataclass
