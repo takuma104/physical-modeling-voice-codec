@@ -325,7 +325,7 @@ def tract(lang: str, out: Path) -> None:
     left, right = -7.3, 13.3
     label(ax, (left, 10.9), (float(velum[5, 0]) + 0.25, float(velum[5, 1]) - 0.3), t["velum"], [("velum", enc)], "left")
     label(ax, (left, 8.3), (float(root[0]) + 0.2, float(root[1])), t["root"], [("root", enc)], "left")
-    label(ax, (left, 5.7), (-0.45, 1.8), t["larynx"], [("larynx", enc)], "left")
+    label(ax, (left, 5.7), (0.62, 1.7), t["larynx"], [("larynx", enc)], "left")
     label(ax, (left, 3.1), (-0.56, glottis[1] + 0.08), t["glottis"], [("abduction", enc)], "left")
     label(ax, (left, 0.5), (-0.56, glottis[1] - 0.08), t["f0"], [("f0", f0)], "left")
     label(ax, (left, -2.1), (-0.42, -1.25), t["lungs"], [("breath", enc)], "left")
