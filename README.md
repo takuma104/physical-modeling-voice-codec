@@ -302,10 +302,33 @@ uv run python -m pmvc.natural out/say --name results_ctl
 #   各録音のスペクトログラムを、その録音を学習していないモデルに書かせる版も試した(良くならなかった):
 #   pmvc.control train ... --name ctlmel200f$i --fold $i/5 を i = 0..4 で学習し、pmvc.control write --folds 5、pmvc.vocoder tune
 
-# 12. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
+# 12. 話者性: 話者ごとに体格(と声門の設定)を当てはめる。制御列は変えず、鳴らすときの設定だけを変える
+#   学習用の文(話者ごとに 6 文の最初の 4 秒)を候補の設定で鳴らし、話者照合モデルが「その話者の録音に近い」と判定する設定を探す
+uv run python -m pmvc.speaker fit out/jvsall --only female,child --evals 40 --name speakers_body    # 体格の 2 つの値だけ
+uv run python -m pmvc.speaker fit out/jvsall --name speakers                                        # 体格 + 声門の開放率・明るさ・張り
+#   テストの文(当てはめに使っていない)を、当てはめた設定で鳴らし直す。8 話者(out/jvs)と全 100 話者(out/jvsall)
+for d in out/jvs out/jvsall; do
+  e=enci; [ $d = out/jvsall ] && e=encir
+  uv run python -m pmvc.encoder revoice $d --of $e --out encib --split test $V --speakers out/jvsall/speakers_body.json
+  uv run python -m pmvc.encoder revoice $d --of $e --out encis --split test $V --speakers out/jvsall/speakers.json
+  uv run python -m pmvc.encoder revoice $d --of ttsj --out ttsjb --split test $V --speakers out/jvsall/speakers_body.json
+  uv run python -m pmvc.encoder revoice $d --of ttsj --out ttsjs --split test $V --speakers out/jvsall/speakers.json
+done
+#   誰の声に聞こえるか。当てはめに使った照合モデル(WavLM)と、使っていない照合モデル(UniSpeech-SAT)で
+for m in "whose_spk" "whose_spk2 --model microsoft/unispeech-sat-base-plus-sv"; do
+  uv run python -m pmvc.whose out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb --split test --name $m
+done
+for m in "whose_speakers" "whose_speakers2 --model microsoft/unispeech-sat-base-plus-sv"; do
+  uv run python -m pmvc.whose out/jvsall --variants encir,encib,encis,ttsj,ttsjb,ttsjs --name $m
+done
+#   聞き取りやすさと音の質が変わっていないか
+uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb --split test --name results_spk
+uv run python -m pmvc.natural out/jvs --name results_spk
+
+# 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
-# 13. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
+# 14. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
 bash docs/report/build.sh
 ```
 

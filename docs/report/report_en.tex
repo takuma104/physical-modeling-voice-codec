@@ -48,8 +48,11 @@ as little data, so that is the model's doing. The decoder shows in the sound whe
 scarce: with 20 and 200 sentences the physical model's predicted quality is 4.1 and 4.8, the
 spectrogram's 2.6 and 3.5, and at best 3.2 and 4.1 once its vocoder is tuned on the model's
 output. With 2,000 sentences the tuned vocoder reaches 4.5, where the recordings are. Taught with a hundred speakers it reads sentences it never
-saw as intelligibly as their recordings are (2.3\% against 2.5\%), although of a speaker only
-the sex and the pitch survive the codec.
+saw as intelligibly as their recordings are (2.3\% against 2.5\%). Of a speaker the codec
+carries the sex and the pitch; with the simulator's body fitted to each speaker, two more
+numbers, a verification model finds the speaker among eight for 49.0\% of the renders instead
+of 26.5\%, and among a hundred for 5.5\% instead of 2.8\% (recordings:
+96.5\% and 93.7\%).
 \end{abstract}
 
 \section{Introduction}
@@ -470,6 +473,28 @@ recordings, for 2.8\% of the encoder's renders of them and for 2.4\% of the text
 model's. It never mistakes the sex, so this is chance among the fifty or so speakers of one sex.
 As it stands, the codec has one voice per sex, at any pitch.
 
+\textbf{A body for each speaker.} CHIMERA's body is continuous: one axis runs from the adult male
+to the adult female, another from adult to child, and they set the size of the tract and how much
+of it is pharynx. We fitted the two values to each of the 100 speakers, leaving the tracks as they
+are. Six training sentences (their first four seconds) are rendered under candidate bodies, and
+the body kept is the one under which the verification model finds the renders closest to the
+speaker's recordings, less a penalty for moving away from the recording as the multilingual
+listener hears it. On the test sentences, which the fit did not see, the model then picks the
+right speaker among the eight test speakers for 49.0\% of the encoder's renders instead of
+26.5\%, and among all 100 for 5.5\% instead of 2.8\%. A second verification
+model~\cite{unispeechsat}, which had no part in the fit, agrees: 40.5\% instead of
+24.0\% among eight, 8.2\% instead of 4.6\% among 100. The text-to-speech
+model's renders gain as much (49.5\% instead of 28.0\% among eight). Nothing else moves:
+large-v3-turbo's error is 3.4\% before and 3.4\% after, NISQA 4.08 and 4.05. The
+fitted tracts are 0.87 of the male template's size for the women on average (CHIMERA's female
+body is 0.90) and 0.98 for the men, each with a spread of 0.02. Fitting the glottis as well (its
+open quotient, how sharply it closes, its tension) gives the second model 51.5\% among eight
+and the first no more than the body alone (48.0\%), and costs NISQA 0.4 (3.67): it takes back
+part of the voice of \S\ref{sec:voice}, which was chosen by ear. The renders remain far from
+their speakers. Their similarity to the speaker's recordings rises from 0.876 to 0.888,
+where two recordings of one speaker have 0.98 and of two speakers of one sex 0.91: to
+the model every render is first of all CHIMERA's voice.
+
 \section{Is it the latent? A control}\label{sec:control}
 The model of \S\ref{sec:tts} learns from little and fails gently. To see how much of that is the
 control track's doing, the same model was pointed at latents that a neural network decodes:
@@ -608,9 +633,11 @@ physical decoder adds is that the little-taught model still sounds like clean sp
 vocoder gets there too once it is tuned on the model's output, but it needs hours of the
 speaker for that; with minutes its sound stays behind.
 
-\textbf{Limitations.} The codec carries what is said, its timing and its pitch, not who says it:
-the voice is told a speaker's sex and median pitch, the timbre is the simulator's, and a
-verification model cannot tell its speakers of one sex apart (\S\ref{sec:tts}). The bursts
+\textbf{Limitations.} The codec carries what is said, its timing and its pitch, and little of who
+says it: told a speaker's sex and median pitch, the voice gives renders that a verification
+model cannot tell apart within a sex, and with a body fitted to each speaker it finds the
+speaker among eight for half of them and among a hundred for one in twenty (\S\ref{sec:tts}).
+The timbre is still the simulator's. The bursts
 of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
 and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
@@ -685,6 +712,8 @@ multi-resolution spectrogram discriminators for high-fidelity waveform generatio
 spectrogram predictions. \emph{ICASSP}, 2018.
 \bibitem{hifigan} J.~Kong, J.~Kim, J.~Bae. HiFi-GAN: Generative adversarial networks for
 efficient and high fidelity speech synthesis. \emph{NeurIPS}, 2020.
+\bibitem{unispeechsat} S.~Chen et al. UniSpeech-SAT: Universal speech representation learning
+with speaker aware pre-training. \emph{ICASSP}, 2022.
 \bibitem{wavlm} S.~Chen et al. WavLM: Large-scale self-supervised pre-training for full stack
 speech processing. \emph{IEEE JSTSP} 16(6), 2022.
 \bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.

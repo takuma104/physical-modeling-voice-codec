@@ -12,6 +12,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                      [--closed-area CM2] [--no-render]
        python -m pmvc.encoder revoice [dir] --of sim --out sim2c [--split all]
                                       [--voice FILE] [--no-wall-air] [--closed-area CM2]
+                                      [--speakers FILE]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -640,6 +641,13 @@ def revoice(a: argparse.Namespace) -> None:
     ids = [i for i in sorted(p.name.split(".")[0] for p in (d / a.of).glob("*.tracks.json")) if a.split == "all" or split_in(d, i) == a.split]
     (d / a.out).mkdir(exist_ok=True)
     tracks = [decoder.settle(json.loads((d / a.of / f"{uid}.tracks.json").read_text()), pitches[uid]) for uid in ids]
+    if a.speakers:
+        # each speaker's own body and glottis, as `pmvc.speaker` fitted them
+        from .speaker import settled
+
+        fitted = json.loads(a.speakers.read_text())["speakers"]
+        who = [json.loads((d / "meta" / f"{uid}.json").read_text())["speaker"] for uid in ids]
+        tracks = [settled(t, fitted[name]["settings"]) if name in fitted else t for t, name in zip(tracks, who)]
     with ThreadPoolExecutor(a.jobs) as pool:
         for uid, track, x in zip(ids, tracks, pool.map(render_track, tracks)):
             (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(track))
@@ -687,6 +695,7 @@ def main() -> None:
     e.add_argument("--models", type=Path, default=None, help="where the encoder is, if not <dir>/models")
     e.add_argument("--no-render", action="store_true", help="write the tracks only: a corpus's, to learn from (`pmvc.tts`)")
     r = sub.choices["revoice"]
+    r.add_argument("--speakers", type=Path, default=None, help="pmvc.speaker's file: each speaker's recordings are rendered under the settings fitted to the speaker")
     r.add_argument("--of", type=str, required=True, help="the variant whose tracks are rendered again")
     r.add_argument("--out", type=str, required=True)
     r.add_argument("--split", choices=["test", "valid", "train", "all"], default="all")

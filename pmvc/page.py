@@ -201,6 +201,24 @@ CONTROL_LATENTS: dict[str, tuple[str, str, str, str]] = {
 CONTROL_SIZES: dict[str, str] = {"20": "20 文", "50": "50 文", "200": "200 文", "2000": "2,000 文", "": "18,655 文"}
 # the latents that are in the tables only: the page has room for so many clips
 CONTROL_UNHEARD: set[str] = {"melf"}
+# each speaker's own body and glottis (`pmvc.speaker`): the encoder's tracks and the
+# text-to-speech model's, as they were, with the body fitted, with the body and the glottis
+SPEAKER_LABELS: dict[str, str] = {
+    "enci": "これまで（エンコーダ I）",
+    "encib": "体格を当てはめ",
+    "encis": "体格 + 声門を当てはめ",
+    "ttsj": "これまで（TTS）",
+    "ttsjb": "TTS、体格を当てはめ",
+    "ttsjs": "TTS、体格 + 声門を当てはめ",
+}
+SPEAKER_NOTES: dict[str, str] = {
+    "enci": "声に伝えるのは性別と声の高さの中央値だけ",
+    "encib": "話者ごとに体格の 2 つの値。声門は調整後の声のまま",
+    "encis": "話者ごとに体格と声門の 5 つの値",
+    "ttsj": "100 話者の TTS。声に伝えるのは性別と声の高さだけ",
+    "ttsjb": "同じ制御列を、話者の体格で鳴らす",
+    "ttsjs": "同じ制御列を、話者の体格と声門で鳴らす",
+}
 # the speakers whose voices the page's cards are in
 MANY_VOICES: dict[str, str] = {"jvs093": "女性 jvs093", "jvs095": "女性 jvs095", "jvs097": "男性 jvs097", "jvs100": "男性 jvs100"}
 VOICE_LABELS: dict[str, str] = {
@@ -618,7 +636,7 @@ def grid(sets: list[tuple[str, dict[str, Any]]], variants: list[str], labels: di
     head = "".join(f'<th scope="col">{esc(label)}<span class="sub">{g["n"]} 文</span></th>' for label, g in sets)
 
     def cell(m: dict[str, Any]) -> str:
-        formats = {"quality": ".2f", "oddClicks": ".2f", "releases": ".2f", "releaseLevel": ".1f", "silenceSounds": ".2f", "silenceLevel": ".1f", "closureClicks": ".2f", "extra4k": ".2f"}
+        formats = {"quality": ".2f", "natural": ".2f", "oddClicks": ".2f", "releases": ".2f", "releaseLevel": ".1f", "silenceSounds": ".2f", "silenceLevel": ".1f", "closureClicks": ".2f", "extra4k": ".2f"}
         return rate_cell(m, key) if isinstance(m.get(key), list) else num_cell(m, key, formats.get(key, ".0f"))
 
     rows = [
@@ -809,6 +827,88 @@ def retaught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str
 {{{{retaught_sounds}}}}
 {sounds}
 <div class="stack">{sentence_cards(clips, ja, jvs, results, ["real", "ench2c", "enci"], RETAUGHT_LABELS)}</div>
+</section>"""
+
+
+def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
+    """Each speaker's own body and glottis (`pmvc.speaker`): whose voice the renders of JVS's
+    eight test speakers then are (`jvs`/whose_spk.json and whose_spk2.json, a second model's
+    say), and of all hundred (`everyone`/whose_speakers.json, whose_speakers2.json), what it
+    costs (`jvs`/results_spk.json) and the settings (`jvs`/speakers.json, speakers_body.json).
+    Nothing before the first exists."""
+    if not (jvs / "whose_spk.json").exists() or not (jvs / "results_spk.json").exists():
+        return ""
+    results = json.loads((jvs / "results_spk.json").read_text())
+    summary = results["summary"]
+
+    def whose_table(names: tuple[str, str], where: Path, rows: dict[str, str], what: str) -> str:
+        """Two models' say on a set of clips; nothing if the first was not asked."""
+        if not (where / f"{names[0]}.json").exists():
+            return ""
+        first = json.loads((where / f"{names[0]}.json").read_text())
+        second = json.loads((where / f"{names[1]}.json").read_text())["variants"] if (where / f"{names[1]}.json").exists() else {}
+
+        def cells(m: dict[str, float] | None) -> str:
+            return '<td class="num">–</td>' * 3 if m is None else f'<td class="num">{100 * m["top1"]:.1f}</td><td class="num">{m["own"]:.3f}</td><td class="num">{m["other"]:.3f}</td>'
+
+        lines = "".join(f'<tr><th scope="row">{esc(label)}</th>{cells(first["variants"][v])}{cells(second.get(v))}</tr>' for v, label in rows.items() if v in first["variants"])
+        return f"""<div class="scroll"><table>
+<caption>{what}（{first["speakers"]} 話者、{first["clips"]:,} 文）。「本人」は、最も近い話者が本人だった割合 %。類似度はコサイン類似度で、「他人」は同性の他の話者との平均。左の 3 列は当てはめに使った照合モデル（WavLM）、右の 3 列は当てはめに使っていない照合モデル（UniSpeech-SAT）。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">本人</th><th scope="col">本人との類似度</th><th scope="col">他人との類似度</th><th scope="col">本人（別モデル）</th><th scope="col">本人との類似度</th><th scope="col">他人との類似度</th></tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    whose = (
+        whose_table(("whose_spk", "whose_spk2"), jvs, {"real": "実録音", **{v: SPEAKER_LABELS[v] for v in ("enci", "encib", "encis")}}, "エンコーダ I の制御列。テストの 8 話者")
+        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {"real": "実録音", "encir": SPEAKER_LABELS["enci"], "encib": SPEAKER_LABELS["encib"], "encis": SPEAKER_LABELS["encis"]}, "同じく、全 100 話者のテスト文")
+        + whose_table(("whose_spk", "whose_spk2"), jvs, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs")}, "TTS が書いた制御列。テストの 8 話者")
+        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs")}, "同じく、全 100 話者のテスト文")
+    )
+    variants = [v for v in SPEAKER_LABELS if v in summary["ja"]]
+    sets = [("JVS 女性（4 話者）", summary["ja-F"]), ("JVS 男性（4 話者）", summary["ja-M"])]
+    costs = (
+        grid(sets, variants, SPEAKER_LABELS, SPEAKER_NOTES, "Whisper large-v3-turbo の音素誤り率 %。角括弧は 95% 区間。", "rate2")
+        + grid(sets, variants, SPEAKER_LABELS, SPEAKER_NOTES, "NISQA が予測する品質（1〜5）。", "quality")
+        + grid(sets, variants, SPEAKER_LABELS, SPEAKER_NOTES, "NISQA のもう 1 つのモデルが予測する、合成音声の自然さ（1〜5）。", "natural")
+    )
+    fitted = {name: json.loads((jvs / f"{name}.json").read_text())["speakers"] for name in ("speakers_body", "speakers") if (jvs / f"{name}.json").exists()}
+    speakers = sorted({r["speaker"] for r in results["utterances"]})
+    sexes = {r["speaker"]: r["sex"] for r in results["utterances"]}
+
+    def settings_row(name: str) -> str:
+        cells = ""
+        for fit, keys in (("speakers_body", ("female", "child")), ("speakers", ("female", "child", "openQuotient", "brightness", "tension"))):
+            got = fitted.get(fit, {}).get(name, {}).get("settings")
+            cells += "".join(f'<td class="num">{got[k]:.2f}</td>' if got else '<td class="num">–</td>' for k in keys)
+        return f'<tr><th scope="row">{esc(name)}<span class="sub">{"女性" if sexes[name] == "F" else "男性"}</span></th>{cells}</tr>'
+
+    settings = f"""<div class="scroll"><table>
+<caption>テストの 8 話者に当てはまった設定。体格は 0 が成人男性、1 が成人女性（これまでは性別どおりの 0 か 1）。子どもの軸は 0 が大人。声門は、開放率（1 周期のうち開いている割合）、明るさ（閉じ方の鋭さ）、張り。</caption>
+<thead><tr><th scope="col">話者</th><th scope="col">体格だけ: 女性</th><th scope="col">子ども</th><th scope="col">体格 + 声門: 女性</th><th scope="col">子ども</th><th scope="col">開放率</th><th scope="col">明るさ</th><th scope="col">張り</th></tr></thead>
+<tbody>{"".join(settings_row(n) for n in speakers)}</tbody></table></div>""" if fitted else ""
+
+    def card(r: dict[str, Any]) -> str:
+        buttons = "".join(
+            button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
+            for v, label in (("real", "実録音"), ("enci", "これまで"), ("encib", "体格を当てはめ"), ("encis", "体格 + 声門を当てはめ")) if v in r["variants"]
+        )  # fmt: skip
+        return f"""<article class="sentence">
+<p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
+<p class="text">{esc(r["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+
+    rows = sorted(results["utterances"], key=lambda r: r["id"])
+    # the four speakers and sentences of the cards above: their recordings are on the page already
+    picked = [[x for x in rows if x["speaker"] == name][3 + 5 * k] for k, name in enumerate(speakers[:2] + speakers[-2:])]
+    return f"""<section aria-labelledby="h-speaker"><h2 id="h-speaker">5. 話者ごとに体格と声門を当てはめる</h2>
+{{{{speaker_text}}}}
+{whose}
+{{{{speaker_costs}}}}
+{costs}
+{settings}
+{{{{speaker_sounds}}}}
+<div class="stack">{"".join(card(r) for r in picked)}</div>
 </section>"""
 
 
@@ -1168,7 +1268,7 @@ def build(d: Path, notes: str, n_sentences: int, n_perturbed: int, ja_url: str =
     return shell(TITLE_EN, LEDE_EN, notes, body, CREDITS_EN, clips)
 
 
-def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = "", tts_url: str = "") -> str:
+def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = "", tts_url: str = "", everyone: Path | None = None) -> str:
     """The second page: recordings from outside TSP, the Japanese ones above all."""
     clips: dict[str, str] = {}
     body = abroad_section(d, ja, clips).replace("{{abroad_text}}", ABROAD_TEXT).replace("{{abroad_measures}}", ABROAD_MEASURES)
@@ -1176,7 +1276,9 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_walls}}", TUNED_WALLS).replace("{{tuned_closure}}", TUNED_CLOSURE).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
     retaught = retaught_section(d, ja, jvs, clips).replace("{{retaught_text}}", RETAUGHT_TEXT).replace("{{retaught_sounds}}", RETAUGHT_SOUNDS)
     body += retaught
-    last = 5 if retaught else 4
+    fitted = speaker_section(jvs, everyone, clips).replace("{{speaker_text}}", SPEAKER_TEXT).replace("{{speaker_costs}}", SPEAKER_COSTS).replace("{{speaker_sounds}}", SPEAKER_SOUNDS) if everyone is not None else ""
+    body += fitted
+    last = (5 if retaught else 4) + (1 if fitted else 0)
     said = pointer(last, "テキストからの合成（TTS）", "エンコーダ I の制御列を手本に、テキストから制御列を書くモデルを作った結果は別のページにあります: ", TITLE_TTS, tts_url, "tts")
     body += said + pointer(last + 1 if said else last, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
@@ -1363,6 +1465,14 @@ CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS
 TITLE_TTS = "CHIMERA 日本語 TTS の試聴"
 LEDE_TTS = "テキストから制御列（100 Hz × 21 チャネル）を書くモデルを作り、物理モデル音声合成 CHIMERA に鳴らさせた結果です。合成エンジンは無改造です。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
 CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者と、JVS（東京大学 猿渡研究室。一部の音声だけを載せています）。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+SPEAKER_TEXT = """<p>これまで、声に伝える話者の情報は性別（男性か女性かの体格）と声の高さの中央値だけでした。そのため、話者照合モデルは同性の話者の合成音を聞き分けられませんでした。CHIMERA の体格は連続に変えられます（成人男性から成人女性へ、大人から子どもへ。声道の大きさと、そのうちの喉の割合が変わります）。声門にも、人によって違う設定があります。これを話者ごとに当てはめました。制御列は同じものを使い、鳴らすときの設定だけを変えます。</p>
+<ul>
+<li><b>体格を当てはめ</b>: 体格の 2 つの値だけを話者ごとに決めます。声門は、日本語編で決めた「調整後の声」のままです。</li>
+<li><b>体格 + 声門を当てはめ</b>: 体格に加えて、声門の開放率・明るさ・張りも話者ごとに決めます。</li>
+</ul>
+<p>当てはめには、話者ごとに学習用の 6 文（それぞれ最初の 4 秒）を使いました。候補の設定で鳴らし、話者照合モデル（WavLM）が「その話者の録音 20 文に近い」と判定する設定を探します。言葉が変わらないように、多言語のリスナーから見た録音との距離が増えるぶんは減点します。下の表は、当てはめに使っていないテストの文での結果です。</p>"""
+SPEAKER_COSTS = """<p>当てはめで変わるのは声色だけではありません。聞き取りやすさと音の質への影響を、同じテストの文で測りました。</p>"""
+SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。実録音と、これまでの鳴らし方、2 通りの当てはめを聞き比べられます。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>
 <li><b>メルスペクトログラム</b>（100 帯域、93.75 Hz）。UnivNet ボコーダで音にします。この形のモデル（FastSpeech 2）の本来の出力先です。</li>
@@ -1413,7 +1523,7 @@ def main() -> None:
 
     pages = [(a.dir / a.out, build(a.dir, notes(a.notes), a.sentences, a.perturbed, a.ja_url))]
     if (a.abroad / "results.json").exists():
-        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url, a.tts_url)))
+        pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url, a.tts_url, a.jvsall)))
     if (a.abroad / "results_tts.json").exists():
         pages.append((a.dir / a.out_tts, build_tts(a.abroad, a.say, a.jvs, a.jvsall, notes(a.notes_tts), a.en_url, a.ja_url)))
     for out, page in pages:

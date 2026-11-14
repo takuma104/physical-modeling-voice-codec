@@ -7,6 +7,7 @@ this) says how much is left: it turns a clip into a vector that is close for cli
 speaker.
 
 usage: python -m pmvc.whose [dir] [--variants enci,tts] [--split test] [--name whose] [--per 25]
+                            [--model microsoft/wavlm-base-plus-sv]
 
 For the recordings of a split and each variant's renders of them, with every speaker's
 recordings standing for the speaker (the mean of their vectors; a clip's own sentence is left
@@ -16,7 +17,9 @@ out of its own speaker's mean, so that the words do not help):
   top1     the share of clips whose nearest speaker is their own, among all the speakers
   top1sex  the same among the speakers of the same sex
 For the recordings themselves these say what the model can tell at best. Writes
-<dir>/<name>.json. `--per` takes so many recordings of each speaker.
+<dir>/<name>.json. `--per` takes so many recordings of each speaker. `--model` is another
+verification model of the Hugging Face hub with an x-vector head, for a second opinion (where
+settings were fitted to the first one's, `pmvc.speaker`).
 """
 
 import argparse
@@ -39,12 +42,12 @@ SR: int = 16000
 
 
 class Verifier:
-    def __init__(self, device: str) -> None:
-        from transformers import WavLMForXVector, logging
+    def __init__(self, device: str, model: str = MODEL) -> None:
+        from transformers import AutoModelForAudioXVector, logging
 
         logging.set_verbosity_error()
         self.device = device
-        self.model = WavLMForXVector.from_pretrained(MODEL).to(device).eval()  # type: ignore[arg-type]
+        self.model = AutoModelForAudioXVector.from_pretrained(model).to(device).eval()
 
     @torch.no_grad()
     def vector(self, x: NDArray[np.floating]) -> NDArray[np.float32]:
@@ -82,6 +85,7 @@ def main() -> None:
     ap.add_argument("--split", choices=["test", "valid", "train", "all"], default="test")
     ap.add_argument("--name", type=str, default="whose")
     ap.add_argument("--per", type=int, default=25, help="recordings of each speaker")
+    ap.add_argument("--model", type=str, default=MODEL)
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     a = ap.parse_args()
     d: Path = a.dir
@@ -95,13 +99,13 @@ def main() -> None:
         if count[m["speaker"]] <= a.per:
             kept.append(m)
     speakers, sexes, sentences = [m["speaker"] for m in kept], [m["sex"] for m in kept], [m["text"] for m in kept]
-    verifier = Verifier(pick_device())
+    verifier = Verifier(pick_device(), a.model)
     vectors: dict[str, NDArray[np.float32]] = {}
     with ThreadPoolExecutor(a.jobs) as pool:
         for v in ("real", *variants):
             clips = pool.map(lambda m, v=v: load(d / v / f"{m['id']}.wav", SR)[0], kept)
             vectors[v] = np.stack([verifier.vector(x) for x in clips])
-    out: dict[str, Any] = {"model": MODEL, "speakers": len(set(speakers)), "clips": len(kept), "variants": {}}
+    out: dict[str, Any] = {"model": a.model, "speakers": len(set(speakers)), "clips": len(kept), "variants": {}}
     print(f"{len(kept)} recordings of {len(set(speakers))} speakers ({sum(s == 'F' for s in {n: x for n, x in zip(speakers, sexes)}.values())} women)")
     for v in ("real", *variants):
         m = measure(vectors[v], vectors["real"], speakers, sexes, sentences)
