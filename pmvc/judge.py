@@ -39,6 +39,15 @@ For the recording and every variant:
              not, between 4 and 16 kHz (`extra80`, `extra300`, `extra2k` for 80-300 Hz,
              0.3-2 kHz and 2-4 kHz), and `closureClicks`, those of them that are clicks as the
              recording goes silent or in its silence, with their mean level `closureClickLevel`
+A render whose timing is its own (`pmvc.tts speak`: its track says `free`) cannot be held
+against the recording frame by frame. It gets rate, rate2 and phoneRate; distance, voicing,
+stray and what is counted against the recording are left out. So that its clicks can still be
+compared, a results file with such a render has for every clip
+  ownReleases, ownReleaseLevel, ownClicks, ownClickLevel, ownOddClicks, ownClickLoad
+             `pmvc.clicks.measure` over the clip's own speech, the clip standing for its own
+             recording: the terms a recording's clicks are counted on
+Where nothing was recorded at all (<dir> has no `real`: sentences `pmvc.tts speak --sentences`
+spoke), only the text is there to go by: rate and rate2, and those clicks.
 Whisper leans on what a sentence is likely to say; the phone recogniser cannot. Neither was
 optimised against. Two more columns make the numbers comparable:
   other      where another speaker in <dir> read the same sentence (one of the same sex, if
@@ -67,7 +76,7 @@ import numpy as np
 import torch
 from faster_whisper import WhisperModel
 
-from .audio import FRAME_RATE, load, pitch_track
+from .audio import FRAME_RATE, MEL_SR, load, pitch_track, speech_span
 from .clicks import BANDS, extra, in_silences, measure
 from .encoder import ids_in, pick_device
 from .evaluate import edits, wer_interval, words
@@ -182,15 +191,34 @@ def pitch_agreement(job: tuple[Path, str, str, str]) -> dict[str, float]:
 
 def clicks_of(job: tuple[Path, str, str]) -> dict[str, float]:
     """`pmvc.clicks`' measures for a clip, over the recording's speech (a render runs its
-    track's shift behind, or the meta's)."""
+    track's shift behind, or the meta's). A render with a timing of its own (`pmvc.tts`: its
+    track says `free`) has only `own_clicks`."""
     d, uid, v = job
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
-    track = d / v / f"{uid}.tracks.json"
-    shift = 0.0 if v == "real" else json.loads(track.read_text()).get("shift", meta["shift"]) if track.exists() else meta["shift"]
+    path = d / v / f"{uid}.tracks.json"
+    track = json.loads(path.read_text()) if v != "real" and path.exists() else {}
+    if track.get("free"):
+        return {}
+    shift = 0.0 if v == "real" else track["shift"] if "shift" in track else meta["shift"]
     x, sr = load(d / v / f"{uid}.wav")
-    span, recording = (meta["span"][0], meta["span"][1]), None if v == "real" else load(d / "real" / f"{uid}.wav")
     y = x[round(shift * sr) :]
+    span, recording = (meta["span"][0], meta["span"][1]), None if v == "real" else load(d / "real" / f"{uid}.wav")
     return {**measure(y, sr, span, recording), **in_silences(y, sr, span, recording), **extra(y, sr, span, recording)}
+
+
+def own_clicks(job: tuple[Path, str, str]) -> dict[str, float]:
+    """A clip's clicks counted as a recording's are: over its own speech, and what kind each
+    is going by the clip itself (`ownClicks`, `ownReleases`, ...). `clicks_of` holds a render
+    against its recording, which a render with a timing of its own cannot be; these can be
+    compared across all of them, and with the recording's."""
+    d, uid, v = job
+    path = d / v / f"{uid}.tracks.json"
+    shift = json.loads(path.read_text()).get("shift", 0.0) if v != "real" and path.exists() else 0.0
+    x, sr = load(d / v / f"{uid}.wav")
+    y = x[round(shift * sr) :]
+    a, b = speech_span(load(d / v / f"{uid}.wav", MEL_SR)[0][round(shift * MEL_SR) :])
+    m = measure(y, sr, (a / FRAME_RATE, min(b / FRAME_RATE, len(y) / sr)), None)
+    return {f"own{k[0].upper()}{k[1:]}": value for k, value in m.items()}
 
 
 def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) -> None:
@@ -202,13 +230,20 @@ def compare(d: Path, rows: list[dict[str, Any]], names: list[str], jobs: int) ->
     with ThreadPoolExecutor(jobs) as pool:
         for (_, uid, v, _), m in zip(todo, pool.map(pitch_agreement, todo)):
             by_id[uid]["variants"][v].update(m)
-        clicking = [(d, r["id"], v) for r in rows for v in names if "closureClicks" not in r["variants"][v]]
+        clicking = [(d, r["id"], v) for r in rows for v in names if "closureClicks" not in (m := r["variants"][v]) and not m.get("free") and "real" in r["variants"]]
         for (_, uid, v), m in zip(clicking, pool.map(clicks_of, clicking)):
             by_id[uid]["variants"][v].update(m)
+        # where some render has a timing of its own, every clip's clicks are also counted on its own terms
+        if any(r["variants"][v].get("free") for r in rows for v in names):
+            owning = [(d, r["id"], v) for r in rows for v in names if "ownClicks" not in r["variants"][v]]
+            for (_, uid, v), m in zip(owning, pool.map(own_clicks, owning)):
+                by_id[uid]["variants"][v].update(m)
     same: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for r in rows:
         same.setdefault((r["lang"], r["text"]), []).append(r)
     for r in rows:
+        if "real" not in r["variants"]:
+            continue
         said = r["variants"]["real"]["phones"].split()
         # of the same sex, where there is one
         others = sorted((o for o in same[(r["lang"], r["text"])] if o["speaker"] != r["speaker"]), key=lambda o: o["sex"] != r["sex"])
@@ -248,6 +283,13 @@ def summarise(rows: list[dict[str, Any]], names: list[str]) -> dict[str, Any]:
                     s[key] = round(float(np.mean([m[key] for m in ms])), 2)
                 s["clickLoad"] = round(float(np.mean([m["clickLoad"] for m in ms])), 1)
                 for key in ("clickLevel", "releaseLevel"):
+                    if any(key in m for m in ms):
+                        s[key] = round(float(np.mean([m[key] for m in ms if key in m])), 1)
+            if all("ownClicks" in m for m in ms):
+                for key in ("ownClicks", "ownReleases", "ownOddClicks"):
+                    s[key] = round(float(np.mean([m[key] for m in ms])), 2)
+                s["ownClickLoad"] = round(float(np.mean([m["ownClickLoad"] for m in ms])), 1)
+                for key in ("ownClickLevel", "ownReleaseLevel"):
                     if any(key in m for m in ms):
                         s[key] = round(float(np.mean([m[key] for m in ms if key in m])), 1)
             if all("silenceSounds" in m for m in ms):
@@ -304,7 +346,9 @@ def main() -> None:
         finish(d, a.name, judged, list(judged[0]["variants"]), a.jobs)
         return
     variants: list[str] = a.variants.split(",")
-    names = ["real", *variants]
+    # sentences that nobody recorded (`pmvc.tts speak --sentences`): only the text to go by
+    texts = not (d / "real").exists()
+    names = variants if texts else ["real", *variants]
     metas = [json.loads((d / "meta" / f"{i}.json").read_text()) for i in ids_in(d, a.split)]
     metas = [m for m in metas if not a.ids or m["id"] in a.ids.split(",")]
     metas = [m for m in metas if all((d / v / f"{m['id']}.wav").exists() for v in names)]
@@ -327,13 +371,16 @@ def main() -> None:
     device = pick_device()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        big, reader, listener = BigWhisper(), PhoneReader(device), Listener(device)
+        big = BigWhisper()
+        reader, listener = (None, None) if texts else (PhoneReader(device), Listener(device))
     for r, meta in zip(rows, metas):
         ref = units(r["text"], r["lang"])
-        real, _ = load(d / "real" / f"{r['id']}.wav", LISTEN_SR)
-        said = r["variants"]["real"]["phones"].split() if "phones" in r["variants"]["real"] else reader.read(real)
-        feats = listener.hear(real).feats[0]
-        a0, a1 = int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE)
+        said: list[str] = []
+        if reader is not None and listener is not None:
+            real, _ = load(d / "real" / f"{r['id']}.wav", LISTEN_SR)
+            said = r["variants"]["real"]["phones"].split() if "phones" in r["variants"]["real"] else reader.read(real)
+            feats = listener.hear(real).feats[0]
+            a0, a1 = int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE)
         for v in names:
             cell, wav = r["variants"][v], d / v / f"{r['id']}.wav"
             if "heard2" in cell:
@@ -343,11 +390,17 @@ def main() -> None:
             if v == "real":
                 cell["phones"] = " ".join(said)
                 continue
+            track = d / v / f"{r['id']}.tracks.json"
+            t = json.loads(track.read_text()) if track.exists() else {}
+            if t.get("free"):
+                # a timing of its own: nothing to hold against the recording frame by frame
+                cell["free"] = True
+            if reader is None or listener is None:
+                continue
             x, _ = load(wav, LISTEN_SR)
             cell["phones"] = " ".join(written := reader.read(x))
             cell["phoneErrors"], cell["phoneUnits"] = edits(said, written), len(said)
-            track = d / v / f"{r['id']}.tracks.json"
-            if track.exists() and "shift" in (t := json.loads(track.read_text())):
+            if "shift" in t and not t.get("free"):
                 x48, _ = load(wav)
                 behind = listener.hear(to16k(x48[round(t["shift"] * 48000) :])).feats[0]
                 cell["distance"] = float(distance(feats[a0:a1], behind[a0:a1]).mean())
@@ -368,6 +421,7 @@ def finish(d: Path, name: str, rows: list[dict[str, Any]], names: list[str], job
                 rest = "".join(f"   {key} {m[key]:.3f}" for key in ("distance", "voicing", "f0Corr") if key in m)
                 rest += f"   stray {m['stray']:.0f} %" if "stray" in m else ""
                 rest += f"   releases {m['releases']:.2f}/s at {m.get('releaseLevel', float('nan')):.0f} dB, odd clicks {m['oddClicks']:.2f}/s" if "oddClicks" in m else ""
+                rest += f"   on its own: releases {m['ownReleases']:.2f}/s at {m.get('ownReleaseLevel', float('nan')):.1f} dB, click load {m['ownClickLoad']:.1f} dB" if "ownClicks" in m else ""
                 rest += f"   in silences {m['silenceSounds']:.2f}/s at {m.get('silenceLevel', float('nan')):.0f} dB" if "silenceSounds" in m else ""
                 rest += f"   extra above 4 kHz {m['extra4k']:.2f}/s, closure clicks {m['closureClicks']:.2f}/s" if "closureClicks" in m else ""
                 rest += f"   NISQA {m['quality']:.2f}" if "quality" in m else ""

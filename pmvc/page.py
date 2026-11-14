@@ -2,14 +2,17 @@
 with the audio embedded, the scores in tables and what Whisper heard under each clip.
 
 usage: python -m pmvc.page [dir] [--abroad out/ja] [--notes notes.html] [--notes-ja notes_ja.html]
+                           [--notes-tts notes_tts.html] [--say out/say]
                            [--sentences 12] [--perturbed 4] [--en-url URL] [--ja-url URL]
 
-Two pages, since one would be too large to publish: <dir>/listening.html, the experiments on
-TSP's recordings, and <dir>/listening_ja.html, the ones on recordings from outside it (the
-Japanese ones above all). The first reads <dir>/results.json and <dir>/perturb_results.json
-(`pmvc.evaluate`), <dir>/perturb.json (`pmvc.perturb`) and the WAVs, and its later sections
-appear once their results are there; the second reads `pmvc.judge`'s results in `--abroad`.
-Given the pages' published addresses, each points at the other. `--notes` is an HTML fragment shown at the top (the findings,
+Three pages, since one would be too large to publish: <dir>/listening.html, the experiments on
+TSP's recordings; <dir>/listening_ja.html, the ones on recordings from outside it (the
+Japanese ones above all); and <dir>/listening_tts.html, text to speech (`pmvc.tts`). The first
+reads <dir>/results.json and <dir>/perturb_results.json (`pmvc.evaluate`), <dir>/perturb.json
+(`pmvc.perturb`) and the WAVs, and its later sections appear once their results are there; the
+second reads `pmvc.judge`'s results in `--abroad`; the third reads results_tts.json there and
+`--say`'s results.json. Given the pages' published addresses, the first two point at each
+other and the third at both. `--notes` is an HTML fragment shown at the top (the findings,
 written by whoever ran the experiment). The page is written without <html>/<head>/<body>, as
 an Artifact wants it; browsers open it as it is.
 """
@@ -146,6 +149,20 @@ RETAUGHT_NOTES: dict[str, str] = {
     "enci": "H と同じ作り方で、調整後の声を通して学習し直し、調整後の声で鳴らす",
 }
 # the settings `pmvc.calibrate` fits, as the page names them
+TTS_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "enci": "エンコーダ I（録音から）",
+    "ttsd": "TTS（音素の長さは録音）",
+    "tts": "TTS（テキストだけから）",
+    "ttsfew": "TTS（200 文だけで学習）",
+}
+TTS_NOTES: dict[str, str] = {
+    "real": "Hi-Fi-CAPTAIN の男性話者",
+    "enci": "録音を聞いて書いた制御列。TTS の手本で、ここが上限",
+    "ttsd": "テキストから書いた制御列。各音素の長さだけ録音に合わせた",
+    "tts": "音素の長さもモデルが決める。録音は使わない",
+    "ttsfew": "学習データを 18,655 文から 200 文に減らしたモデル",
+}
 VOICE_LABELS: dict[str, str] = {
     "noiseGlottis": "雑音源のゲイン（声門）",
     "noiseConstriction": "雑音源のゲイン（狭め）",
@@ -828,6 +845,79 @@ def codec_perturbed(d: Path, metas: dict[str, Any], clips: dict[str, str], n: in
 <div class="stack">{"".join(cards)}</div>"""
 
 
+def tts_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
+    """Text to speech on the latent: `pmvc.judge`'s results for the test sentences of the
+    speaker the model was taught with (`ja`/results_tts.json: the recording, the encoder's
+    render and the model's) and for sentences nobody recorded (`say`/results.json)."""
+    results = json.loads((ja / "results_tts.json").read_text())
+    speaker = results["utterances"][0]["speaker"]
+    summary = results["summary"][speaker]
+    variants = [v for v in TTS_LABELS if v in summary]
+
+    def row(label: str, note: str, cells: str) -> str:
+        return f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(note)}</span></th>{cells}</tr>'
+
+    said = "".join(
+        row(TTS_LABELS[v], TTS_NOTES[v], rate_cell(summary[v], "rate") + rate_cell(summary[v], "rate2") + rate_cell(summary[v], "phoneRate") + num_cell(summary[v], "quality", ".2f"))
+        for v in variants
+    )
+    along = "".join(
+        row(TTS_LABELS[v], TTS_NOTES[v], num_cell(summary[v], "distance", ".3f") + num_cell(summary[v], "f0Corr", ".2f") + num_cell(summary[v], "voicing", ".1f", 100.0) + num_cell(summary[v], "ownReleases", ".2f") + num_cell(summary[v], "ownReleaseLevel", ".1f"))
+        for v in variants
+    )
+    tables = f"""<div class="scroll"><table>
+<caption>テストの {summary["n"]} 文（学習にも検証にも使っていない文）。Whisper の 2 列は音素誤り率、角括弧は 95% 区間。NISQA は予測品質（1〜5）。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">Whisper small %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA</th></tr></thead>
+<tbody>{said}</tbody></table></div>
+{{{{tts_between}}}}
+<div class="scroll"><table>
+<caption>録音との近さと、破裂のクリック音。リスナー距離・ピッチの相関・有声無声の一致は、録音と同じ時間軸の合成音でだけ測れます。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">リスナー距離</th><th scope="col">ピッチの相関</th><th scope="col">有声・無声の一致 %</th><th scope="col">破裂のクリック音 回/秒</th><th scope="col">その大きさ dB</th></tr></thead>
+<tbody>{along}</tbody></table></div>"""
+
+    def cards(where: Path, rows: list[dict[str, Any]], shown: list[str]) -> str:
+        out = []
+        for r in rows:
+            buttons = "".join(
+                button(clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", TTS_LABELS[v], f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
+                for v in shown if v in r["variants"]
+            )  # fmt: skip
+            out.append(
+                f"""<article class="sentence">
+<p class="meta">{esc(r["id"])}</p>
+<p class="text">{esc(r["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+            )
+        return "".join(out)
+
+    tested = sorted(results["utterances"], key=lambda r: r["id"])
+    body = f"""<section aria-labelledby="h-test"><h2 id="h-test">1. テストの文</h2>
+{{{{tts_text}}}}
+{tables}
+<div class="stack">{cards(ja, tested[4::10], [v for v in variants if v != "ttsfew"])}</div>
+</section>"""
+    if (say / "results.json").exists():
+        free = json.loads((say / "results.json").read_text())
+        group = free["summary"]["ja"]
+        rows = "".join(row(TTS_LABELS[v], TTS_NOTES[v], rate_cell(group[v], "rate") + rate_cell(group[v], "rate2") + num_cell(group[v], "quality", ".2f")) for v in TTS_LABELS if v in group)
+        body += f"""<section aria-labelledby="h-say"><h2 id="h-say">2. コーパスにない文</h2>
+{{{{say_text}}}}
+<div class="scroll"><table>
+<caption>録音のない {group["n"]} 文。Whisper の 2 列は音素誤り率、角括弧は 95% 区間。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">Whisper small %</th><th scope="col">Whisper large-v3-turbo %</th><th scope="col">NISQA</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+<div class="stack">{cards(say, sorted(free["utterances"], key=lambda r: r["id"]), ["tts"])}</div>
+</section>"""
+        if "ttsfew" in group:
+            body += f"""<section aria-labelledby="h-few"><h2 id="h-few">3. 学習データが足りないとき</h2>
+{{{{few_text}}}}
+<div class="stack">{cards(say, sorted(free["utterances"], key=lambda r: r["id"])[:6], ["tts", "ttsfew"])}{cards(ja, tested[4::30], ["real", "tts", "ttsfew"])}</div>
+</section>"""
+    return body
+
+
 def shell(title: str, lede: str, notes: str, body: str, credits: str, clips: dict[str, str]) -> str:
     return (
         PAGE.replace("{{title}}", esc(title)).replace("{{lede}}", esc(lede)).replace("{{notes}}", notes).replace("{{body}}", body)
@@ -898,6 +988,16 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     body += retaught
     body += pointer(5 if retaught else 4, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
+
+
+def build_tts(ja: Path, say: Path, notes: str, en_url: str = "", ja_url: str = "") -> str:
+    """The third page: text to speech on the latent."""
+    clips: dict[str, str] = {}
+    body = tts_section(ja, say, clips).replace("{{tts_text}}", TTS_TEXT).replace("{{tts_between}}", TTS_BETWEEN).replace("{{say_text}}", SAY_TEXT).replace("{{few_text}}", FEW_TEXT)
+    links = "".join(f'<li><a href="{esc(url)}">{esc(title)}</a>：{esc(what)}</li>' for title, url, what in ((TITLE_JA, ja_url, "エンコーダと声の調整（日本語の録音）"), (TITLE_EN, en_url, "韻律移植、摂動、最初のエンコーダ（英語の録音）")) if url)
+    if links:
+        body += f'<section aria-labelledby="h-more"><h2 id="h-more">これまでの実験</h2><ul>{links}</ul></section>'
+    return shell(TITLE_TTS, LEDE_TTS, notes, body, CREDITS_TTS, clips)
 
 
 CODEC_TEXT = """<p>録音を聞いて制御列を書くエンコーダです。デコーダは CHIMERA そのものなので、これで「音声 → 制御列（100 Hz × 21 チャネル）→ 音声」のコーデックになります。文の書き起こしは、学習にも推論にも探索にも使いません。</p>
@@ -1066,6 +1166,15 @@ LEDE_JA = "物理モデル音声合成 CHIMERA をデコーダにしたコーデ
 CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS（東京大学 猿渡研究室。JVS は一部の音声だけを載せています）、TSP speech database（Copyright © 2018 Peter Kabal、Simplified BSD License）。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
 
 
+TITLE_TTS = "CHIMERA 日本語 TTS の試聴"
+LEDE_TTS = "テキストから制御列（100 Hz × 21 チャネル）を書くモデルを作り、物理モデル音声合成 CHIMERA に鳴らさせた結果です。合成エンジンは無改造です。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
+CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+TTS_TEXT = ""
+TTS_BETWEEN = ""
+SAY_TEXT = ""
+FEW_TEXT = ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "transplant")
@@ -1078,6 +1187,9 @@ def main() -> None:
     ap.add_argument("--perturbed", type=int, default=4)
     ap.add_argument("--out", type=str, default="listening.html")
     ap.add_argument("--out-ja", type=str, default="listening_ja.html")
+    ap.add_argument("--notes-tts", type=Path, default=None)
+    ap.add_argument("--say", type=Path, default=ROOT / "out" / "say", help="sentences nobody recorded, spoken by pmvc.tts and judged")
+    ap.add_argument("--out-tts", type=str, default="listening_tts.html")
     ap.add_argument("--en-url", type=str, default="", help="where the first page is published, for the second to point at")
     ap.add_argument("--ja-url", type=str, default="", help="where the second page is published")
     a = ap.parse_args()
@@ -1088,6 +1200,8 @@ def main() -> None:
     pages = [(a.dir / a.out, build(a.dir, notes(a.notes), a.sentences, a.perturbed, a.ja_url))]
     if (a.abroad / "results.json").exists():
         pages.append((a.dir / a.out_ja, build_ja(a.dir, a.abroad, a.jvs, a.fit, notes(a.notes_ja), a.en_url)))
+    if (a.abroad / "results_tts.json").exists():
+        pages.append((a.dir / a.out_tts, build_tts(a.abroad, a.say, notes(a.notes_tts), a.en_url, a.ja_url)))
     for out, page in pages:
         out.write_text(page)
         print(f"{out}: {len(page) / 1e6:.1f} MB")

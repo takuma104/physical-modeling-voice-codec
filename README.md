@@ -186,8 +186,38 @@ for t in "${T[@]}"; do
   uv run python -m pmvc.natural ${t%% *} --name results_tuned
 done
 
-# 9. 試聴ページ(音声埋め込みの HTML 2 枚: 英語編 listening.html と日本語編 listening_ja.html)
-uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html
+# 9. TTS: テキスト → 制御列。Hi-Fi-CAPTAIN の日本語男性話者 1 人(学習 18,655 文・約 24 時間、検証 100 文、テストは手順 5 の hjm の 100 文)
+H=~/datasets/hfc/hi-fi-captain/ja-JP/male
+uv run python -m pmvc.recordings out/hfcm --set hmt --speaker hjm --lang ja --sex M --wavs $H/wav/train_parallel --text $H/text/train_parallel.txt --n 0 --split train --link
+uv run python -m pmvc.recordings out/hfcm --set hmv --speaker hjm --lang ja --sex M --wavs $H/wav/dev --text $H/text/dev.txt --n 0 --split valid --link
+#   手本はエンコーダ I の制御列(鳴らさずに制御列だけ書く)
+uv run python -m pmvc.encoder encode out/hfcm --models out/transplant/models --name enci --out enci --split all $V --quiet-pauses --no-render
+#   各音素が録音のどのフレームにあたるかを、録音と読みだけから学習する。読点のないポーズにはポーズ記号(sp)を入れる
+uv run python -m pmvc.align train out/hfcm
+uv run python -m pmvc.align write out/hfcm
+#   読みとアクセント(Open JTalk)→ 音素ごとの長さ → 制御列。誤差は、手本の制御列との差と、声の代役を通した録音との聞き比べ
+uv run python -m pmvc.tts train out/hfcm --name tts $V
+#   学習データを減らしたモデル(データが足りないとどう間違えるか)
+uv run python -m pmvc.tts train out/hfcm --name tts200 --limit 200 --epochs 300 --every 25 $V
+uv run python -m pmvc.tts train out/hfcm --name tts2000 --limit 2000 --epochs 100 --every 10 $V
+#   テストの 100 文: 音素の長さもモデルが決める tts と、長さだけ録音に合わせる ttsd(録音と同じ時間軸になるので、エンコーダと同じ物差しで比べられる)
+IDS=$(ls out/ja/meta | grep hjm | sed 's/.json//' | paste -sd, -)
+uv run python -m pmvc.align write out/ja --models out/hfcm/models --ids $IDS
+uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts --ids $IDS --out tts
+uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts --ids $IDS --out ttsd --timing recording
+uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name tts200 --ids $IDS --out ttsfew
+uv run python -m pmvc.judge out/ja --variants enci,ttsd,tts,ttsfew --ids $IDS --name results_tts
+uv run python -m pmvc.natural out/ja --name results_tts
+#   録音のない文(docs/sentences_ja.txt)
+uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name tts --sentences docs/sentences_ja.txt --out tts
+uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name tts200 --out ttsfew
+uv run python -m pmvc.judge out/say --variants tts,ttsfew
+uv run python -m pmvc.natural out/say
+#   1 文だけ鳴らす
+uv run python -m pmvc.tts say "こんにちは。今日はいい天気ですね。" --out say.wav
+
+# 10. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
+uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。
