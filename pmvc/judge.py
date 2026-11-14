@@ -401,7 +401,7 @@ def main() -> None:
             cell["phones"] = " ".join(written := reader.read(x))
             cell["phoneErrors"], cell["phoneUnits"] = edits(said, written), len(said)
             if "shift" in t and not t.get("free"):
-                x48, _ = load(wav)
+                x48, _ = load(wav, 48000)
                 behind = listener.hear(to16k(x48[round(t["shift"] * 48000) :])).feats[0]
                 cell["distance"] = float(distance(feats[a0:a1], behind[a0:a1]).mean())
 

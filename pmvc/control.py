@@ -8,7 +8,9 @@ three latents that a neural network decodes:
   mel      a log mel spectrogram (100 bands, 93.75 frames a second) for the UnivNet vocoder:
            what a model of this shape was made for (FastSpeech 2)
   encodec  EnCodec's latent before it is quantized (128 values, 75 frames a second)
-  mimi     Mimi's latent before it is quantized (512 values, 12.5 frames a second)
+  mimi     Mimi's latent as its decoder takes it: the vector its 32 codebooks stand for
+           (512 values, 12.5 frames a second). The encoder's output before quantization is
+           in another space, and the decoder makes nothing of it.
 All three come with `transformers`, run at 24 kHz and are used as they are.
 
 usage: python -m pmvc.control copy [dir] --latent mel [--out copy_mel] [--split test] [--ids ...]
@@ -153,7 +155,10 @@ class Mimi(Latent):
 
     @torch.no_grad()
     def encode(self, x: Audio) -> NDArray[np.float32]:
-        return self.model.encoder(torch.from_numpy(x)[None, None].to(self.device)).latents[0].T.float().cpu().numpy()
+        # what Mimi's decoder takes is not its encoder's output but the quantizer's: the
+        # encoder's, coded with all 32 codebooks and turned back into a vector
+        codes = self.model.encode(torch.from_numpy(x)[None, None].to(self.device)).audio_codes
+        return self.model.quantizer.decode(codes)[0].T.float().cpu().numpy()
 
     @torch.no_grad()
     def decode(self, z: NDArray[np.float32]) -> Audio:
