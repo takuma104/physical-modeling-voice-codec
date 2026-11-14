@@ -49,10 +49,10 @@ scarce: with 20 and 200 sentences the physical model's predicted quality is 4.1 
 spectrogram's 2.6 and 3.5, and at best 3.2 and 4.1 once its vocoder is tuned on the model's
 output. With 2,000 sentences the tuned vocoder reaches 4.5, where the recordings are. Taught with a hundred speakers it reads sentences it never
 saw as intelligibly as their recordings are (2.3\% against 2.5\%). Of a speaker the codec
-carries the sex and the pitch; with the simulator's body fitted to each speaker, two more
-numbers, a verification model finds the speaker among eight for 49.0\% of the renders instead
-of 26.5\%, and among a hundred for 5.5\% instead of 2.8\% (recordings:
-96.5\% and 93.7\%).
+carries the sex and the pitch; with the simulator's body, glottis and habits of posture fitted
+to each speaker, eleven more numbers, a verification model finds the speaker among eight for
+57.0\% of the renders instead of 26.5\%, and among a hundred for 14.2\% instead of
+2.8\% (recordings: 96.5\% and 93.7\%).
 \end{abstract}
 
 \section{Introduction}
@@ -487,13 +487,26 @@ model~\cite{unispeechsat}, which had no part in the fit, agrees: 40.5\% instead 
 model's renders gain as much (49.5\% instead of 28.0\% among eight). Nothing else moves:
 large-v3-turbo's error is 3.4\% before and 3.4\% after, NISQA 4.08 and 4.05. The
 fitted tracts are 0.87 of the male template's size for the women on average (CHIMERA's female
-body is 0.90) and 0.98 for the men, each with a spread of 0.02. Fitting the glottis as well (its
-open quotient, how sharply it closes, its tension) gives the second model 51.5\% among eight
-and the first no more than the body alone (48.0\%), and costs NISQA 0.4 (3.67): it takes back
-part of the voice of \S\ref{sec:voice}, which was chosen by ear. The renders remain far from
-their speakers. Their similarity to the speaker's recordings rises from 0.876 to 0.888,
-where two recordings of one speaker have 0.98 and of two speakers of one sex 0.91: to
-the model every render is first of all CHIMERA's voice.
+body is 0.90) and 0.98 for the men, each with a spread of 0.02. Fitting the
+glottis as well (its open quotient, how sharply it closes, its tension) gives the second model
+51.5\% among eight and the first no more than the body alone (48.0\%). It costs NISQA 0.4
+(3.67), which the listener did not hear as a loss. A third fit goes further: the body's four
+numbers themselves, so that a tract may be larger than the male template's, the glottis, and
+four habits of posture that the encoder does not write (how narrow the tube above the glottis
+is held, and a fixed offset each for the larynx's height, the velum and the tongue root),
+eleven numbers a speaker. The first model then finds the speaker among eight for 57.0\% of
+the renders and the second for 59.5\%; among 100, for 14.2\% and 12.2\%.
+large-v3-turbo's error stays at 3.5\%, and NISQA is 3.88 (the men's 4.35, above the
+4.25 they had). The gain is the men's: 41 of the 49 get the tube above the
+glottis narrowed by more than half its range, which gives a voice its ring around 3\,kHz, and
+7 of the 51 women. Most men move the same way, so part of this is a better
+voice for all rather than a speaker's own. Given the average fitted settings of their sex
+instead of their own, the speakers are found for 34.5\% of the renders (29.0\% by the
+second model): the average brings every render closer to every recording of the sex, and the
+speaker's own settings do the telling apart. The renders remain far from their speakers. Their similarity
+to the speaker's recordings rises from 0.876 to 0.919, where two recordings of one
+speaker have 0.98 and of two speakers of one sex 0.91: a render is now about as close to its
+speaker as another person of the same sex is.
 
 \section{Is it the latent? A control}\label{sec:control}
 The model of \S\ref{sec:tts} learns from little and fails gently. To see how much of that is the
@@ -636,8 +649,9 @@ speaker for that; with minutes its sound stays behind.
 
 \textbf{Limitations.} The codec carries what is said, its timing and its pitch, and little of who
 says it: told a speaker's sex and median pitch, the voice gives renders that a verification
-model cannot tell apart within a sex, and with a body fitted to each speaker it finds the
-speaker among eight for half of them and among a hundred for one in twenty (\S\ref{sec:tts}).
+model cannot tell apart within a sex, and with the body, the glottis and the posture fitted to each speaker it finds
+the speaker among eight for 57.0\% of them and among a hundred for 14.2\%
+(\S\ref{sec:tts}).
 The timbre is still the simulator's. The bursts
 of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27

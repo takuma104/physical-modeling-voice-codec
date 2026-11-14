@@ -12,7 +12,7 @@
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe`、ある姿勢での声道の断面の輪郭を返す `outline()`(レポートの図 1 はこれで描く)を持つ |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、体格を既定の 3 種の混合ではなく 4 つの値(大きさ、咽頭の割合、舌の半径、唇の幅)で直接指定する入力、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe`、ある姿勢での声道の断面の輪郭を返す `outline()`(レポートの図 1 はこれで描く)を持つ |
 | `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts`、ニューラルデコーダとの対照は `pmvc.control` と `pmvc.vocoder` |
 | `docs/` | 企画メモと関連論文。`docs/report/` にテクニカルレポートの下書き(英語・日本語) |
 
@@ -306,6 +306,10 @@ uv run python -m pmvc.natural out/say --name results_ctl
 #   学習用の文(話者ごとに 6 文の最初の 4 秒)を候補の設定で鳴らし、話者照合モデルが「その話者の録音に近い」と判定する設定を探す
 uv run python -m pmvc.speaker fit out/jvsall --only female,child --evals 40 --name speakers_body    # 体格の 2 つの値だけ
 uv run python -m pmvc.speaker fit out/jvsall --name speakers                                        # 体格 + 声門の開放率・明るさ・張り
+#   さらに 11 個の値: 体格の 4 つの値を直接(成人男性より大きい声道も許す)、声門の 3 つ、構えの癖 4 つ
+#   (喉頭の上の狭めと、喉頭の高さ・鼻への通路・舌の根のずれ。エンコーダの制御列に全フレームで足す)。前の当てはめの値から始める
+uv run python -m pmvc.speaker fit out/jvsall --name speakers_more --start out/jvsall/speakers.json --evals 200 \
+  --only scale,pharynx,tongueRadius,lipWidth,openQuotient,brightness,tension,epilarynx,larynxShift,velumShift,rootShift
 #   テストの文(当てはめに使っていない)を、当てはめた設定で鳴らし直す。8 話者(out/jvs)と全 100 話者(out/jvsall)
 for d in out/jvs out/jvsall; do
   e=enci; [ $d = out/jvsall ] && e=encir
@@ -313,16 +317,18 @@ for d in out/jvs out/jvsall; do
   uv run python -m pmvc.encoder revoice $d --of $e --out encis --split test $V --speakers out/jvsall/speakers.json
   uv run python -m pmvc.encoder revoice $d --of ttsj --out ttsjb --split test $V --speakers out/jvsall/speakers_body.json
   uv run python -m pmvc.encoder revoice $d --of ttsj --out ttsjs --split test $V --speakers out/jvsall/speakers.json
+  uv run python -m pmvc.encoder revoice $d --of $e --out encit --split test $V --speakers out/jvsall/speakers_more.json
+  uv run python -m pmvc.encoder revoice $d --of ttsj --out ttsjt --split test $V --speakers out/jvsall/speakers_more.json
 done
 #   誰の声に聞こえるか。当てはめに使った照合モデル(WavLM)と、使っていない照合モデル(UniSpeech-SAT)で
 for m in "whose_spk" "whose_spk2 --model microsoft/unispeech-sat-base-plus-sv"; do
-  uv run python -m pmvc.whose out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb --split test --name $m
+  uv run python -m pmvc.whose out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt --split test --name $m
 done
 for m in "whose_speakers" "whose_speakers2 --model microsoft/unispeech-sat-base-plus-sv"; do
-  uv run python -m pmvc.whose out/jvsall --variants encir,encib,encis,ttsj,ttsjb,ttsjs --name $m
+  uv run python -m pmvc.whose out/jvsall --variants encir,encib,encis,encit,ttsj,ttsjb,ttsjs,ttsjt --name $m
 done
 #   聞き取りやすさと音の質が変わっていないか
-uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb --split test --name results_spk
+uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt --split test --name results_spk
 uv run python -m pmvc.natural out/jvs --name results_spk
 
 # 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)

@@ -207,17 +207,21 @@ SPEAKER_LABELS: dict[str, str] = {
     "enci": "これまで（エンコーダ I）",
     "encib": "体格を当てはめ",
     "encis": "体格 + 声門を当てはめ",
+    "encit": "体格 4 値 + 声門 + 構えを当てはめ",
     "ttsj": "これまで（TTS）",
     "ttsjb": "TTS、体格を当てはめ",
     "ttsjs": "TTS、体格 + 声門を当てはめ",
+    "ttsjt": "TTS、体格 4 値 + 声門 + 構えを当てはめ",
 }
 SPEAKER_NOTES: dict[str, str] = {
     "enci": "声に伝えるのは性別と声の高さの中央値だけ",
     "encib": "話者ごとに体格の 2 つの値。声門は調整後の声のまま",
     "encis": "話者ごとに体格と声門の 5 つの値",
+    "encit": "話者ごとに 11 個の値: 体格の 4 つ、声門の 3 つ、構えの 4 つ",
     "ttsj": "100 話者の TTS。声に伝えるのは性別と声の高さだけ",
     "ttsjb": "同じ制御列を、話者の体格で鳴らす",
     "ttsjs": "同じ制御列を、話者の体格と声門で鳴らす",
+    "ttsjt": "同じ制御列を、話者の 11 個の値で鳴らす",
 }
 # the speakers whose voices the page's cards are in
 MANY_VOICES: dict[str, str] = {"jvs093": "女性 jvs093", "jvs095": "女性 jvs095", "jvs097": "男性 jvs097", "jvs100": "男性 jvs100"}
@@ -858,10 +862,10 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 <tbody>{lines}</tbody></table></div>"""
 
     whose = (
-        whose_table(("whose_spk", "whose_spk2"), jvs, {"real": "実録音", **{v: SPEAKER_LABELS[v] for v in ("enci", "encib", "encis")}}, "エンコーダ I の制御列。テストの 8 話者")
-        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {"real": "実録音", "encir": SPEAKER_LABELS["enci"], "encib": SPEAKER_LABELS["encib"], "encis": SPEAKER_LABELS["encis"]}, "同じく、全 100 話者のテスト文")
-        + whose_table(("whose_spk", "whose_spk2"), jvs, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs")}, "TTS が書いた制御列。テストの 8 話者")
-        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs")}, "同じく、全 100 話者のテスト文")
+        whose_table(("whose_spk", "whose_spk2"), jvs, {"real": "実録音", **{v: SPEAKER_LABELS[v] for v in ("enci", "encib", "encis", "encit")}}, "エンコーダ I の制御列。テストの 8 話者")
+        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {"real": "実録音", "encir": SPEAKER_LABELS["enci"], **{v: SPEAKER_LABELS[v] for v in ("encib", "encis", "encit")}}, "同じく、全 100 話者のテスト文")
+        + whose_table(("whose_spk", "whose_spk2"), jvs, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs", "ttsjt")}, "TTS が書いた制御列。テストの 8 話者")
+        + whose_table(("whose_speakers", "whose_speakers2"), everyone, {v: SPEAKER_LABELS[v] for v in ("ttsj", "ttsjb", "ttsjs", "ttsjt")}, "同じく、全 100 話者のテスト文")
     )
     variants = [v for v in SPEAKER_LABELS if v in summary["ja"]]
     sets = [("JVS 女性（4 話者）", summary["ja-F"]), ("JVS 男性（4 話者）", summary["ja-M"])]
@@ -870,7 +874,7 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
         + grid(sets, variants, SPEAKER_LABELS, SPEAKER_NOTES, "NISQA が予測する品質（1〜5）。", "quality")
         + grid(sets, variants, SPEAKER_LABELS, SPEAKER_NOTES, "NISQA のもう 1 つのモデルが予測する、合成音声の自然さ（1〜5）。", "natural")
     )
-    fitted = {name: json.loads((jvs / f"{name}.json").read_text())["speakers"] for name in ("speakers_body", "speakers") if (jvs / f"{name}.json").exists()}
+    fitted = {name: json.loads((jvs / f"{name}.json").read_text())["speakers"] for name in ("speakers_body", "speakers", "speakers_more") if (jvs / f"{name}.json").exists()}
     speakers = sorted({r["speaker"] for r in results["utterances"]})
     sexes = {r["speaker"]: r["sex"] for r in results["utterances"]}
 
@@ -885,11 +889,24 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 <caption>テストの 8 話者に当てはまった設定。体格は 0 が成人男性、1 が成人女性（これまでは性別どおりの 0 か 1）。子どもの軸は 0 が大人。声門は、開放率（1 周期のうち開いている割合）、明るさ（閉じ方の鋭さ）、張り。</caption>
 <thead><tr><th scope="col">話者</th><th scope="col">体格だけ: 女性</th><th scope="col">子ども</th><th scope="col">体格 + 声門: 女性</th><th scope="col">子ども</th><th scope="col">開放率</th><th scope="col">明るさ</th><th scope="col">張り</th></tr></thead>
 <tbody>{"".join(settings_row(n) for n in speakers)}</tbody></table></div>""" if fitted else ""
+    more = (
+        ("scale", "大きさ", ".2f"), ("pharynx", "咽頭", ".2f"), ("tongueRadius", "舌の半径", ".2f"), ("lipWidth", "唇の幅", ".1f"), ("openQuotient", "開放率", ".2f"), ("brightness", "明るさ", ".2f"),
+        ("tension", "張り", ".2f"), ("epilarynx", "喉頭の上の狭め", ".2f"), ("larynxShift", "喉頭の高さ", "+.2f"), ("velumShift", "鼻への通路", "+.2f"), ("rootShift", "舌の根", "+.2f"),
+    )  # fmt: skip
+    if "speakers_more" in fitted:
+        lines = "".join(
+            f'<tr><th scope="row">{esc(n)}<span class="sub">{"女性" if sexes[n] == "F" else "男性"}</span></th>' + "".join(f'<td class="num">{fitted["speakers_more"][n]["settings"][k]:{fmt}}</td>' for k, _, fmt in more) + "</tr>"
+            for n in speakers if n in fitted["speakers_more"]
+        )  # fmt: skip
+        settings += f"""<div class="scroll"><table>
+<caption>同じ 8 話者の、11 個の値の当てはめ。体格は 4 つの値をそのまま当てはめます（大きさと咽頭の割合は成人男性が 1、舌の半径と唇の幅は cm）。構えは、喉頭の上の狭め（0〜1。これまでは 0）と、エンコーダが書いた値に全フレームで足すずれ（喉頭の高さと舌の根は cm、鼻への通路は cm²）。</caption>
+<thead><tr><th scope="col">話者</th>{"".join(f'<th scope="col">{esc(label)}</th>' for _, label, _ in more)}</tr></thead>
+<tbody>{lines}</tbody></table></div>"""
 
     def card(r: dict[str, Any]) -> str:
         buttons = "".join(
             button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{r['variants'][v]['heard']}」／large-v3-turbo「{r['variants'][v]['heard2']}", "ref" if v == "real" else "", "small")
-            for v, label in (("real", "実録音"), ("enci", "これまで"), ("encib", "体格を当てはめ"), ("encis", "体格 + 声門を当てはめ")) if v in r["variants"]
+            for v, label in (("real", "実録音"), ("enci", "これまで"), ("encis", "体格 + 声門を当てはめ"), ("encit", "体格 4 値 + 声門 + 構えを当てはめ")) if v in r["variants"]
         )  # fmt: skip
         return f"""<article class="sentence">
 <p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
@@ -901,7 +918,7 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
     rows = sorted(results["utterances"], key=lambda r: r["id"])
     # the four speakers and sentences of the cards above: their recordings are on the page already
     picked = [[x for x in rows if x["speaker"] == name][3 + 5 * k] for k, name in enumerate(speakers[:2] + speakers[-2:])]
-    return f"""<section aria-labelledby="h-speaker"><h2 id="h-speaker">5. 話者ごとに体格と声門を当てはめる</h2>
+    return f"""<section aria-labelledby="h-speaker"><h2 id="h-speaker">5. 話者ごとに体格・声門・構えを当てはめる</h2>
 {{{{speaker_text}}}}
 {whose}
 {{{{speaker_costs}}}}
@@ -1469,10 +1486,11 @@ SPEAKER_TEXT = """<p>これまで、声に伝える話者の情報は性別（�
 <ul>
 <li><b>体格を当てはめ</b>: 体格の 2 つの値だけを話者ごとに決めます。声門は、日本語編で決めた「調整後の声」のままです。</li>
 <li><b>体格 + 声門を当てはめ</b>: 体格に加えて、声門の開放率・明るさ・張りも話者ごとに決めます。</li>
+<li><b>体格 4 値 + 声門 + 構えを当てはめ</b>: 体格を 2 つの軸ではなく 4 つの値（大きさ、咽頭の割合、舌の半径、唇の幅）で直接決め、成人男性より大きい声道も許します。さらに、エンコーダが書かない「構えの癖」を 4 つ決めます。喉頭の上の狭め（声の響き）と、喉頭の高さ・鼻への通路・舌の根のずれです。話者あたり 11 個の値です。</li>
 </ul>
-<p>当てはめには、話者ごとに学習用の 6 文（それぞれ最初の 4 秒）を使いました。候補の設定で鳴らし、話者照合モデル（WavLM）が「その話者の録音 20 文に近い」と判定する設定を探します。言葉が変わらないように、多言語のリスナーから見た録音との距離が増えるぶんは減点します。下の表は、当てはめに使っていないテストの文での結果です。</p>"""
+<p>当てはめには、話者ごとに学習用の 6 文（それぞれ最初の 4 秒）を使いました。候補の設定で鳴らし、話者照合モデル（WavLM）が「その話者の録音 20 文に近い」と判定する設定を探します（試行は順に 40 回、90 回、200 回）。言葉が変わらないように、多言語のリスナーから見た録音との距離が増えるぶんは減点します。下の表は、当てはめに使っていないテストの文での結果です。</p>"""
 SPEAKER_COSTS = """<p>当てはめで変わるのは声色だけではありません。聞き取りやすさと音の質への影響を、同じテストの文で測りました。</p>"""
-SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。実録音と、これまでの鳴らし方、2 通りの当てはめを聞き比べられます。</p>"""
+SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。実録音と、これまでの鳴らし方、「体格 + 声門」、「体格 4 値 + 声門 + 構え」を聞き比べられます（ページの容量の都合で、「体格だけ」の音は外しました）。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>
 <li><b>メルスペクトログラム</b>（100 帯域、93.75 Hz）。UnivNet ボコーダで音にします。この形のモデル（FastSpeech 2）の本来の出力先です。</li>
