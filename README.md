@@ -252,10 +252,41 @@ done
 uv run python -m pmvc.judge out/say --variants tts,tts2000,tts200,tts50,tts20,tts2000n,ttsj_jvs093,ttsj_jvs095,ttsj_jvs097,ttsj_jvs100 --add
 uv run python -m pmvc.natural out/say
 
-# 11. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
+# 11. 対照実験: 手順 9 と同じモデルに、ニューラルデコーダの潜在表現を書かせる(制御列のおかげか、モデルの形のおかげか)
+#   mel: メルスペクトログラム + UnivNet ボコーダ、encodec: EnCodec の量子化前の潜在表現、mimi: Mimi の 32 コードブックが表すベクトル
+#   3 つとも transformers の公開モデルをそのまま使う(24 kHz)。対照には FastSpeech 2 のピッチ予測器が付く
+for L in mel encodec mimi; do
+  uv run python -m pmvc.control copy out/ja --latent $L --ids $IDS       # デコーダの上限: 録音 → 潜在表現 → 音
+  uv run python -m pmvc.control train out/hfcm --latent $L --name ctl$L
+  uv run python -m pmvc.control train out/hfcm --latent $L --name ctl${L}2000 --limit 2000 --epochs 100 --every 10
+  uv run python -m pmvc.control train out/hfcm --latent $L --name ctl${L}200 --limit 200 --epochs 300 --every 25
+  uv run python -m pmvc.control train out/hfcm --latent $L --name ctl${L}50 --limit 50 --epochs 600 --every 50
+  uv run python -m pmvc.control train out/hfcm --latent $L --name ctl${L}20 --limit 20 --epochs 1000 --every 100
+done
+#   物理モデルの側は、誤差を揃えるために代役なしで学習し直す(--closed 0)。2,000 文は手順 9 の tts2000n
+uv run python -m pmvc.tts train out/hfcm --name tts200n --limit 200 --epochs 300 --every 25 --closed 0 $V
+uv run python -m pmvc.tts train out/hfcm --name tts50n --limit 50 --epochs 600 --every 50 --closed 0 $V
+uv run python -m pmvc.tts train out/hfcm --name tts20n --limit 20 --epochs 1000 --every 100 --closed 0 $V
+#   テストの 100 文と、録音のない 12 文
+C="ctlmel ctlmel2000 ctlmel200 ctlmel50 ctlmel20 ctlencodec ctlencodec2000 ctlencodec200 ctlencodec50 ctlencodec20 ctlmimi ctlmimi2000 ctlmimi200 ctlmimi50 ctlmimi20"
+for n in $C; do
+  uv run python -m pmvc.control speak out/ja --models out/hfcm/models --name $n --ids $IDS
+  uv run python -m pmvc.control speak out/say --models out/hfcm/models --name $n
+done
+for n in tts200n tts50n tts20n; do
+  uv run python -m pmvc.tts speak out/ja --models out/hfcm/models --name $n --ids $IDS --out $n
+  uv run python -m pmvc.tts speak out/say --models out/hfcm/models --name $n --out $n
+done
+N="tts,tts2000n,tts200n,tts50n,tts20n,$(echo $C | tr ' ' ',')"
+uv run python -m pmvc.judge out/ja --variants enci,copy_mel,copy_encodec,copy_mimi,$N --ids $IDS --name results_ctl
+uv run python -m pmvc.natural out/ja --name results_ctl
+uv run python -m pmvc.judge out/say --variants $N --name results_ctl
+uv run python -m pmvc.natural out/say --name results_ctl
+
+# 12. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
-# 12. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
+# 13. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
 bash docs/report/build.sh
 ```
 

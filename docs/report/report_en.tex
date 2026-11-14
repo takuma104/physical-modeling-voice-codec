@@ -46,9 +46,11 @@ renders (recordings: 1.6\%); on Japanese, 0.4\% of the phonemes (0.2\%). Noise o
 are those of a person who articulates poorly. Two sounds that recordings do not have were traced
 by listening to the simulator's own mechanics and removed through its public settings. A
 text-to-speech model that writes the track from phonemes is read as well as the encoder (0.2\%
-against 0.1\%), and it needs very little data: taught with 200 sentences (15 minutes) of one
-speaker it gets 0.5\% of the phonemes wrong, with 20 sentences (1.5 minutes) 7.7\%, and its
-renders still score as clean speech. Taught with a hundred speakers it reads sentences it never
+against 0.1\%). Taught with 200 sentences (15 minutes) of one speaker it gets 0.5\% of the
+phonemes wrong, with 20 sentences (1.5 minutes) 7.7\%. A control says what of this the latent
+does: the same model writing a mel spectrogram or EnCodec's latent is understood as well from
+as little data, but its sound degrades (predicted quality 2.6 and 1.9 with 20 sentences), while
+the physical model's stays clean (4.1). Taught with a hundred speakers it reads sentences it never
 saw as intelligibly as their recordings are (2.3\% against 2.5\%), although of a speaker only
 the sex and the pitch survive the codec.
 \end{abstract}
@@ -85,7 +87,9 @@ of the track (\S\ref{sec:perturb});
 \item two \textbf{artifacts of the simulator} found by listening, traced to its mechanics and
 removed through its settings, and settings for high voices (\S\ref{sec:voice});
 \item a \textbf{text-to-speech model} on the latent that matches the encoder and learns from
-minutes of speech (\S\ref{sec:tts}).
+minutes of speech (\S\ref{sec:tts});
+\item a \textbf{control}: the same model on the latents of three neural decoders, which says
+what the physical decoder contributes and what it does not (\S\ref{sec:control}).
 \end{itemize}
 Code is at the address above. The engine's code is unchanged throughout.
 
@@ -427,9 +431,8 @@ test sentences. Dashed: encoder I's renders of the recordings; dotted: the recor
 minutes of speech, is still read almost without error (0.5\%), and with 20 sentences, a minute
 and a half, large-v3-turbo still gets 92\% of the phonemes. A model that small has not heard
 every sound of the language, and it mispronounces; but its renders keep a predicted quality of
-4.16, and to the ear they are a person slurring words, barely but still intelligible. We take
-this as the strongest support for the hypothesis so far, and as the most useful property of the
-latent: sixteen slowly moving channels with a simple relation to phonemes need little data.
+4.16, and to the ear they are a person slurring words, barely but still intelligible. How
+much of this is the latent's doing is the question of \S\ref{sec:control}.
 
 \textbf{Does the stand-in matter here?} At 2,000 sentences, dropping the stand-in loss raises the
 listener distance it aims at from 0.217 to 0.234, but Whisper (0.3\% against 0.2\%) and the phone
@@ -476,6 +479,90 @@ recordings, for 2.8\% of the encoder's renders of them and for 2.4\% of the text
 model's. It never mistakes the sex, so this is chance among the fifty or so speakers of one sex.
 As it stands, the codec has one voice per sex, at any pitch.
 
+\section{Is it the latent? A control}\label{sec:control}
+The model of \S\ref{sec:tts} learns from little and fails gently. To see how much of that is the
+control track's doing, the same model was pointed at latents that a neural network decodes:
+\begin{itemize}
+\item a \textbf{mel spectrogram} (100 bands, 93.75 frames a second) for the UnivNet
+vocoder~\cite{univnet}, which is what a model of this shape was made for~\cite{fastspeech2};
+\item \textbf{EnCodec}'s latent before quantization~\cite{encodec} (128 values, 75 frames a second);
+\item \textbf{Mimi}'s latent~\cite{moshi} as its decoder takes it, the vector its 32 codebooks
+stand for (512 values, 12.5 frames a second).
+\end{itemize}
+All three are public models, used as they are at 24\,kHz. The text input, the durations, the
+layers, the schedule and the choice of weights are those of \S\ref{sec:tts}; the frame layers run
+at 100 frames a second, and what they write is averaged down to the latent's rate. The controls
+get FastSpeech\,2's pitch predictor, since their latents have no pitch channel, and the physical
+model is trained here without its stand-in loss, so that all four have the same losses: the error
+against the recording's latent, each value on its spread, and the durations'.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{fig_control_en.pdf}
+\caption{The same model writing four latents, on the 100 test sentences. Top: what Whisper
+misreads. Bottom: predicted quality; the bars on the right are each decoder at its best (a
+recording through the latent and back; for the control track, encoder I's renders).}
+\label{fig:control}
+\end{figure}
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{3pt}
+\caption{The control on the 100 test sentences, by the number of recordings the model is taught
+with. Best: the decoder's, as in Fig.~\ref{fig:control}. $^\dagger$The model of \S\ref{sec:tts},
+with its stand-in loss.}
+\label{tab:control}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& 20 & 50 & 200 & 2,000 & 18,655 & Best\\
+\midrule
+\multicolumn{7}{@{}l}{\emph{Whisper large-v3-turbo, phonemes wrong (\%)}}\\
+Control track & 8.8 & 3.2 & 0.7 & 0.3 & 0.2$^\dagger$ & 0.1\\
+Mel spectrogram & 7.7 & 2.8 & 0.6 & 0.0 & 0.4 & 0.1\\
+EnCodec & 6.6 & 2.6 & 0.7 & 0.1 & 0.1 & 0.1\\
+Mimi & 23.4 & 11.2 & 2.6 & 0.3 & 0.3 & 0.1\\
+\multicolumn{7}{@{}l}{\emph{NISQA}}\\
+Control track & 4.06 & 4.50 & 4.77 & 4.81 & 4.78$^\dagger$ & 4.75\\
+Mel spectrogram & 2.57 & 3.24 & 3.53 & 3.64 & 3.68 & 4.45\\
+EnCodec & 1.85 & 2.10 & 2.35 & 3.27 & 2.59 & 4.36\\
+Mimi & 2.62 & 3.55 & 3.50 & 4.65 & 3.31 & 4.81\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{The words need little data, whatever the latent.} On the test sentences the spectrogram
+and EnCodec are read as well as the control track at every size (Fig.~\ref{fig:control},
+Table~\ref{tab:control}): with 200 sentences 0.6\%, 0.7\% and 0.7\% of the phonemes are wrong,
+with 20 sentences 7.7\%, 6.6\% and 8.8\%. Only Mimi's wide, slow latent needs more. So the small
+appetite for data of \S\ref{sec:tts} is the model's (phonemes and their accent in, durations
+given, nothing autoregressive), not the control track's. Nor is the track easier to predict than
+a spectrogram: on held-out sentences the model's error is the same share of a value's spread for
+both (0.17 with 2,000 sentences), and far larger for the two codecs (0.46 and 0.47).
+
+\textbf{What differs is the sound.} The simulator's renders keep a predicted quality of 4.1 to
+4.8 at every size. The spectrogram's are at 2.6 to 3.7 where its vocoder gives 4.45 for a real spectrogram, EnCodec's at 1.9 to 3.3 (4.36) and Mimi's at 2.6 to 4.7 (4.81). An error of the same relative size costs the
+vocoder a point and the simulator nothing: a blurred spectrogram is not the spectrogram of a
+voice, while a blurred articulation is still an articulation. More data does not
+close the gap: with all 18,655 sentences the spectrogram's renders are at 3.68, EnCodec's at 2.59
+and Mimi's at 3.31, though all are then read almost without error. Nor is the codecs' quality
+monotone in the data: with 2,000 sentences Mimi's renders reach 4.65 and EnCodec's 3.27, both
+higher than with all. A model that can no longer memorize averages. Its predictions keep 0.95
+of the control track's frame-to-frame movement and 0.78 of the spectrogram's; of EnCodec's they
+keep 0.61 with 2,000 sentences and 0.49 with all. The track has little detail of the kind that
+regression loses. (Every cell is one training run; how much of the codecs' ups and downs is the
+run we cannot say.)
+
+\textbf{Sentences unlike the corpus.} On the twelve sentences from outside the corpus
+(\S\ref{sec:tts}) the controls lose more than on the test sentences: with 200 sentences
+large-v3-turbo gets 4.0\% (spectrogram) and 3.0\% (EnCodec) wrong against 0.4\% for the control
+track. Twelve sentences give wide intervals ([0.8, 9.2], [0.2, 7.5] and [0.0, 1.0]).
+
+\textbf{What the control does not say.} The neural decoders give back the speaker, whose voice
+their best is; the simulator has a voice of its own (\S\ref{sec:tts}). They also have none of its
+sharp bursts (0.1 to 0.3 releases a second, 25\,dB under the speech, as in recordings; the
+simulator's 0.5 to 0.6 at 16\,dB). The decoders were used as they are: a vocoder tuned on predicted
+spectrograms, or a generative model of the latent in place of regression, are the usual remedies
+for the sound of the first two and were not tried. And the quality is one predictor's.
+
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
 say the same thing; asking that the track sound right, through a crude model of the simulator,
@@ -484,9 +571,12 @@ listener decides what is learned.} An English listener did not hear Japanese err
 distance to it kept falling while the judges did not move. \emph{Listening found what the measures
 missed.} Each artifact of \S\ref{sec:voice} was first heard, then located by ear, and only then
 measured, twice with a measure that looked in the wrong place; and a quality predictor optimized
-on its own found loopholes. \emph{The latent is easy to predict.} A plain non-autoregressive model
-matches the encoder and needs a hundredth of the data it was given; the same model learns a
-hundred speakers from twelve minutes of each, or from 35 seconds.
+on its own found loopholes. \emph{The words are cheap; the sound is
+where the decoder counts.} A plain non-autoregressive model needs a hundredth of the data it
+was given to be understood, and learns a hundred speakers from 35 seconds of each. The control
+shows that this is not the control track's merit: a spectrogram is learned as fast. What the
+physical decoder adds is that the little-taught model still sounds like clean speech, where the
+neural decoders' sound degrades.
 
 \textbf{Limitations.} The codec carries what is said, its timing and its pitch, not who says it:
 the voice is told a speaker's sex and median pitch, the timbre is the simulator's, and a
@@ -495,8 +585,9 @@ of stops are sharper than a speaker's, more so in the text-to-speech model's ren
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
 and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
 quality predictor, with one training run per model, and the listening is one person's. The
-perturbation test and the comparison of training sizes say how this codec fails, not how a
-neural codec trained on the same data would; that comparison is the next step. Accent comes from
+control used the neural decoders as they are, with regression; a vocoder tuned on predicted
+spectrograms or a generative model of the latent would raise their sound, and that comparison
+is still to be made. Accent comes from
 Open JTalk's estimate and is wrong where it is.
 
 \section{Conclusion}
@@ -504,10 +595,12 @@ A physical model of the voice can be the decoder of a speech codec without being
 or modified: an encoder taught through a learned stand-in writes its control track from a
 recording in one pass, and the renders are understood about as well as the recordings. Errors in
 this latent come out as poor articulation. The simulator's own artifacts could be traced and
-removed through its settings because every part of it means something. And the latent is easy
-to write from text: a small model matches the encoder, fifteen minutes of one speaker are
-enough to teach it, and with a hundred speakers it reads unseen sentences as intelligibly as
-their recordings.
+removed through its settings because every part of it means something. And the latent can be
+written from text: a small model matches the encoder, fifteen minutes of one speaker are enough
+for it to be understood, and with a hundred speakers it reads unseen sentences as intelligibly
+as their recordings. That little data suffices is the model's doing, as a control with a
+spectrogram and two neural codecs shows; that the result still sounds like clean speech is the
+physical decoder's.
 
 \section*{Acknowledgments}
 We thank Jameson Hodge for CHIMERA, and the authors of the TSP speech database, JVS, JSUT,
@@ -553,6 +646,9 @@ teacher. \emph{Cognitive Science} 16(3), 1992.
 self-supervised learning of speech representations. \emph{NeurIPS}, 2020.
 \bibitem{mhubert} M.~Zanon~Boito, V.~Iyer, N.~Lagos, L.~Besacier, I.~Calapodescu. mHuBERT-147: A
 compact multilingual HuBERT model. \emph{Interspeech}, 2024.
+\bibitem{univnet} W.~Jang, D.~Lim, J.~Yoon, B.~Kim, J.~Kim. UnivNet: A neural vocoder with
+multi-resolution spectrogram discriminators for high-fidelity waveform generation.
+\emph{Interspeech}, 2021.
 \bibitem{wavlm} S.~Chen et al. WavLM: Large-scale self-supervised pre-training for full stack
 speech processing. \emph{IEEE JSTSP} 16(6), 2022.
 \bibitem{fastspeech2} Y.~Ren et al. FastSpeech 2: Fast and high-quality end-to-end text to speech.

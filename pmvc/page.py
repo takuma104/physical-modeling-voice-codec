@@ -186,6 +186,16 @@ MANY_NOTES: dict[str, str] = {
     "ttsj2000": "1 話者あたり 20 文（約 2 分）",
     "ttsj500": "1 話者あたり 5 文（約 35 秒）",
 }
+# the control: the same model on the latents of neural decoders (`pmvc.control`). For each, the
+# label, a note, the variant of the model taught with so many recordings ("" for all), and the
+# variant that is the decoder's best (a recording through it and back; the encoder's render)
+CONTROL_LATENTS: dict[str, tuple[str, str, str, str]] = {
+    "track": ("CHIMERA の制御列", "物理モデル。対照と同じ誤差で学習（代役なし）", "tts{}n", "enci"),
+    "mel": ("メルスペクトログラム", "UnivNet ボコーダで音にする。この形のモデルの標準の出力先", "ctlmel{}", "copy_mel"),
+    "encodec": ("EnCodec の潜在表現", "量子化前の連続値。128 次元、75 Hz", "ctlencodec{}", "copy_encodec"),
+    "mimi": ("Mimi の潜在表現", "32 コードブックが表すベクトル。512 次元、12.5 Hz", "ctlmimi{}", "copy_mimi"),
+}
+CONTROL_SIZES: dict[str, str] = {"20": "20 文", "50": "50 文", "200": "200 文", "2000": "2,000 文", "": "18,655 文"}
 # the speakers whose voices the page's cards are in
 MANY_VOICES: dict[str, str] = {"jvs093": "女性 jvs093", "jvs095": "女性 jvs095", "jvs097": "男性 jvs097", "jvs100": "男性 jvs100"}
 VOICE_LABELS: dict[str, str] = {
@@ -1018,6 +1028,80 @@ def many_section(jvs: Path, everyone: Path, say: Path, clips: dict[str, str]) ->
 </section>"""
 
 
+def control_section(ja: Path, say: Path, clips: dict[str, str]) -> str:
+    """The control: `pmvc.judge`'s results for the same model writing neural decoders' latents
+    (`ja`/results_ctl.json, `say`/results_ctl.json). Nothing before the first exists."""
+    if not (ja / "results_ctl.json").exists():
+        return ""
+    results = json.loads((ja / "results_ctl.json").read_text())
+    summary = results["summary"][results["utterances"][0]["speaker"]]
+    free = json.loads((say / "results_ctl.json").read_text()) if (say / "results_ctl.json").exists() else None
+    latents = {k: v for k, v in CONTROL_LATENTS.items() if any(v[2].format(n) in summary for n in CONTROL_SIZES)}
+
+    def named(name: str, n: str) -> str:
+        """The variant of a latent's model taught with `n` recordings; of the track with all of
+        them there is only the model with the stand-in."""
+        v = name.format(n)
+        return "tts" if v == "ttsn" and v not in summary else v
+
+    def table(group: dict[str, Any], key: str, caption: str, best: bool = True) -> str:
+        def cell(v: str) -> str:
+            m = group.get(v, {})
+            if key not in m:
+                return '<td class="num">–</td>'
+            return f'<td class="num">{m[key][0]:.1f}</td>' if isinstance(m[key], list) else f'<td class="num">{m[key]:.2f}</td>'
+
+        rows = "".join(
+            f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(sub)}</span></th>' + "".join(cell(named(name, n)) for n in CONTROL_SIZES) + (cell(top) if best else "") + "</tr>"
+            for label, sub, name, top in latents.values()
+        )
+        head = "".join(f'<th scope="col">{esc(label)}</th>' for label in CONTROL_SIZES.values()) + ('<th scope="col">デコーダの上限</th>' if best else "")
+        return f"""<div class="scroll"><table>
+<caption>{caption}</caption>
+<thead><tr><th scope="col">モデルが書くもの</th>{head}</tr></thead>
+<tbody>{rows}</tbody></table></div>"""
+
+    tables = (
+        table(summary, "rate2", f"テストの {summary['n']} 文。Whisper large-v3-turbo の音素誤り率 %。列は学習に使った録音の数。「デコーダの上限」は、録音をその潜在表現にして戻した音（制御列ではエンコーダ I の合成音）。")
+        + table(summary, "rate", "同じく Whisper small の音素誤り率 %。")
+        + "{{control_between}}"
+        + table(summary, "quality", "NISQA が予測する品質（1〜5）。")
+    )
+    if free is not None:
+        tables += table(free["summary"]["ja"], "rate2", f"録音のない {free['summary']['ja']['n']} 文（第 2 節の文）。Whisper large-v3-turbo の音素誤り率 %。", best=False)
+        tables += table(free["summary"]["ja"], "quality", "同じ文での NISQA。", best=False)
+
+    def card(where: Path, r: dict[str, Any], real: bool) -> str:
+        def clip(v: str, label: str, kind: str = "") -> str:
+            c = r["variants"][v]
+            return button(clips, f"{r['id']}/{v}", where / v / f"{r['id']}.wav", label, f"{c['heard']}」／large-v3-turbo「{c['heard2']}", kind, "small")
+
+        groups = "".join(
+            f'<div class="kind"><span class="kind-label">{esc(size)}で学習</span><div class="clips">'
+            + "".join(clip(named(name, n), label) for label, _, name, _ in latents.values() if named(name, n) in r["variants"])
+            + "</div></div>"
+            for n, size in CONTROL_SIZES.items() if n in ("20", "200", "")
+        )
+        first = f'<div class="clips">{clip("real", "実録音", "ref")}</div>' if real else ""
+        return f"""<article class="sentence">
+<p class="meta">{esc(r["id"])}</p>
+<p class="text">{esc(r["text"])}</p>
+{first}{groups}
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+
+    tested = sorted(results["utterances"], key=lambda r: r["id"])
+    cards = "".join(card(ja, r, True) for r in tested[19::40])
+    if free is not None:
+        cards += "".join(card(say, r, False) for r in sorted(free["utterances"], key=lambda r: r["id"])[1:2])
+    return f"""<section aria-labelledby="h-control"><h2 id="h-control">5. 対照: 同じモデルにニューラルデコーダの潜在表現を書かせる</h2>
+{{{{control_text}}}}
+{tables}
+{{{{control_sounds}}}}
+<div class="stack">{cards}</div>
+</section>"""
+
+
 def shell(title: str, lede: str, notes: str, body: str, credits: str, clips: dict[str, str]) -> str:
     return (
         PAGE.replace("{{title}}", esc(title)).replace("{{lede}}", esc(lede)).replace("{{notes}}", notes).replace("{{body}}", body)
@@ -1097,6 +1181,7 @@ def build_tts(ja: Path, say: Path, jvs: Path, everyone: Path, notes: str, en_url
     clips: dict[str, str] = {}
     body = tts_section(ja, say, clips).replace("{{tts_text}}", TTS_TEXT).replace("{{tts_between}}", TTS_BETWEEN).replace("{{say_text}}", SAY_TEXT).replace("{{few_text}}", FEW_TEXT)
     body += many_section(jvs, everyone, say, clips).replace("{{many_text}}", MANY_TEXT).replace("{{many_whose}}", MANY_WHOSE).replace("{{many_say}}", MANY_SAY)
+    body += control_section(ja, say, clips).replace("{{control_text}}", CONTROL_TEXT).replace("{{control_between}}", CONTROL_BETWEEN).replace("{{control_sounds}}", CONTROL_SOUNDS)
     links = "".join(f'<li><a href="{esc(url)}">{esc(title)}</a>：{esc(what)}</li>' for title, url, what in ((TITLE_JA, ja_url, "エンコーダと声の調整（日本語の録音）"), (TITLE_EN, en_url, "韻律移植、摂動、最初のエンコーダ（英語の録音）")) if url)
     if links:
         body += f'<section aria-labelledby="h-more"><h2 id="h-more">これまでの実験</h2><ul>{links}</ul></section>'
@@ -1272,6 +1357,15 @@ CREDITS_JA = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）、JSUT と JVS
 TITLE_TTS = "CHIMERA 日本語 TTS の試聴"
 LEDE_TTS = "テキストから制御列（100 Hz × 21 チャネル）を書くモデルを作り、物理モデル音声合成 CHIMERA に鳴らさせた結果です。合成エンジンは無改造です。ボタンを押すと再生し、下に Whisper の聞き取りが出ます。"
 CREDITS_TTS = "録音は Hi-Fi-CAPTAIN（NICT、CC BY-NC-SA 4.0）の日本語男性話者と、JVS（東京大学 猿渡研究室。一部の音声だけを載せています）。読みとアクセントの推定は Open JTalk。合成は CHIMERA（MIT License）。再生用に MP3 96 kbps へ変換し、音量をそろえています。"
+CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
+<ul>
+<li><b>メルスペクトログラム</b>（100 帯域、93.75 Hz）。UnivNet ボコーダで音にします。この形のモデル（FastSpeech 2）の本来の出力先です。</li>
+<li><b>EnCodec の潜在表現</b>（量子化前の連続値、128 次元、75 Hz）。</li>
+<li><b>Mimi の潜在表現</b>（32 コードブックが表すベクトル、512 次元、12.5 Hz）。Pocket TTS が使うコーデックの公開版です。</li>
+</ul>
+<p>どれも公開されているモデルをそのまま使い、24 kHz で動かしています。対照のモデルには、FastSpeech 2 のピッチ予測器を付けました。制御列にはピッチのチャネルがありますが、これらの潜在表現にはないためです。物理モデルの側は、条件を揃えるために、代役を通した誤差を外して学習し直しました（18,655 文の列だけは、第 1 節のモデルです）。残す重みの選び方は、どのモデルも同じです。</p>"""
+CONTROL_BETWEEN = """<p class="small">NISQA は、実録音を 4.56 と付けます。物理モデルの合成音がそれより高いのは、CHIMERA の音が雑音のないきれいな音だからで、話者に似ているからではありません。ニューラルデコーダの上限（録音を潜在表現にして戻した音）は、話者の声そのものです。</p>"""
+CONTROL_SOUNDS = """<p>下のカードで、20 文、200 文、18,655 文で学習したモデルを、出力先ごとに聞き比べられます。最後のカードは、第 2 節の録音のない文です。</p>"""
 MANY_TEXT = """<p>同じモデルを、JVS の 100 話者（女性 51 人、男性 49 人）で学習しました。話者ごとにベクトルを 1 つ持たせ、すべての音素とフレームに足します。声の高さは、話者ごとの平均と幅を基準に書きます。ほかは第 1 節のモデルと同じです。</p>
 <p>学習データは、全話者が読む 100 文のうち 1〜70 番と、話者ごとに異なる 30 文で、合わせて 9,998 文（約 20 時間。1 話者あたり約 100 文、12 分）です。テストは、エンコーダのテストと同じ 8 話者（女性 4 人、男性 4 人）が読む、どの話者の学習にも出てこない 25 文です。話者の声は学習に出てきますが、文は出てきません。鳴らし方は日本語編で決めた「調整後の声」で、声の高い話者には高い声の設定が入ります。</p>"""
 MANY_WHOSE = """<p>声に伝えている話者の情報は、性別と声の高さの中央値だけです。それ以外の話者の違いは、制御列に書かれていなければ失われます。どれだけ残っているかを、話者照合モデルに判定させました。このモデルは日本語もこのコーパスも学習していません。</p>"""
