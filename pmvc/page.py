@@ -895,10 +895,27 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 <thead><tr><th scope="col">条件</th><th scope="col">女性: 本人</th><th scope="col">本人との類似度</th><th scope="col">他人との類似度</th><th scope="col">男性: 本人</th><th scope="col">本人との類似度</th><th scope="col">他人との類似度</th><th scope="col">女性: 本人（別モデル）</th><th scope="col">男性: 本人（別モデル）</th></tr></thead>
 <tbody>{lines}</tbody></table></div>"""
 
-    nose = apart_table(("whose_nose", "whose_nose2"), {
+    def nasal_table(rows: dict[str, str]) -> str:
+        """The renders' nasals and vowels against the recordings' (`pmvc.nasals`); nothing before it is there."""
+        if not (jvs / "nasals.json").exists():
+            return ""
+        got = json.loads((jvs / "nasals.json").read_text())["sexes"]
+        keys = ("level", "nasal", "beside", "h2", "h3")
+
+        def cells(v: str) -> str:
+            return "".join(f'<td class="num">{got[x][v][k] - (got[x]["real"][k] if v != "real" else 0.0):+.1f}</td>' for x in "FM" for k in keys)
+
+        lines = "".join(f'<tr><th scope="row">{esc(label)}</th>{cells(v)}</tr>' for v, label in rows.items() if v in got["F"])
+        heads = "".join(f'<th scope="col">{x}{esc(h)}</th>' for x in ("女性: ", "男性: ") for h in ("鼻音の強さ", "鼻音の第 2 倍音", "鼻音の隣の母音の第 2 倍音", "母音の第 2 倍音", "母音の第 3 倍音"))
+        return f"""<div class="scroll"><table>
+<caption>録音と合成音の比較（テストの女性 {got["F"]["n"]} 文、男性 {got["M"]["n"]} 文）。単位は dB。1 行目は録音の値、2 行目からは録音との差で、0 に近いほど録音どおりです。「鼻音の強さ」は、同じ文の鼻音から離れた母音に対する鼻音（m、n、ん）の強さ。倍音はどれも基本波に対する強さで、「母音」は鼻音から離れた母音です。</caption>
+<thead><tr><th scope="col">条件</th>{heads}</tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    with_sinus = {
         "real": "実録音", "enci": "これまで", "encin": "これまで、副鼻腔を大きく", "encib": "体格を当てはめ", "encibn": "体格だけ、副鼻腔を大きく", "encis": "体格 + 声門を当てはめ",
         "encisn": "体格 + 声門、副鼻腔を大きく", "encit": "体格 4 値 + 声門 + 構えを当てはめ", "encitn": "体格 4 値 + 声門 + 構え、副鼻腔を大きく",
-    })  # fmt: skip
+    }  # fmt: skip
     variants = [v for v in SPEAKER_LABELS if v in summary["ja"]]
     sets = [("JVS 女性（4 話者）", summary["ja-F"]), ("JVS 男性（4 話者）", summary["ja-M"])]
     costs = (
@@ -956,7 +973,7 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 {{{{speaker_costs}}}}
 {costs}
 {settings}
-{"{{speaker_nose}}" + nose if nose else ""}
+{SPEAKER_NOSE.replace("{{nasal_table}}", nasal_table({**with_sinus, "real": "実録音（値）"})).replace("{{apart_table}}", apart_table(("whose_nose", "whose_nose2"), with_sinus)) if (jvs / "whose_nose.json").exists() else ""}
 {{{{speaker_sounds}}}}
 <div class="stack">{"".join(card(r) for r in picked)}</div>
 </section>"""
@@ -1326,7 +1343,7 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     body += tuned_section(d, ja, jvs, fit, clips).replace("{{tuned_text}}", TUNED_TEXT).replace("{{tuned_voice}}", TUNED_VOICE).replace("{{tuned_rule}}", TUNED_RULE).replace("{{tuned_walls}}", TUNED_WALLS).replace("{{tuned_closure}}", TUNED_CLOSURE).replace("{{tuned_clicks}}", TUNED_CLICKS).replace("{{tuned_check}}", TUNED_CHECK)
     retaught = retaught_section(d, ja, jvs, clips).replace("{{retaught_text}}", RETAUGHT_TEXT).replace("{{retaught_sounds}}", RETAUGHT_SOUNDS)
     body += retaught
-    fitted = speaker_section(jvs, everyone, clips).replace("{{speaker_text}}", SPEAKER_TEXT).replace("{{speaker_costs}}", SPEAKER_COSTS).replace("{{speaker_nose}}", SPEAKER_NOSE).replace("{{speaker_sounds}}", SPEAKER_SOUNDS) if everyone is not None else ""
+    fitted = speaker_section(jvs, everyone, clips).replace("{{speaker_text}}", SPEAKER_TEXT).replace("{{speaker_costs}}", SPEAKER_COSTS).replace("{{speaker_sounds}}", SPEAKER_SOUNDS) if everyone is not None else ""
     body += fitted
     last = (5 if retaught else 4) + (1 if fitted else 0)
     said = pointer(last, "テキストからの合成（TTS）", "エンコーダ I の制御列を手本に、テキストから制御列を書くモデルを作った結果は別のページにあります: ", TITLE_TTS, tts_url, "tts")
@@ -1524,17 +1541,19 @@ SPEAKER_TEXT = """<p>これまで、声に伝える話者の情報は性別（�
 <p>当てはめには、話者ごとに学習用の 6 文（それぞれ最初の 4 秒）を使いました。候補の設定で鳴らし、話者照合モデル（WavLM）が「その話者の録音 20 文に近い」と判定する設定を探します（試行は順に 40 回、90 回、200 回）。言葉が変わらないように、多言語のリスナーから見た録音との距離が増えるぶんは減点します。下の表は、当てはめに使っていないテストの文での結果です。</p>"""
 SPEAKER_COSTS = """<p>当てはめで変わるのは声色だけではありません。聞き取りやすさと音の質への影響を、同じテストの文で測りました。</p>"""
 SPEAKER_NOSE = """<h3>女性の声が鼻詰まりのように聞こえる点</h3>
-<p>試聴で、女性 2 人の合成音は「鼻にかかる感じが強く、鼻が詰まった状態の発話のようだ」という指摘がありました。そこで、録音と合成音を音素ごとに比べました（テストの文の 5 分の 1、女性 20 文と男性 20 文）。</p>
+<p>試聴で、女性 2 人の合成音は「鼻にかかる感じが強く、鼻が詰まった状態の発話のようだ」という指摘がありました。そこで、録音と合成音を音素の種類ごとに比べました（下の表）。</p>
 <ul>
-<li><b>鼻音（m、n、ん）が弱い。</b>女性の録音では、鼻音は母音より 1.5 dB 強く出ています。合成音では逆に 3 dB ほど弱く、録音との差は 4.8 dB です（「体格 + 声門」では 6.4 dB）。男性での差は 2.3 dB です。</li>
-<li><b>鼻音の音色が違う。</b>女性の録音の鼻音はほとんど基本波（約 260 Hz）だけで、第 2 倍音はそれより 21 dB 弱くなっています。合成音では 10 dB しか弱くありません（録音との差は 11 dB。「体格 + 声門」では 16 dB）。男性での差は 0 dB です。</li>
-<li><b>鼻音の隣の母音でも、低い響きが足りない。</b>録音では、鼻音に隣り合う母音でも基本波が 3 dB ほど強まります。合成音では、ほとんど強まりません。</li>
-<li><b>「体格 + 声門」の当てはめは、女性の母音の倍音を強めていた。</b>第 2・第 3 倍音が録音より 7 dB と 9 dB 強くなります（当てはめる前は 2 dB と 5 dB）。照合モデルに合わせて、声門の開放率が下がったためです。</li>
+<li><b>鼻音（m、n、ん）が弱い。</b>女性の録音では、鼻音は母音より 1.6 dB 強く出ています。合成音では逆に 3 dB ほど弱く、録音との差は 4.8 dB です（「体格 + 声門」では 6.2 dB）。男性での差は 2.3 dB です。</li>
+<li><b>鼻音の音色が違う。</b>女性の録音の鼻音はほとんど基本波（約 260 Hz）だけで、第 2 倍音はそれより 20 dB 弱くなっています。合成音では 10 dB しか弱くありません（録音との差は 10 dB。「体格 + 声門」では 15 dB）。男性での差は 2 dB です。</li>
+<li><b>鼻音の隣の母音でも、低い響きが足りない。</b>録音では、鼻音に隣り合う母音でも基本波が 4 dB ほど強まります。合成音では、ほとんど強まりません。</li>
+<li><b>「体格 + 声門」の当てはめは、女性の母音の倍音を強めていた。</b>第 2・第 3 倍音が録音より 6.9 dB と 9.1 dB 強くなります（当てはめる前は 1.6 dB と 4.5 dB）。照合モデルに合わせて、声門の開放率が下がったためです。</li>
 </ul>
+{{nasal_table}}
 <p>どれも「鼻を通る低い響きが足りない」向きのずれで、鼻が詰まった声の特徴と合います。ただし、指摘された聞こえ方の原因がこれだと確かめたわけではありません。確かめるための音を下のカードに載せました。</p>
-<p>次に、制御列や設定を 1 つずつ変えて鳴らし、どれが効くかを調べました。鼻への通路（軟口蓋）を閉じ切っても、母音は変わりません。通路を 2 倍に開いても、鼻孔を狭めても、鼻音はほとんど変わりません。効いたのは副鼻腔の容積でした。CHIMERA の鼻腔には副鼻腔が 1 つ（14 cm³）付いていて、鼻音の 700 Hz 付近を削ります。人の上顎洞は左右を合わせて 30 cm³ ほどです。容積を 24 cm³ にすると、削る位置が 500 Hz 付近に下がり、女性の鼻音の第 2 倍音のずれは 11 dB から 4 dB に縮みます（母音は変わりません）。エンジンは無改造で、ラッパーから鼻腔の設定を渡しています。</p>
-<p>鼻音の音量の不足（約 4.5 dB）は残りました。CHIMERA の鼻腔は壁の損失が大きく、低い共鳴が鈍いためで、ラッパーから変えられる設定では直せませんでした。</p>
-<p>下の表は、話者の照合を女性と男性に分けたものです。副鼻腔を大きくすると、女性では本人の録音との類似度が 0.01 ほど上がり、男性では下がります（11 個の値を当てはめた声では変わりません）。男性の鼻音は、もとの副鼻腔で録音に合っているためです。聞き取りやすさと NISQA は変わりません（上の表の「副鼻腔を大きく」の行）。この表からは、体格の当てはめで本人と判定されるようになったのは主に女性で、男性は 11 個の値を当てはめてようやく 40% になることも分かります。</p>"""
+<p>次に、制御列や設定を 1 つずつ変えて鳴らし、どれが効くかを調べました。鼻への通路（軟口蓋）を閉じ切っても、母音は変わりません。通路を 2 倍に開いても、鼻孔を狭めても、鼻音はほとんど変わりません。効いたのは副鼻腔の容積でした。CHIMERA の鼻腔には副鼻腔が 1 つ（14 cm³）付いていて、鼻音の 700 Hz 付近を削ります。人の上顎洞は左右を合わせて 30 cm³ ほどです。容積を 24 cm³ にすると、削る位置が 500 Hz 付近に下がり、女性の鼻音の第 2 倍音のずれは 10 dB から 5 dB に縮みます（鼻音から離れた母音は変わりません）。エンジンは無改造で、ラッパーから鼻腔の設定を渡しています。</p>
+<p>鼻音の強さの不足（4.6 dB）は残りました。CHIMERA の鼻腔は壁の損失が大きく、低い共鳴が鈍いためで、ラッパーから変えられる設定では直せませんでした。</p>
+<p>下の表は、話者の照合を女性と男性に分けたものです。副鼻腔を大きくすると、女性では本人の録音との類似度が 0.01 ほど上がり、男性では下がります（11 個の値を当てはめた声では変わりません）。聞き取りやすさと NISQA は変わりません（上の表の「副鼻腔を大きく」の行）。この表からは、体格の当てはめで本人と判定されるようになったのは主に女性で、男性は 11 個の値を当てはめてようやく 40% になることも分かります。</p>
+{{apart_table}}"""
 SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。女性 2 人では、実録音、これまでの鳴らし方、「体格 + 声門」に加えて、副鼻腔を大きくした 2 通りを聞き比べられます。「体格 + 声門、副鼻腔を大きく」は鼻音の音色だけを変えたもの、「体格だけ、副鼻腔を大きく」はさらに声門を当てはめる前の声に戻したものです。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です（試聴で「体格 + 声門」と聞き分けられなかったので、ページの容量の都合で片方にしました）。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>

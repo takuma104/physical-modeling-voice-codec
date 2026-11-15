@@ -337,6 +337,8 @@ done
 for m in "whose_nose" "whose_nose2 --model microsoft/unispeech-sat-base-plus-sv"; do   # 結果には女性と男性に分けた値も入る
   uv run python -m pmvc.whose out/jvs --variants enci,encin,encib,encibn,encis,encisn,encit,encitn --split test --name $m
 done
+#   鼻音と母音の倍音を、録音と合成音で音素の種類ごとに比べる(鼻音の強さ、鼻音とその隣の母音・離れた母音での倍音の強さ)
+uv run python -m pmvc.nasals out/jvs --variants enci,encin,encib,encibn,encis,encisn,encit,encitn --split test
 uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt,encisn,encibn --split test --name results_spk --add
 uv run python -m pmvc.natural out/jvs --name results_spk
 
