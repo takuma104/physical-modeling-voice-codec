@@ -219,6 +219,74 @@ impl Voice {
         Ok(())
     }
 
+    /// The nose's shape, set directly: a JSON object with any of `profile` (the nasal tube's area
+    /// from the velum to the nostrils, as [place, cm²] pairs with the place from 0 to 1, joined by
+    /// straight lines), `length` (cm), `sinus` (cm², the opening of the maxillary sinus into the
+    /// nasal tube) and `sinusVolume` (cm³). All for an adult man's body: they are scaled to the voice's body as the
+    /// engine scales its own (lengths by the body's scale, areas by its square). The engine builds
+    /// the nose once, from constants, and no posture changes it.
+    fn set_nose(&mut self, patch: &str) -> PyResult<()> {
+        let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
+        let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
+        let a = &mut self.v.airway;
+        let (k, t) = (a.body.scale, a.nasal);
+        let number = |name: &str| -> PyResult<Option<f64>> { obj.get(name).map(|x| x.as_f64().ok_or_else(|| bad(format!("{name}: a number is needed")))).transpose() };
+        let length = number("length")?.map(|x| x * k);
+        if let Some(l) = length {
+            if l / (t.n as f64) < a.dx_stable {
+                return Err(bad(format!("length: under {:.2} cm the nasal tube's sections are shorter than a time step allows", a.dx_stable * t.n as f64 / k)));
+            }
+        }
+        let areas: Vec<f64> = match obj.get("profile") {
+            Some(p) => {
+                let pts: Vec<(f64, f64)> = serde_json::from_value(p.clone()).map_err(bad)?;
+                if pts.is_empty() {
+                    return Err(bad("profile: at least one [place, area] pair is needed"));
+                }
+                (0..t.n)
+                    .map(|i| {
+                        let u = (i as f64 + 0.5) / t.n as f64;
+                        let j = pts.iter().position(|q| q.0 >= u).unwrap_or(pts.len());
+                        let area = if j == 0 {
+                            pts[0].1
+                        } else if j == pts.len() {
+                            pts[j - 1].1
+                        } else {
+                            let (p0, p1) = (pts[j - 1], pts[j]);
+                            p0.1 + (p1.1 - p0.1) * (u - p0.0) / (p1.0 - p0.0).max(1e-9)
+                        };
+                        area * k * k
+                    })
+                    .collect()
+            }
+            None => (0..t.n).map(|i| a.net.area[t.node(i)]).collect(),
+        };
+        if obj.contains_key("profile") || length.is_some() {
+            a.net.set_tube_targets(t, &areas, length, None);
+        }
+        if let Some(x) = number("sinus")? {
+            // the sinus's port is the second branch the engine adds after the velum's
+            a.net.set_port_area(a.velum_port + 2, x * k * k);
+        }
+        if let Some(x) = number("sinusVolume")? {
+            // the sinus is the node the engine adds after the lungs': one section, whose area times its length is the volume
+            let node = a.lungs + 1;
+            a.net.set_node_area_target(node, x * k * k * k / a.net.dx[node]);
+        }
+        Ok(())
+    }
+
+    /// The nose as it is now (a JSON object): the nasal tube's areas (cm², for an adult man's
+    /// body, from the velum to the nostrils), its length (cm, likewise), the sinus's opening and volume.
+    #[getter]
+    fn nose(&self) -> String {
+        let a = &self.v.airway;
+        let (k, t) = (a.body.scale, a.nasal);
+        let areas: Vec<f64> = (0..t.n).map(|i| a.net.area[t.node(i)] / (k * k)).collect();
+        let node = a.lungs + 1;
+        serde_json::json!({"areas": areas, "length": a.net.tube_length[t.index] / k, "sinus": a.net.port_area[a.velum_port + 2] / (k * k), "sinusVolume": a.net.area[node] * a.net.dx[node] / (k * k * k)}).to_string()
+    }
+
     /// The airway parameters `set_airway` takes, as they are now (a JSON object).
     #[getter]
     fn airway(&self) -> String {

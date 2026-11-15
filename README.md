@@ -12,7 +12,7 @@
 | `third-party/arti-6` | 6 次元調音特徴の逆推定・合成モデル(サブモジュール) |
 | `third-party/NISQA` | 音声だけから主観品質を予測するモデル(サブモジュール、無改造で使う。重みは CC BY-NC-SA 4.0) |
 | `crates/pmvc-synth` | CHIMERA を JSON で駆動する CLI。音素長・F0 を外から与える `render`、制御列をそのまま再生する `drive` |
-| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、体格を既定の 3 種の混合ではなく 4 つの値(大きさ、咽頭の割合、舌の半径、唇の幅)で直接指定する入力、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe`、ある姿勢での声道の断面の輪郭を返す `outline()`(レポートの図 1 はこれで描く)を持つ |
+| `crates/pmvc-engine` | CHIMERA を Python から直接呼ぶ拡張モジュール(PyO3)。物理状態ごと分岐できる `Voice.fork()`、声門や狭めの閉じ方のパラメータを直接指定する `Voice.set_glottis()`・`Voice.set_airway()`、鼻腔の形(断面積、長さ、副鼻腔の開口と容積)を指定する `Voice.set_nose()`、体格を既定の 3 種の混合ではなく 4 つの値(大きさ、咽頭の割合、舌の半径、唇の幅)で直接指定する入力、内部の状態(声門や狭めの面積、圧力、流量)を読む `Voice.probe`、ある姿勢での声道の断面の輪郭を返す `outline()`(レポートの図 1 はこれで描く)を持つ |
 | `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts`、ニューラルデコーダとの対照は `pmvc.control` と `pmvc.vocoder` |
 | `docs/` | 企画メモと関連論文。`docs/report/` にテクニカルレポートの下書き(英語・日本語) |
 
@@ -329,6 +329,15 @@ for m in "whose_speakers" "whose_speakers2 --model microsoft/unispeech-sat-base-
 done
 #   聞き取りやすさと音の質が変わっていないか
 uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt --split test --name results_spk
+uv run python -m pmvc.natural out/jvs --name results_spk
+#   女性の鼻音(試聴で「鼻が詰まったように聞こえる」との指摘): 鼻腔に付く副鼻腔の容積を CHIMERA の 14 cm³ から 24 cm³ にして鳴らし直す(--sinus)
+for o in "encin" "encibn --speakers out/jvsall/speakers_body.json" "encisn --speakers out/jvsall/speakers.json" "encitn --speakers out/jvsall/speakers_more.json"; do
+  uv run python -m pmvc.encoder revoice out/jvs --of enci --out $o --split test $V --sinus 24
+done
+for m in "whose_nose" "whose_nose2 --model microsoft/unispeech-sat-base-plus-sv"; do   # 結果には女性と男性に分けた値も入る
+  uv run python -m pmvc.whose out/jvs --variants enci,encin,encib,encibn,encis,encisn,encit,encitn --split test --name $m
+done
+uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt,encisn,encibn --split test --name results_spk --add
 uv run python -m pmvc.natural out/jvs --name results_spk
 
 # 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)

@@ -9,10 +9,10 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                     [the voice's options, as for encode]
        python -m pmvc.encoder encode [dir] [--name encoder] [--out enc] [--split test] [--ids ...]
                                      [--models DIR] [--voice FILE] [--no-wall-air] [--quiet-pauses]
-                                     [--closed-area CM2] [--no-render]
+                                     [--closed-area CM2] [--sinus CM3] [--no-render]
        python -m pmvc.encoder revoice [dir] --of sim --out sim2c [--split all]
                                       [--voice FILE] [--no-wall-air] [--closed-area CM2]
-                                      [--speakers FILE]
+                                      [--sinus CM3] [--speakers FILE]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -77,7 +77,15 @@ is a click some 25 dB under the speech between 4 and 16 kHz, where a recording's
 silent. With 1e-6 the flow has died away by itself before it is cut (`pmvc.clicks.extra`
 counts what is left).
 
-These four options say how the voice plays an encoder's tracks, and an encoder taught through
+`--sinus`: the volume (cm³, for an adult man's body) of the sinus on the voice's nose. CHIMERA's
+nose has one sinus of 14 cm³, whose resonance takes a nasal's sound away near 700 Hz; a person's
+two maxillary sinuses hold some 30 cm³. In women's recordings a nasal is little but its first
+harmonic (the second lies 21 dB under it); in their renders the second lies 10 dB under it.
+With 24 cm³ the dip is near 500 Hz and the second harmonic comes within 4 dB of the
+recordings'. The men's nasals fit as they are, and with a larger sinus a verification model
+finds the men's renders a little further from their speakers; the vowels do not change.
+
+These options say how the voice plays an encoder's tracks, and an encoder taught through
 a stand-in for CHIMERA's own way is not taught for another. To teach one for it: `revoice`
 renders the tracks of a variant again as the options say (the tracks themselves stay), which
 gives `pmvc.standin` (with `--voiced`) the renders to learn that voice from and `train` its
@@ -515,25 +523,27 @@ class Decoder:
     """How the voice plays a track: `fitted`, the settings `pmvc.calibrate` fitted to a high
     voice, for speakers with a high one (`--voice`); `wall_air`, whether the walls of the tract
     displace air as they move (`--no-wall-air`); `closed_area`, the area (cm²) under which a
-    constriction counts as closed (`--closed-area`); and `quiet_pauses`, whether an encoder's
-    track gets no breath in the recording's pauses (`--quiet-pauses`). As it stands, CHIMERA's
+    constriction counts as closed (`--closed-area`); `quiet_pauses`, whether an encoder's
+    track gets no breath in the recording's pauses (`--quiet-pauses`); and `sinus`, the volume
+    (cm³, for an adult man's body) of the sinus on the nose (`--sinus`). As it stands, CHIMERA's
     own way."""
 
     fitted: dict[str, float] | None = None
     wall_air: bool = True
     closed_area: float | None = None
     quiet_pauses: bool = False
+    sinus: float | None = None
 
     @classmethod
     def of(cls, a: argparse.Namespace) -> "Decoder":
-        return cls(json.loads(a.voice.read_text())["settings"] if a.voice else None, not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False))
+        return cls(json.loads(a.voice.read_text())["settings"] if a.voice else None, not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None))
 
     def share(self, pitch: float) -> float:
         return voice_share(pitch) if self.fitted else 0.0
 
     def settle(self, track: dict[str, Any], pitch: float) -> dict[str, Any]:
         """`track` with this voice's settings for a speaker of that median pitch."""
-        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway")}, "source": dict(track["source"])}
+        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose")}, "source": dict(track["source"])}
         w = self.share(pitch)
         if self.fitted and w > 0.0:
             s = mixed(self.fitted, w)
@@ -545,6 +555,8 @@ class Decoder:
             track["airway"] = {**track.get("airway", {}), "volumeSource": 0}
         if self.closed_area is not None:
             track["airway"] = {**track.get("airway", {}), "closedArea": self.closed_area}
+        if self.sinus is not None:
+            track["nose"] = {"sinusVolume": self.sinus}
         return track
 
     def track(self, d: Path, uid: str, frames: Array, keys: list[str], pitch: float | None = None) -> dict[str, Any]:
@@ -667,6 +679,7 @@ def main() -> None:
         p.add_argument("--voice", type=Path, default=None, help="pmvc.calibrate's file: speakers with a high voice (by their median pitch over the directory) are rendered under its settings")
         p.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
         p.add_argument("--closed-area", type=float, default=None, help="the area (cm²) under which the voice takes a constriction for closed, if not CHIMERA's 2e-4: 1e-6 keeps the tongue from clicking as it closes")
+        p.add_argument("--sinus", type=float, default=None, help="the volume (cm³, for an adult man's body) of the sinus on the voice's nose, if not CHIMERA's 14: a larger one takes more of a nasal's sound above its lowest resonance")
         if name != "revoice":
             p.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
     t = sub.choices["train"]

@@ -126,7 +126,7 @@ def mixed(fitted: dict[str, float], w: float) -> dict[str, float]:
 
 def make_voice(track: dict[str, Any], s: dict[str, float] | None) -> pmvc_engine.Voice:
     """A voice for a control track, under these settings (None: the track's own, which are
-    CHIMERA's unless its `source`, `noise`, `glottis` and `airway` say otherwise)."""
+    CHIMERA's unless its `source`, `noise`, `glottis`, `airway` and `nose` say otherwise)."""
     source = dict(track["source"])
     if s:
         source.update({k: s[k] for k in SOURCE if k in s})
@@ -144,6 +144,8 @@ def make_voice(track: dict[str, Any], s: dict[str, float] | None) -> pmvc_engine
         airway.update({k: s[k] for k in AIRWAY if k in s})
     if airway:
         v.set_airway(json.dumps(airway))
+    if track.get("nose"):
+        v.set_nose(json.dumps(track["nose"]))
     return v
 
 

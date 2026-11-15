@@ -16,6 +16,7 @@ out of its own speaker's mean, so that the words do not help):
   other    the same against the other speakers of the same sex, averaged
   top1     the share of clips whose nearest speaker is their own, among all the speakers
   top1sex  the same among the speakers of the same sex
+and `own`, `other` and `top1` over the women's clips and over the men's (`sexes`).
 For the recordings themselves these say what the model can tell at best. Writes
 <dir>/<name>.json. `--per` takes so many recordings of each speaker. `--model` is another
 verification model of the Hugging Face hub with an x-vector head, for a second opinion (where
@@ -57,9 +58,10 @@ class Verifier:
         return torch.nn.functional.normalize(e, dim=-1).cpu().numpy()
 
 
-def measure(vectors: NDArray[np.float32], real: NDArray[np.float32], speakers: list[str], sexes: list[str], sentences: list[str]) -> dict[str, float]:
+def measure(vectors: NDArray[np.float32], real: NDArray[np.float32], speakers: list[str], sexes: list[str], sentences: list[str]) -> dict[str, Any]:
     """`vectors` (clips, width) against the speakers that `real` (the recordings' vectors, one
-    for each clip, in the same order) stands for."""
+    for each clip, in the same order) stands for. Under `sexes`, `own`, `other` and `top1` over
+    the women's clips and over the men's."""
     names = sorted(set(speakers))
     sex = {s: x for s, x in zip(speakers, sexes)}
     who = np.array([names.index(s) for s in speakers])
@@ -75,7 +77,9 @@ def measure(vectors: NDArray[np.float32], real: NDArray[np.float32], speakers: l
         other.append(cos[rivals].mean())
         top1.append(int(cos.argmax()) == who[i])
         top1sex.append(int(np.where(same, cos, -np.inf).argmax()) == who[i])
-    return {"own": float(np.mean(own)), "other": float(np.mean(other)), "top1": float(np.mean(top1)), "top1sex": float(np.mean(top1sex))}
+    of = np.array(sexes)
+    apart = {x: {k: float(np.mean(np.array(v)[of == x])) for k, v in (("own", own), ("other", other), ("top1", top1))} for x in sorted(set(sexes))}
+    return {"own": float(np.mean(own)), "other": float(np.mean(other)), "top1": float(np.mean(top1)), "top1sex": float(np.mean(top1sex)), "sexes": apart}
 
 
 def main() -> None:
