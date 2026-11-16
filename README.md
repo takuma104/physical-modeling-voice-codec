@@ -423,6 +423,24 @@ uv run python -m pmvc.tts train out/emjatts --name ttse --tracks encv --standin 
 uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_m --speaker JA_BrOouMZCkBA_SPEAKER_00
 uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_f --speaker JA_yD5DCCvSJSI_SPEAKER_00
 uv run python -m pmvc.judge out/jvs --variants ttsj,ttse_m,ttse_f --split test --name results_ttse && uv run python -m pmvc.natural out/jvs --name results_ttse
+#   話す速さ: Emilia-YODAS の話者は読み上げより速い(男性の声で 1 秒に 13.3 音素、JVS の録音は 10.2)。--rate で揃える
+uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_mr --speaker JA_BrOouMZCkBA_SPEAKER_00 --rate 10.2
+uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_fr --speaker JA_yD5DCCvSJSI_SPEAKER_00 --rate 10.2
+uv run python -m pmvc.judge out/jvs --variants ttsj,ttse_m,ttse_f,ttse_mr,ttse_fr --split test --name results_ttse --add
+#   J の損(物差しと入口の入れ替え)を取り返す候補: J0 と同じ録音(TSP + JVS)で 3 つ。JVS と TSP で比べる(results_listen.json)
+uv run python -m pmvc.encoder train --name encvxf --standin standin_vj --also out/jvs --ssl facebook/wav2vec2-xls-r-300m $T                   # 入口を XLS-R に
+uv run python -m pmvc.standin --name standin_vx12 --variants warpv,simv --also out/jvs --voiced --listener facebook/wav2vec2-xls-r-300m --layer 12
+uv run python -m pmvc.encoder train --name encvx12 --standin standin_vx12 --also out/jvs $T                                                   # 物差しを XLS-R の第 12 層に
+uv run python -m pmvc.standin --name standin_vt --variants warpv,simv --also out/jvs --voiced --listener sarulab-speech/hubert-base-jtube --layer 8
+uv run python -m pmvc.encoder train --name encvt --standin standin_vt --also out/jvs $T                                                       # 物差しを日本語の HuBERT(MIT)に: Whisper の誤りが I' の水準に戻る
+#   J2: その物差しで、録音は TSP + Emilia-YODAS
+uv run python -m pmvc.standin --name standin_vte --variants warpv,simv --also out/emja,out/emen --voiced --listener sarulab-speech/hubert-base-jtube --layer 8
+uv run python -m pmvc.encoder train --name encv2 --standin standin_vte --also out/emja,out/emen $T
+#   読み上げの録音での TTS: Common Voice の日本語(CC0)。性別を申告している話者から女性 300 人・男性 300 人、16 文ずつ
+uv run python -m pmvc.commonvoice --corpus /path/to/cv-corpus-27.0-2026-09-11/ja      # → out/cvja
+uv run python -m pmvc.encoder encode out/cvja --models out/transplant/models --name encv --out encv --split all $V --quiet-pauses --no-render
+uv run python -m pmvc.align train out/cvja --epochs 40 --hinted 12 --sharpen 16 && uv run python -m pmvc.align write out/cvja && uv run python -m pmvc.align prune out/cvja
+uv run python -m pmvc.tts train out/cvja --name ttsc --tracks encv --standin standin_v --stride 8 $V
 
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
