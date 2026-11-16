@@ -15,7 +15,8 @@ usage: python -m pmvc.commonvoice --corpus DIR [--lang ja] [--out out/cvja] [--s
 `validated.tsv`, `clip_durations.tsv`, `clips/*.mp3`). A clip is taken if it is validated with
 no vote against it, lasts `--seconds` and its sentence is in the language's script with no
 digit (`pmvc.emilia.in_language`). Of the speakers who say they are women and of those who say
-they are men, `--speakers` each are drawn among those with `--per` such clips or more, and
+they are men (a clip with no voice in it, by the pitch tracker, is dropped), `--speakers` each
+are drawn among those with `--per` such clips or more, and
 `--per` clips of each; the last `--valid-clips` of a speaker's are for validation, the others
 to learn from (speakers are not held out: a model can only speak in voices it has heard).
 
@@ -96,7 +97,13 @@ def main() -> None:
         tasks = [pool.submit(take, d, uid(r), d / "staging" / f"{uid(r)}.wav", f"cv_{r['client_id'][:12]}", a.lang, SEXES[r["gender"]], r["sentence"].strip(), split) for r, split in taken]
         metas = [t.result() for t in tasks]
     for (r, _), meta in zip(taken, metas):
+        if not np.isfinite(meta["f0Median"]):
+            # a clip in which the pitch tracker finds no voice (a volunteer's silence, or noise) is no recording to learn from
+            for path in (d / "meta" / f"{meta['id']}.json", d / "real" / f"{meta['id']}.wav", d / "pitch" / f"{meta['id']}.npy"):
+                path.unlink(missing_ok=True)
+            continue
         (d / "meta" / f"{meta['id']}.json").write_text(json.dumps({**meta, "source": f"Common Voice {a.corpus.parent.name} {r['path']}", "licence": "CC0-1.0"}, ensure_ascii=False, indent=1))
+    taken = [t for t, meta in zip(taken, metas) if np.isfinite(meta["f0Median"])]
     for wav in (d / "staging").glob("*.wav"):
         wav.unlink()
     (d / "staging").rmdir()
