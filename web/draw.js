@@ -299,6 +299,8 @@ export class Score {
   draw(track, rows, position) {
     const size = fit(this.canvas);
     const { g, w, h } = size;
+    // a canvas that is not laid out yet (the window is being resized) has nothing to draw into
+    if (w < 2 || h < 2) return;
     g.clearRect(0, 0, w, h);
     if (!track) {
       this.picture = null;
