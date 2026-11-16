@@ -5,13 +5,17 @@ not: in JVS the men's median pitch goes up to 196 Hz and the women's begins at 2
 the women's begins at 173 Hz, and people talking (Emilia-YODAS) fill the range between. So the
 pitch decides only where nobody doubts it, and the others are placed by how their voice sounds.
 
-usage: python -m pmvc.sexes DIR [DIR ...] [--sure 135,235] [--per 6] [--check] [--model MODEL]
+usage: python -m pmvc.sexes DIR [DIR ...] [--also DIR,...] [--sure 135,235] [--per 6] [--check]
+                            [--model MODEL]
 
 For every speaker of the directories (as `pmvc.recordings`, `pmvc.jvs` or `pmvc.emilia` laid
 them out), `--per` recordings are heard by a speaker-verification model (`pmvc.whose`'s) and
 their vectors averaged. The speakers whose median pitch is under the first of `--sure` are
 men and those over the second are women; the mean vector of each of the two groups stands for
-the sex, and a speaker between is of the sex whose vector is nearer (by cosine).
+the sex, and a speaker between is of the sex whose vector is nearer (by cosine). `--also` names
+directories whose speakers only lend their vectors to the two groups and are left as they are:
+for a corpus that has too few voices at one end to stand for a sex (the speakers of
+Emilia-YODAS's Japanese with many clips each are nearly all men).
 
 Each speaker's metas then say that sex, and where it changed, the recordings' pitch is tracked
 again in that sex's range (`pmvc.audio.pitch_track`), which the meta's median follows.
@@ -40,6 +44,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dirs", type=Path, nargs="+")
     ap.add_argument("--sure", type=str, default="135,235", help="the median pitch (Hz) under which a speaker is a man and over which a woman, whatever the voice")
+    ap.add_argument("--also", type=str, default="", help="directories whose speakers lend their vectors and are not changed, comma-separated")
     ap.add_argument("--per", type=int, default=6)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--model", type=str, default=MODEL)
@@ -47,7 +52,8 @@ def main() -> None:
     a = ap.parse_args()
     lo, hi = (float(x) for x in a.sure.split(","))
     metas: dict[tuple[Path, str], list[dict[str, Any]]] = {}
-    for d in a.dirs:
+    lent = [Path(x) for x in filter(None, a.also.split(","))]
+    for d in (*a.dirs, *lent):
         for p in sorted((d / "meta").glob("*.json")):
             m = json.loads(p.read_text())
             metas.setdefault((d, m["speaker"]), []).append(m)
@@ -60,6 +66,7 @@ def main() -> None:
         vectors = [verifier.vector(x) for x in clips]
     mean: NDArray[np.float64] = np.stack([np.mean([v for (k, _), v in zip(heard, vectors) if k == key], axis=0) for key in who])
     mean /= np.linalg.norm(mean, axis=1, keepdims=True)
+    assert (pitch < lo).sum() >= 5 and (pitch > hi).sum() >= 5, "fewer than five speakers at one end of the pitch: name a directory that has more with --also"
     men, women = mean[pitch < lo].mean(axis=0), mean[pitch > hi].mean(axis=0)
     lean = mean @ (women / np.linalg.norm(women)) - mean @ (men / np.linalg.norm(men))
     sex = np.where(pitch < lo, "M", np.where(pitch > hi, "F", np.where(lean > 0, "F", "M")))
@@ -78,7 +85,7 @@ def main() -> None:
     changed = 0
     for k, s in zip(who, sex):
         d = k[0]
-        for m in metas[k]:
+        for m in metas[k] if d in a.dirs else []:
             if m["sex"] == s:
                 continue
             x, sr = load(d / "real" / f"{m['id']}.wav")
