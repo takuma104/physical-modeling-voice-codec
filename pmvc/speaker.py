@@ -51,8 +51,8 @@ voice is then the speaker's is for `pmvc.whose` to say on recordings that were n
 for the ear.
 
 usage: python -m pmvc.speaker closure [dir] [--tracks enci] [--split train] [--n 6] [--of 20]
-                                      [--start FILE] [--sex F] [--value X] [--seconds 4]
-                                      [--name speakers_closure] [--speakers a,b]
+                                      [--start FILE] [--sex F] [--share 1] [--value X]
+                                      [--seconds 4] [--name speakers_closure] [--speakers a,b]
 
 How abruptly a speaker's glottis closes, measured and not left to a verification model. Fitted
 to one, the women's voices got a smaller open quotient: the second and third harmonic rose
@@ -63,8 +63,10 @@ speaker (of `--sex`, if given) the same recordings as `fit` renders are rendered
 sharpness at each of SHARP, under the speaker's settings in `--start`; in the frames the
 recording is voiced in, the level of each band of PRESENCE against the frame's whole level is
 compared with the recording's, and the sharpness kept is where the renders' bands are as strong
-as the recordings' on average (between the tried values, along a straight line). `--value`
-gives every such speaker this sharpness and measures nothing. Writes <dir>/<name>.json like
+as the recordings' on average (between the tried values, along a straight line), or `--share`
+of it: the engine's tract has no dip above 5.5 kHz as a person's has, and a closure sharp enough
+for the band below is some 6 dB too strong there. `--value` gives every such speaker this
+sharpness and measures nothing. Writes <dir>/<name>.json like
 `fit` does (the other speakers of `--start` as they are there), with
   speakers.<name>.closure    the sharpnesses tried and the renders' level against the
                              recordings' at each (dB)
@@ -346,7 +348,7 @@ def closure(a: argparse.Namespace) -> None:
             audio = list(pool.map(lambda t, s=under: render_track(settled(t, s)), tracks))
             got = [presence(to16k(np.asarray(y[round(t["shift"] * 48000) :], dtype=np.float32)), v) for t, y, v in zip(tracks, audio, voiced)]
             level.append(float(np.mean([g - r for g, r in zip(got, recorded)])))
-        best = round(crossing(SHARP, level), 3)
+        best = round(a.share * crossing(SHARP, level), 3)
         print(f"{name} {sex[name]}  sharpness {best:.2f}   " + "  ".join(f"{x:.2f}: {y:+.1f}" for x, y in zip(SHARP, level)), flush=True)
         return {"settings": {**start, "closureSharpness": best}, "closure": {"tried": list(SHARP), "level": [round(y, 2) for y in level]}, "ids": fitted}
 
@@ -373,6 +375,7 @@ def main() -> None:
         p.add_argument("--speakers", type=str, default="", help="only these speakers, comma-separated")
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     c.add_argument("--sex", choices=["F", "M"], default=None, help="only the speakers of this sex")
+    c.add_argument("--share", type=float, default=1.0, help="keep this share of the measured sharpness")
     c.add_argument("--value", type=float, default=None, help="this sharpness for every such speaker, nothing measured")
     c.add_argument("--name", type=str, default="speakers_closure")
     f.add_argument("--only", type=str, default="", help="fit these settings, comma-separated (without it: female, child, openQuotient, brightness, tension)")
