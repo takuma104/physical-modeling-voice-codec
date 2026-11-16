@@ -444,6 +444,19 @@ uv run python -m pmvc.tts train out/cvja --name ttsc --tracks encv --standin sta
 
 #   話者のベクトルを持たない TTS(声の割合と速さを入力にする。つまみで声を決められる)
 uv run python -m pmvc.tts train out/cvja --name ttscv --by voice --tracks encv --standin standin_v --stride 8 $V
+#   公開用の構成: J2 の制御列(物差しの代役も J2 のもの)。Common Voice、Emilia-YODAS、その両方(out/jatts は 2 つをリンクで合わせたもの)
+for d in out/cvja out/emjatts; do uv run python -m pmvc.encoder encode $d --models out/transplant/models --name encv2 --out encv2 --split all $V --quiet-pauses --no-render; done
+uv run python -m pmvc.tts train out/cvja --name ttscv2 --by voice --tracks encv2 --standin standin_vte --stride 8 $V
+uv run python -m pmvc.tts train out/emjatts --name ttsev2 --by voice --tracks encv2 --standin standin_vte --stride 8 $V
+uv run python -m pmvc.tts train out/jatts --name ttsja --by voice --tracks encv2 --standin standin_vte --stride 16 $V
+#   JVS のテスト文を低い声と高い声で(録音と同じ速さ)
+uv run python -m pmvc.tts speak out/jvs --models out/cvja/models --name ttscv2 --split test --out ttscv2_m --share 0 --pitch 125 --rate 10.2
+uv run python -m pmvc.tts speak out/jvs --models out/cvja/models --name ttscv2 --split test --out ttscv2_f --share 1 --pitch 240 --rate 10.2
+#   英語: LibriTTS-R(CC BY 4.0)。読みは CHIMERA 自身の英語フロントエンド(pmvc.english)
+uv run python -m pmvc.libritts --corpus /path/to/LibriTTS_R              # → out/lten
+uv run python -m pmvc.encoder encode out/lten --models out/transplant/models --name encv2 --out encv2 --split all $V --quiet-pauses --no-render
+uv run python -m pmvc.align train out/lten --lang en --epochs 40 --hinted 12 --sharpen 16 && uv run python -m pmvc.align write out/lten --lang en && uv run python -m pmvc.align prune out/lten
+uv run python -m pmvc.tts train out/lten --name ttsen --by voice --tracks encv2 --standin standin_vte --stride 8 $V
 uv run python -m pmvc.tts say "こんにちは。" --models out/cvja/models --name ttscv --share 1 --pitch 240 --rate 10 --out say.wav
 #   ブラウザで鳴らす(V1 の WebUI の土台): エンジンを WebAssembly にして、制御列をブラウザの中で音にする
 #   crates/pmvc-voice は Python 用の pmvc_engine とブラウザ用の pmvc-wasm が共有する中身。同じ制御列は同じサンプルになる
