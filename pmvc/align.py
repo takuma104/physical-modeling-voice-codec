@@ -14,6 +14,7 @@ alignment.
 usage: python -m pmvc.align train [dir] [--name aligner] [--epochs 12]
        python -m pmvc.align write [dir] [--name aligner] [--models DIR] [--split all] [--ids ...]
                                   [--no-pauses]
+       python -m pmvc.align prune [dir] [--vowels 0.1] [--longest 80] [--pause 150]
 
 `train` learns from every recording of <dir> with Japanese text (the alignment of a test
 recording is not what is tested) and writes <dir>/models/<name>.pt. `write` writes
@@ -29,6 +30,14 @@ has no pause, a short pause (`sp`) is put at the borders of accent phrases there
 second alignment says how long it is; one that then takes under SHORT frames was no pause and
 is taken out again. (A silence inside an accent phrase is a stop's closure, and stays the
 stop's.) With `--no-pauses` the phonemes stay as the text gives them.
+
+`prune` is for recordings whose text a recogniser wrote (Emilia-YODAS): where the text has a
+word the speaker did not say, or lacks one, the alignment gives a run of phonemes a frame each
+and a neighbour the rest. It takes out of <dir>/aligned.json the recordings where more than
+`--vowels` of the vowels take one frame, where a phoneme takes more than `--longest` frames or
+a pause more than `--pause`, and keeps what `write` wrote as aligned_all.json. With people
+talking and no way to check the text, twelve epochs do not find the alignment; forty do
+(`train --epochs 40 --hinted 12 --sharpen 16`).
 """
 
 import argparse
@@ -302,9 +311,32 @@ def aligned(d: Path) -> dict[str, tuple[list[Phone], list[int]]]:
     return out
 
 
+def prune(a: argparse.Namespace) -> None:
+    d: Path = a.dir
+    whole = d / "aligned_all.json"
+    if not whole.exists():
+        whole.write_text((d / "aligned.json").read_text())
+    rows: dict[str, Any] = json.loads(whole.read_text())
+    vowels = set("aiueoAIUEO") | {"N"}
+    kept: dict[str, Any] = {}
+    for uid, r in rows.items():
+        held = [f for p, f in zip(r["p"], r["frames"]) if p in vowels]
+        longest = max((f for p, f in zip(r["p"], r["frames"]) if p not in ("sil", "pau", "sp")), default=0)
+        pause = max((f for p, f in zip(r["p"], r["frames"]) if p in ("pau", "sp")), default=0)
+        if sum(f <= 1 for f in held) <= a.vowels * len(held) and longest <= a.longest and pause <= a.pause:
+            kept[uid] = r
+    (d / "aligned.json").write_text(json.dumps(kept, ensure_ascii=False))
+    print(f"{len(kept)} of {len(rows)} recordings kept → {d / 'aligned.json'}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="command", required=True)
+    u = sub.add_parser("prune")
+    u.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "hfcm")
+    u.add_argument("--vowels", type=float, default=0.1, help="the share of a recording's vowels that may take a single frame")
+    u.add_argument("--longest", type=int, default=80, help="the frames a phoneme may take")
+    u.add_argument("--pause", type=int, default=150, help="the frames a pause may take")
     for name in ("train", "write"):
         p = sub.add_parser(name)
         p.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "hfcm")
@@ -323,7 +355,7 @@ def main() -> None:
     w.add_argument("--ids", type=str, default="")
     w.add_argument("--no-pauses", action="store_true", help="no short pauses where the recording pauses and the text has none")
     a = ap.parse_args()
-    {"train": train, "write": write}[a.command](a)
+    {"train": train, "write": write, "prune": prune}[a.command](a)
 
 
 if __name__ == "__main__":
