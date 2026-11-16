@@ -70,7 +70,7 @@ async function speak() {
     const r = await fetch("api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(asked) });
     const raw = await r.text();
     const got = JSON.parse(raw);
-    if (!r.ok) throw new Error(got.error || r.statusText);
+    if (!r.ok) throw new Error(words.errors[got.code] || got.error || r.statusText);
     let at = 0;
     track = { ...got, id: ++serial, cols: got.keys.length, starts: got.phones.map(([, n]) => (at += n) - n) };
     const bright = Number(dial.bright.value);

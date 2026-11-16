@@ -24,7 +24,9 @@ has a model for each language it is given; the page offers the languages there a
                         `keys` of a track's columns
   POST /api/speak       {"lang", "text", "share", "pitch", "rate", "spread"} → {"keys", "rate",
                         "frames", "pitch" (the median the frames were written for), "share",
-                        "phones" ([phoneme, frames] pairs)}
+                        "phones" ([phoneme, frames] pairs)}, or {"error", "code"}: `empty`
+                        (nothing to read), `phoneme` (a sound the model was not taught) or
+                        `server`
 
 A model that is told the voice (`pmvc.tts train --by voice`) speaks in the voice asked for. One
 with a vector for each speaker can only speak as one of them: `--male` and `--female` name who
@@ -58,6 +60,14 @@ PACE: dict[str, float] = {"ja": 10.2}
 LONGEST: int = 300
 
 
+class Refused(ValueError):
+    """A sentence the server will not write, and why, in a word the page has its own words for."""
+
+    def __init__(self, code: str, text: str) -> None:
+        super().__init__(text)
+        self.code = code
+
+
 class Model:
     """A text-to-speech model and the lock on it: one sentence at a time."""
 
@@ -88,7 +98,7 @@ class Model:
     def speak(self, q: dict[str, Any]) -> dict[str, Any]:
         text = str(q.get("text", "")).strip()[:LONGEST]
         if not text:
-            raise ValueError("no text")
+            raise Refused("empty", "no text")
         share = float(np.clip(float(q.get("share", 0.0)), 0.0, 1.0))
         pitch, rate, spread = (float(q.get(k, 0.0) or 0.0) for k in ("pitch", "rate", "spread"))
         with self.lock, torch.no_grad():
@@ -99,9 +109,12 @@ class Model:
             else:
                 who = self.voice.who(self.named["F" if share >= 0.5 else "M"])
             try:
-                read = phonemes(self.model, text)
+                try:
+                    read = phonemes(self.model, text)
+                except ValueError as e:
+                    raise Refused("phoneme", str(e)) from e
                 if not any(not p.silent for p in read):
-                    raise ValueError("nothing in the text that the language's front end can read")
+                    raise Refused("empty", "nothing in the text that the language's front end can read")
                 phones = phrased(self.model, read, self.device, who)
                 frames, lasting = write_track(self.model, self.voice, phones, self.device, None, who, rate)
                 talker = self.voice.talkers[who]
@@ -154,12 +167,14 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             asked = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 16)))
             self.said(self.model(str(asked.get("lang", ""))).speak(asked))
+        except Refused as e:
+            self.said({"error": str(e), "code": e.code}, 400)
         except (ValueError, KeyError, TypeError) as e:
             self.said({"error": str(e)}, 400)
         except Exception as e:  # noqa: BLE001
             # whatever else goes wrong with a sentence is the server's to log, and the page's to be told of
             print(f"speak: {type(e).__name__}: {e}", flush=True)
-            self.said({"error": "the server could not write this sentence"}, 500)
+            self.said({"error": "the server could not write this sentence", "code": "server"}, 500)
 
     def end_headers(self) -> None:
         # the page's files change with the server: a browser asks again before it uses one it has

@@ -78,6 +78,9 @@ def read(text: str, lang: str = "ja") -> list[Phone]:
     import pyopenjtalk
 
     labels: list[str] = pyopenjtalk.extract_fullcontext(text)
+    if not labels:
+        # nothing in the text that is read aloud (punctuation alone, a picture): the two silences
+        return [Phone("sil", NONE, NONE, NONE, False), Phone("sil", NONE, NONE, NONE, False)]
     # the last label, the closing silence, says whether the phrase before it asks
     asked = _ASKED.search(labels[-1])
     ask = asked is not None and asked.group(1) == "1"
