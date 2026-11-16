@@ -12,9 +12,9 @@ usage: python -m pmvc.tts train [dir] [--name tts] [--tracks enci] [--standin st
        python -m pmvc.tts pauses [dir] [--name tts] [--tracks enci] [--limit N]
        python -m pmvc.tts speak [dir] [--name tts] [--models DIR] [--out tts] [--split test]
                                 [--ids ...] [--timing own|recording] [--sentences FILE]
-                                [--speaker NAME]
+                                [--speaker NAME] [--rate PHONEMES_A_SECOND]
        python -m pmvc.tts say "こんにちは。" [--name tts] [--models DIR] [--out say.wav]
-                              [--speaker NAME]
+                              [--speaker NAME] [--rate PHONEMES_A_SECOND]
 
 The model is of the plainest kind that needs no alignment at run time (FastSpeech 2's shape):
   - the sentence as `pmvc.japanese` reads it, phonemes with their places against the pitch
@@ -417,15 +417,23 @@ def chunks(data: list[Sentence], size: int, rng: np.random.Generator | None) -> 
 
 
 @torch.no_grad()
-def write_track(model: Speaker, voice: Voice, phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None, who: int = 0) -> tuple[Array, NDArray[np.int64]]:
+def write_track(model: Speaker, voice: Voice, phones: list[Phone], device: str, frames: NDArray[np.int64] | None = None, who: int = 0, rate: float = 0.0) -> tuple[Array, NDArray[np.int64]]:
     """The track for a sentence in the voice of the model's speaker `who`, and how many
-    frames each phoneme got: `frames` if given (the speaker's own timing), or else the model's."""
+    frames each phoneme got: `frames` if given (the speaker's own timing), or else the model's.
+    With `rate`, the model's timing is stretched so that the sentence's phonemes come that many
+    a second, its pauses counted in the time and stretched with the rest: a speaker's own pace
+    is in the speaker's vector, and people talking are faster than people reading."""
     ids = torch.tensor([[p.ids(model.phones) for p in phones]], device=device)
     speaker = torch.tensor([who], device=device)
     h, lasting = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device), speaker)
     if frames is None:
         pace = np.array([1.0 if k in (0, len(phones) - 1) else voice.pace[1] if p.silent else voice.pace[0] for k, p in enumerate(phones)])
-        frames = np.maximum(1, np.round(np.exp(lasting[0].cpu().numpy()) * pace)).astype(np.int64)
+        lasts = np.exp(lasting[0].cpu().numpy()) * pace
+        if rate > 0.0:
+            sounds = np.array([not p.silent for p in phones])
+            sounds[[0, -1]] = False
+            lasts[1:-1] *= (sounds.sum() / rate) / (lasts[1:-1].sum() / FRAME_RATE)
+        frames = np.maximum(1, np.round(lasts)).astype(np.int64)
         frames[0] = max(frames[0], OPENING)
     out, _ = model.write(h, torch.from_numpy(frames).to(device)[None], speaker)
     track = voice.frames(out[0].cpu().numpy(), who)
@@ -764,7 +772,7 @@ def speak(a: argparse.Namespace) -> None:
             phones, frames = timed[uid]
             track, _ = write_track(model, voice, phones, device, np.array(frames, dtype=np.int64), who)
         else:
-            track, _ = write_track(model, voice, phrased(model, phonemes(model, meta["text"]), device, who), device, None, who)
+            track, _ = write_track(model, voice, phrased(model, phonemes(model, meta["text"]), device, who), device, None, who, a.rate)
         tracks.append(voice.track(track, not timed, who))
         (d / a.out / f"{uid}.tracks.json").write_text(json.dumps(tracks[-1]))
     with ThreadPoolExecutor(a.jobs) as pool:
@@ -778,7 +786,7 @@ def say(a: argparse.Namespace) -> None:
     model, voice = load_model(a.models / f"{a.name}.pt", device)
     who = voice.who(a.speaker)
     phones = phrased(model, phonemes(model, a.text), device, who)
-    frames, lasting = write_track(model, voice, phones, device, None, who)
+    frames, lasting = write_track(model, voice, phones, device, None, who, a.rate)
     track = voice.track(frames, True, who)
     sf.write(str(a.out), render_track(track), 48000, subtype="PCM_16")
     a.out.with_suffix(".tracks.json").write_text(json.dumps(track))
@@ -826,6 +834,7 @@ def main() -> None:
     s.add_argument("--set", type=str, default="say", help="a name for those sentences: their ids start with it")
     for p in (s, y):
         p.add_argument("--speaker", type=str, default="", help="which of the model's speakers speaks (a model of several): for sentences nobody recorded, or instead of a recording's own speaker")
+        p.add_argument("--rate", type=float, default=0.0, help="phonemes a second, for a sentence the model times itself (0: the pace of the speaker's vector)")
     y.add_argument("--models", type=Path, default=ROOT / "out" / "hfcm" / "models")
     y.add_argument("--out", type=Path, default=Path("say.wav"))
     a = ap.parse_args()

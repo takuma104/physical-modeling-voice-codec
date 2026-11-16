@@ -1,6 +1,6 @@
 {
  "name": "v1",
- "about": "A pair of voices (pmvc.encoder's Decoder): `low` for a speaker the meta calls a man, `high` for a woman, and for a body between the two every number that far between. `low` is CHIMERA's adult male with the epilarynx held narrow and the tongue root a little forward, the two of the settings fitted to JVS's men that bring renders nearer the men's recordings, at the fits' average. `high` is the voice fitted to a high-pitched speaker and chosen by ear (out/fit/voice-F2.json) on the body fitted to JVS's women on average, with a larger sinus and a glottis that closes a little more abruptly (half of what the women's recordings measure, the listener's choice). `bright` is what one unit of the brightness dial adds to each voice (0 is the pair as it is; settings stay within 0 and 1).",
+ "about": "A pair of voices (pmvc.encoder's Decoder): `low` for a speaker the meta calls a man, `high` for a woman, and for a body between the two every number that far between. `low` is CHIMERA's adult male with the epilarynx held narrow and the tongue root a little forward, the two of the settings fitted to JVS's men that bring renders nearer the men's recordings, at the fits' average. `high` is the voice fitted to a high-pitched speaker and chosen by ear (out/fit/voice-F2.json) on the body fitted to JVS's women on average, with a larger sinus and a glottis that closes a little more abruptly (half of what the women's recordings measure, the listener's choice). `bright` is what one unit of the brightness dial adds to each voice, and `dull` what a unit the other way takes from it (0 is the pair as it is; settings stay within 0 and 1; the skew of the glottal pulse, which the engine makes of the source's settings, is set only when the dial is turned down).",
  "low": {
   "body": {
    "female": 0.0,
@@ -83,6 +83,26 @@
   "high": {
    "glottis": {
     "closureSharpness": 0.18
+   },
+   "set": {
+    "epilarynx": 0.0
+   }
+  }
+ },
+ "dull": {
+  "low": {
+   "glottis": {
+    "closureSharpness": 0.18,
+    "skew": 0.05
+   },
+   "set": {
+    "epilarynx": 0.22
+   }
+  },
+  "high": {
+   "glottis": {
+    "closureSharpness": 0.18,
+    "skew": 0.05
    },
    "set": {
     "epilarynx": 0.0

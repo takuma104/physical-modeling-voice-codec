@@ -97,7 +97,9 @@ share of the high voice it was settled for (`voice`); its frames have the held c
 voice holds them, and `revoice` gives the tracks of an encoder that was not taught through the
 voice its habits too (an encoder taught with such tracks writes them itself). The file's
 `bright` says what one unit of brightness adds to each voice's settings (how abruptly the
-glottis closes, how narrow the epilarynx is held): `--bright` turns that dial, and `revoice`
+glottis closes, how narrow the epilarynx is held) and its `dull` what a unit the other way
+takes from them (the closure cannot be softer than 0, so there the pulse's skew goes down
+too, and the two directions come out about as far apart to the ear): `--bright` turns that dial, and `revoice`
 has the two other hands a listener may turn, `--pitch` (the contour that many semitones
 higher) and `--share` (the same share of the high voice for every track, whoever spoke).
 
@@ -560,7 +562,7 @@ class Decoder:
     @classmethod
     def of(cls, a: argparse.Namespace) -> "Decoder":
         voice: dict[str, Any] = json.loads(a.voice.read_text()) if a.voice else {}
-        family: dict[str, Any] | None = {k: voice[k] for k in ("low", "high", "bright") if k in voice} if "low" in voice else None
+        family: dict[str, Any] | None = {k: voice[k] for k in ("low", "high", "bright", "dull") if k in voice} if "low" in voice else None
         return cls(voice.get("settings"), not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None), family, getattr(a, "bright", 0.0))
 
     @property
@@ -591,9 +593,14 @@ class Decoder:
         assert self.family is not None
         lo, hi = self.family["low"].get(part, {}), self.family["high"].get(part, {})
         out = {k: (1 - w) * lo[k] + w * hi[k] for k in lo}
-        # the dial: what a unit of brightness adds to each voice's settings, all of which run from 0 to 1
-        more = self.family.get("bright", {})
+        # the dial: what a unit of brightness adds to each voice's settings (`bright`), or a unit
+        # the other way takes from them (`dull`, if the file has it); all of them run from 0 to 1
+        more = self.family.get("bright" if self.bright > 0 else "dull", self.family.get("bright", {}))
         for k in more.get("low", {}).get(part, {}) if self.bright else ():
+            if k not in out and (part, k) == ("glottis", "skew"):
+                # the pulse's skew is the engine's to make of the source's settings, until the dial moves it
+                source = self.of_family("source", w) if self.bright == 0 else {n: (1 - w) * self.family["low"]["source"][n] + w * self.family["high"]["source"][n] for n in ("tension", "brightness")}
+                out[k] = 0.56 + 0.16 * source["tension"] + 0.2 * (source["brightness"] - 0.25)
             out[k] = float(np.clip(out[k] + self.bright * ((1 - w) * more["low"][part][k] + w * more["high"][part][k]), 0.0, 1.0))
         return {k: round(x, 5) for k, x in out.items()}
 
