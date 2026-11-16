@@ -20,6 +20,7 @@ front end's IPA symbol. The front end splits a sentence into phrases at its punc
 import gzip
 import json
 import re
+import unicodedata
 from functools import cache
 from typing import Any
 
@@ -41,6 +42,8 @@ def front() -> Any:
 
 def read(text: str) -> list[Phone]:
     """The sentence's phonemes, from the silence before it to the silence after."""
+    # the front end knows the letters of the dictionary: an accent goes (café), a curly quote is a straight one
+    text = "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)).translate(str.maketrans("’‘“”", "''\"\""))
     text = re.sub(r"\b[A-Za-z]+\.", lambda m: SPELT.get(m.group(0).lower(), m.group(0)), text)
     phrases: list[dict[str, Any]] = [q for q in json.loads(front().phrases(text)) if q["segments"]]
     ask = bool(phrases) and phrases[-1]["intonation"] == "question"
