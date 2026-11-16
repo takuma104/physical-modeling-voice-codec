@@ -353,7 +353,7 @@ class Voice:
     def state(self) -> dict[str, Any]:
         return {"keys": self.keys, "mean": self.mean.tolist(), "std": self.std.tolist(), "lo": self.lo.tolist(), "hi": self.hi.tolist(), "learned": self.learned,
                 "talkers": [{"name": t.name, "sex": t.sex, "f0": t.f0, "pitch": list(t.pitch)} for t in self.talkers], "pace": list(self.pace),
-                "decoder": {"fitted": self.decoder.fitted, "wall_air": self.decoder.wall_air, "closed_area": self.decoder.closed_area}}  # fmt: skip
+                "decoder": {"fitted": self.decoder.fitted, "wall_air": self.decoder.wall_air, "closed_area": self.decoder.closed_area, "family": self.decoder.family}}  # fmt: skip
 
     @classmethod
     def of(cls, s: dict[str, Any]) -> "Voice":
@@ -386,7 +386,17 @@ class Voice:
         t = self.talkers[who]
         body = {"female": 1.0 if t.sex == "F" else 0.0, "child": 0.0}
         track = self.decoder.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(t.f0, 2)}, "keys": self.keys}, t.f0)
+        # the channels a pair of voices holds are the voice's to say, not the model's
+        frames = self.decoder.hold(frames, self.keys, body["female"])
         return {**track, "shift": LEAD, **({"free": True} if free else {}), "frames": np.round(frames, 5).tolist()}
+
+    def told(self, who: int) -> list[float]:
+        """What a stand-in is told of a speaker: the body (how far towards the female one) and,
+        for a voice that differs between speakers, the speaker's share of the high voice."""
+        t = self.talkers[who]
+        female = 1.0 if t.sex == "F" else 0.0
+        w = self.decoder.share(t.f0, female)
+        return [self.decoder.of_family("body", w)["female"] if self.decoder.family else female, w][: 2 if self.decoder.by_pitch else 1]
 
 
 def collate(batch: list[Sentence], phones: list[str], device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -592,9 +602,9 @@ def train(a: argparse.Namespace) -> None:
     mean, std = pooled.mean(axis=0), pooled.std(axis=0)
     learned = [c for c in range(len(keys)) if c != f0 and std[c] > 1e-6]
     voice = Voice(keys, mean, std, pooled.min(axis=0), pooled.max(axis=0), learned, talkers, decoder)
-    assert (standin.inp.in_features == len(keys) + 2) == (decoder.fitted is not None), "the stand-in and --voice do not go together"
+    assert (standin.inp.in_features == len(keys) + 2) == decoder.by_pitch, "the stand-in and --voice do not go together"
     # what the stand-in is told of each speaker: the body, and the share of the fitted voice
-    told = torch.tensor([[1.0 if t.sex == "F" else 0.0, decoder.share(t.f0)][: 2 if decoder.fitted else 1] for t in talkers], device=device)
+    told = torch.tensor([voice.told(k) for k in range(len(talkers))], device=device)
     # each speaker's log2 pitch: its mean and spread
     centre = torch.tensor([t.pitch[0] for t in talkers], device=device, dtype=torch.float32)
     spread = torch.tensor([t.pitch[1] for t in talkers], device=device, dtype=torch.float32)

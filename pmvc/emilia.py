@@ -9,8 +9,8 @@ encoder needs no text, so what the recogniser got wrong does not matter to it; a
 model (`pmvc.tts`) would learn those mistakes.
 
 usage: python -m pmvc.emilia --tars DIR --lang ja [--out out/emja] [--shards 3] [--speakers 300]
-                             [--per 6] [--held 12] [--quality 3.3] [--seconds 3,10] [--seed 0]
-                             [--jobs N]
+                             [--per 6] [--held 12] [--valid-clips 0] [--draw 3] [--quality 3.3]
+                             [--seconds 3,10] [--seed 0] [--jobs N]
 
 `--tars` is the language's directory of the corpus as it is distributed (JA-B000000.tar, ...:
 for each clip an MP3 and a JSON with `text`, `duration`, `speaker`, `dnsmos`); the first
@@ -20,9 +20,13 @@ language's script (kana for Japanese with no Latin letter in it, Latin letters a
 English: clips in another language are filed under each). Of a video, one speaker counts (the
 one with most such clips: the others share the room, and sometimes the sentence); of the
 speakers with `--per` clips or more, `--speakers` are for training and `--held` each for
-validation and for the test, `--per` clips of each, all drawn by `--seed`: three times as many
+validation and for the test, `--per` clips of each, all drawn by `--seed`: `--draw` times as many
 speakers are drawn as are wanted, and of them high voices and low ones are taken in turn (the
 corpus has more men; see the sex below).
+
+For a text-to-speech model, which can only speak in voices it has heard, speakers are not held
+out (`--held 0`) and each has many clips (`--per 40`); `--valid-clips` of them are for
+validation. A clip whose text has a digit is left out: how it was read is not written.
 
 Writes what `pmvc.recordings` writes under <out>, with the split in each meta; the ids are the
 corpus's own (JA_<video>_W000012) and a speaker's name is the corpus's. The corpus does not say
@@ -51,7 +55,7 @@ from .recordings import take
 # the median pitch (Hz) from which a speaker's meta says F
 SEX_PITCH: float = 165.0
 # what a clip's text must have, and must not, to be in the language
-SCRIPT: dict[str, tuple[str, str]] = {"ja": (r"[ぁ-んァ-ヶ]", r"[A-Za-z]"), "en": (r"[A-Za-z]", r"[^\x00-\x7f’‘“”—–…]")}
+SCRIPT: dict[str, tuple[str, str]] = {"ja": (r"[ぁ-んァ-ヶ]", r"[A-Za-z0-9０-９]"), "en": (r"[A-Za-z]", r"[0-9]|[^\x00-\x7f’‘“”—–…]")}
 
 
 def in_language(text: str, lang: str) -> bool:
@@ -72,7 +76,7 @@ def listed(tar: Path) -> list[dict[str, Any]]:
 
 
 def candidates(clips: list[dict[str, Any]], a: argparse.Namespace) -> list[list[dict[str, Any]]]:
-    """`--per` clips of each speaker that may be taken, the speakers in the order drawn: three
+    """`--per` clips of each speaker that may be taken, the speakers in the order drawn: `--draw`
     times as many as are wanted, for as many high voices as low ones to be picked among them."""
     lo, hi = (float(x) for x in a.seconds.split(","))
     good = [c for c in clips if lo <= c["duration"] <= hi and c["dnsmos"] >= a.quality and in_language(c["text"], a.lang)]
@@ -87,7 +91,7 @@ def candidates(clips: list[dict[str, Any]], a: argparse.Namespace) -> list[list[
             by_video[video] = name
     names = sorted(n for n in by_video.values() if len(by_speaker[n]) >= a.per)
     rng = np.random.default_rng(a.seed)
-    names = [names[i] for i in rng.permutation(len(names))][: 3 * (a.speakers + 2 * a.held)]
+    names = [names[i] for i in rng.permutation(len(names))][: round(a.draw * (a.speakers + 2 * a.held))]
     assert len(names) > 2 * a.held, f"only {len(names)} speakers with {a.per} clips: read more shards"
     out: list[list[dict[str, Any]]] = []
     for name in names:
@@ -126,6 +130,8 @@ def main() -> None:
     ap.add_argument("--speakers", type=int, default=300)
     ap.add_argument("--per", type=int, default=6)
     ap.add_argument("--held", type=int, default=12)
+    ap.add_argument("--valid-clips", type=int, default=0, help="of each speaker to learn from, so many clips are for validation")
+    ap.add_argument("--draw", type=float, default=3.0, help="how many times the speakers wanted are drawn, to pick high and low voices in turn from")
     ap.add_argument("--quality", type=float, default=3.3)
     ap.add_argument("--seconds", type=str, default="3,10")
     ap.add_argument("--seed", type=int, default=0)
@@ -161,14 +167,16 @@ def main() -> None:
             for name in balanced([name for name in names if name not in split], sex, n):
                 split[name] = part
         taken = [c for mine in whole for c in mine if c["speaker"] in split]
-        tasks = [pool.submit(take, d, c["_id"], d / "staging" / f"{c['_id']}.wav", c["speaker"], a.lang, sex[c["speaker"]], c["text"], split[c["speaker"]]) for c in taken]
+        # of a speaker to learn from, the last clips are for validation
+        part_of = {c["_id"]: "valid" if split[c["speaker"]] == "train" and k >= len(mine) - a.valid_clips else split[c["speaker"]] for mine in whole for k, c in enumerate(mine) if c["speaker"] in split}
+        tasks = [pool.submit(take, d, c["_id"], d / "staging" / f"{c['_id']}.wav", c["speaker"], a.lang, sex[c["speaker"]], c["text"], part_of[c["_id"]]) for c in taken]
         metas = [t.result() for t in tasks]
     for c, meta in zip(taken, metas):
         (d / "meta" / f"{c['_id']}.json").write_text(json.dumps({**meta, "source": f"Emilia-YODAS {c['tar']}", "licence": "CC BY 4.0", "dnsmos": c["dnsmos"]}, ensure_ascii=False, indent=1))
     for wav in (d / "staging").glob("*.wav"):
         wav.unlink()
     (d / "staging").rmdir()
-    by = {part: sum(split[c["speaker"]] == part for c in taken) for part in ("train", "valid", "test")}
+    by = {part: sum(part_of[c["_id"]] == part for c in taken) for part in ("train", "valid", "test")}
     women = sum(sex[name] == "F" for name in split)
     print(f"{len(taken)} recordings of {len(split)} speakers → {d}: {by}; {women} speakers have a high voice")
 
