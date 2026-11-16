@@ -148,6 +148,33 @@ RETAUGHT_NOTES: dict[str, str] = {
     "ench2c": "既定の声で学習した H を、調整後の声で鳴らす（第 3 節の「H + 調整 2（対策 1+2）」）",
     "enci": "H と同じ作り方で、調整後の声を通して学習し直し、調整後の声で鳴らす",
 }
+# towards the release: the pair of voices and the encoders taught with what may be passed on
+RELEASE_VOICES: dict[str, str] = {"real": "実録音（値）", "enci": "これまで", "decided": "話者ごとの設定（決定済み）", "enciv": "2 つの基準の声"}
+RELEASE_LABELS: dict[str, str] = {
+    "real": "実録音",
+    "enci": "エンコーダ I",
+    "enciv": "I + 基準の声",
+    "encvm": "エンコーダ I′",
+    "encvj": "エンコーダ J0",
+    "encv": "エンコーダ J",
+}
+RELEASE_NOTES: dict[str, str] = {
+    "real": "話者本人",
+    "enci": "これまでのもの。調整後の声を通して学習し、その声で鳴らす（第 4 節）",
+    "enciv": "I の制御列を、2 つの基準の声で鳴らす（学習し直さない）",
+    "encvm": "I と同じ材料（TSP + JVS、mHuBERT）で、基準の声を通して学習し直す",
+    "encvj": "I′ の物差しを XLS-R に、入口を wav2vec 2.0 base に替える（録音は TSP + JVS のまま）",
+    "encv": "J0 の JVS を Emilia-YODAS（日本語と英語）に替える。公開できる材料だけで学習",
+}
+RELEASE_LISTENERS: dict[str, str] = {
+    "utter-project/mHuBERT-147": "mHuBERT-147（147 言語。これまでの物差し）｜CC BY-NC-SA 4.0",
+    "facebook/wav2vec2-xls-r-300m": "XLS-R 300M（128 言語）｜Apache-2.0",
+    "sarulab-speech/hubert-base-jtube": "hubert-base-jtube（日本語）｜MIT",
+    "facebook/wav2vec2-large-xlsr-53": "XLSR-53（53 言語）｜Apache-2.0",
+    "microsoft/wavlm-base-plus": "WavLM Base+（英語）｜CC BY-SA 3.0",
+    "facebook/wav2vec2-base-960h": "wav2vec 2.0 base 960h（英語）｜Apache-2.0",
+    "facebook/hubert-base-ls960": "HuBERT base（英語）｜Apache-2.0",
+}
 # the settings `pmvc.calibrate` fits, as the page names them
 TTS_LABELS: dict[str, str] = {
     "real": "実録音",
@@ -240,7 +267,7 @@ SPEAKER_NOTES: dict[str, str] = {
 # fitted to a verification model was a buzz to that ear); the men's with the eleven settings
 # (better than as they were, to the same ear)
 SPEAKER_HEARD: dict[str, tuple[tuple[str, str], ...]] = {
-    "F": (("encibn", "体格だけ、副鼻腔を大きく"), ("encibh", "＋ 閉じ方を鋭く（半分）"), ("encibf", "＋ 閉じ方を鋭く（測った値）")),
+    "F": (("encibh", "体格 + 副鼻腔 + 閉じ方を鋭く（半分）"),),
     "M": (("encit", "体格 4 値 + 声門 + 構えを当てはめ"),),
 }
 # the speakers whose voices the page's cards are in
@@ -736,7 +763,7 @@ def taught_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str]) -> str:
 {yardstick_table(ja)}
 {{{{taught_between}}}}
 {tables}
-<div class="stack">{sentence_cards(clips, ja, jvs, results, variants, TAUGHT_LABELS)}</div>
+<div class="stack">{sentence_cards(clips, ja, jvs, results, [v for v in variants if v in ("real", "encn", "encg")], TAUGHT_LABELS)}</div>
 </section>"""
 
 
@@ -1032,6 +1059,126 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 {SPEAKER_BRIGHT.replace("{{bright_table}}", bright_table({**with_closure, "real": "実録音（値）"})).replace("{{closure_table}}", closure_table()).replace("{{closure_apart}}", apart_table(("whose_closure", "whose_closure2"), with_closure)).replace("{{closure_everyone}}", apart_table(("whose_closure", "whose_closure2"), {"real": "実録音", "encir": "これまで", "encib": "体格を当てはめ", **{v: label for v, label in with_closure.items() if v not in ("real", "enci")}}, everyone)) if (jvs / "whose_closure.json").exists() else ""}
 {{{{speaker_sounds}}}}
 <div class="stack">{"".join(card(r) for r in picked)}</div>
+</section>"""
+
+
+def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number: int) -> str:
+    """Towards a release: what the models so far depend on, the pair of voices that stands in
+    for the speakers' own settings (`voices/v1.json`; `jvs`/bands_v1.json, whose_v1.json and
+    results_v1.json say what it keeps of them), the listeners that may be used, and the encoders
+    taught with them (`results_rel.json` of the three tests). Nothing before the pair of voices
+    was measured."""
+    if not (jvs / "bands_v1.json").exists() or not (ROOT / "voices" / "v1.json").exists():
+        return ""
+    voice = json.loads((ROOT / "voices" / "v1.json").read_text())
+    names = {
+        "body.female": "体格: 女性の体格の割合", "body.child": "体格: 子どもの体格の割合", "source.pressure": "肺圧 cmH₂O", "source.tension": "声門の張り", "source.breathiness": "息漏れ",
+        "source.brightness": "明るさ", "source.roughness": "ゆらぎ", "glottis.openQuotient": "開放率", "glottis.amplitudeScale": "振動の振幅（倍率）", "glottis.closureSharpness": "閉じ方の鋭さ",
+        "nose.sinusVolume": "副鼻腔の容積 cm³", "set.epilarynx": "喉頭の上の狭め（0〜1、全フレームで固定）", "shift.root": "舌の根のずれ cm（前が正）",
+    }  # fmt: skip
+    rows = "".join(
+        f'<tr><th scope="row">{esc(label)}</th><td class="num">{voice["low"][part][key]:.3g}</td><td class="num">{voice["high"][part][key]:.3g}</td></tr>'
+        for (part, key), label in ((tuple(k.split(".")), v) for k, v in names.items()) if key in voice["low"].get(part, {})
+    )  # fmt: skip
+    settings = f"""<div class="scroll"><table>
+<caption>2 つの基準の声（voices/v1.json）。低い声は CHIMERA の成人男性に 2 つの構えを足したもの、高い声は第 3 節の調整 2 に、第 5 節で決まった設定の女性の平均を足したものです。</caption>
+<thead><tr><th scope="col">設定</th><th scope="col">低い声（男性）</th><th scope="col">高い声（女性）</th></tr></thead>
+<tbody>{rows}</tbody></table></div>"""
+
+    # what the pair keeps of the speakers' own settings: bands, the verifier, the judges
+    bands = json.loads((jvs / "bands_v1.json").read_text())
+    edges, by = bands["edges"], bands["sexes"]
+    picked = [k for k, lo in enumerate(edges[:-1]) if 1000 <= lo < 5500]
+    whose = json.loads((jvs / "whose_v1.json").read_text())["variants"] if (jvs / "whose_v1.json").exists() else {}
+    judged = json.loads((jvs / "results_v1.json").read_text())["summary"] if (jvs / "results_v1.json").exists() else {}
+
+    def kept(x: str, v: str) -> str:
+        of = {"decided": "encibh" if x == "F" else "encit"}.get(v, v)
+        real = by[x]["real"]
+        out = f'<td class="num">{by[x][of]["h2"] - (real["h2"] if of != "real" else 0.0):+.1f}</td>'
+        out += "".join(f'<td class="num">{by[x][of]["vowels"][k] - (real["vowels"][k] if of != "real" else 0.0):+.1f}</td>' for k in picked)
+        out += f'<td class="num">{whose[of]["sexes"][x]["own"]:.3f}</td>' if of in whose else '<td class="num">–</td>'
+        m = judged.get(f"ja-{x}", {}).get(of, {})
+        out += f'<td class="num">{m["rate2"][0]:.1f}</td>' if "rate2" in m else '<td class="num">–</td>'
+        out += f'<td class="num">{m["phoneRate"][0]:.1f}</td>' if "phoneRate" in m else '<td class="num">–</td>'
+        return out + (f'<td class="num">{m["quality"]:.2f}</td>' if "quality" in m else '<td class="num">–</td>')
+
+    heads = '<th scope="col">第 2 倍音</th>' + "".join(f'<th scope="col">{edges[k] / 1000:g}〜{edges[k + 1] / 1000:g} kHz</th>' for k in picked) + '<th scope="col">本人との類似度</th><th scope="col">large-v3-turbo %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA 品質</th>'
+    keeps = "".join(
+        f"""<div class="scroll"><table>
+<caption>{sex}のテスト {by[x]["n"]} 文。エンコーダ I の制御列を 3 通りの設定で鳴らしたものです。左の 5 列は母音の録音との差（dB、0 に近いほど録音どおり。1 行目は録音の値）、「本人との類似度」は話者照合モデル（WavLM）によるその話者の録音との近さ（実録音どうしは 0.98）。「話者ごとの設定」は、{note}</caption>
+<thead><tr><th scope="col">条件</th>{heads}</tr></thead>
+<tbody>{"".join(f'<tr><th scope="row">{esc(label)}</th>{kept(x, v)}</tr>' for v, label in RELEASE_VOICES.items())}</tbody></table></div>"""
+        for x, sex, note in (("F", "女性", "体格 + 副鼻腔 + 閉じ方の鋭さ（測った値の半分）。"), ("M", "男性", "体格 4 値 + 声門 + 構えの 11 個の値。"))
+    )
+
+    # the listeners that may be used
+    listeners = ""
+    found = [r for p in sorted(ja.glob("yardstick*.json")) for r in json.loads(p.read_text())]
+    if found:
+        best: dict[str, dict[str, Any]] = {}
+        for r in found:
+            if r["model"] not in best or r["ja"]["dprime"] > best[r["model"]]["ja"]["dprime"]:
+                best[r["model"]] = r
+        lines = "".join(
+            f'<tr><th scope="row">{esc(label.split("｜")[0])}<span class="sub">第 {best[name]["layer"]} 層</span></th><td>{esc(label.split("｜")[1])}</td>'
+            + "".join(f'<td class="num">{best[name][lang]["ratio"]:.2f}</td><td class="num">{best[name][lang]["dprime"]:+.2f}</td>' for lang in ("ja", "en"))
+            + f'<td class="num">{best[name]["judges"]["phones"]:.2f}</td></tr>'
+            for name, label in RELEASE_LISTENERS.items() if name in best
+        )  # fmt: skip
+        listeners = f"""<div class="scroll"><table>
+<caption>物差し（聞き手のモデル）の候補。第 2 節と同じ比べ方で、各モデルの、日本語の合成音と別の話者をいちばんよく区別する層を載せています。「比」は、録音と合成音の距離を、同じ文を読んだ別の話者との距離で割ったもの（1 なら合成音は別人の読み上げと同じ近さ）。「差」はその 2 つの距離の差を、ばらつきで割ったもの（大きいほど、合成音の足りなさを聞き取れる）。右端は、音声記号認識器の判定との順位相関です。</caption>
+<thead><tr><th scope="col">モデル</th><th scope="col">重みのライセンス</th><th scope="col">日本語 比</th><th scope="col">日本語 差</th><th scope="col">英語 比</th><th scope="col">英語 差</th><th scope="col">判定との相関</th></tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    # the encoders
+    encoders, cards = "", ""
+    if (jvs / "results_rel.json").exists():
+        results, sets = three_tests(d, ja, jvs, "results_rel", "results_rel")
+        variants = [v for v in RELEASE_LABELS if all(v in g for _, g in sets)]
+        by_sex: list[tuple[str, dict[str, Any]]] = []
+        for key, heading in (("jvs", "JVS"), ("ja", "HFC・JSUT"), ("tsp", "TSP 英語"), ("ja", "HFC 英語")):
+            if key in results:
+                lang = "en" if "英語" in heading else "ja"
+                by_sex += [(f"{heading} {'女性' if sex == 'F' else '男性'}", results[key]["summary"][f"{lang}-{sex}"]) for sex in "FM" if f"{lang}-{sex}" in results[key]["summary"]]
+        encoders = (
+            grid(sets, variants, RELEASE_LABELS, RELEASE_NOTES, "音声記号の不一致 %。角括弧は 95% 区間。", "phoneRate", other=True)
+            + grid(sets, variants, RELEASE_LABELS, RELEASE_NOTES, "Whisper large-v3-turbo の誤り率 %。日本語の列は音素、英語の列は単語で数えています。", "rate2")
+            + grid(sets, variants, RELEASE_LABELS, RELEASE_NOTES, "Whisper small の誤り率 %（英語の列は small.en）。", "rate")
+            + grid(by_sex, variants, RELEASE_LABELS, RELEASE_NOTES, "NISQA が予測する品質（1〜5）。", "quality")
+        )
+        rows_ = sorted(results["jvs"]["utterances"], key=lambda r: r["id"])
+        speakers = sorted({r["speaker"] for r in rows_})
+        own = json.loads((jvs / "results_spk.json").read_text())["utterances"] if (jvs / "results_spk.json").exists() else []
+        decided = {r["id"]: r for r in own}
+
+        def card(r: dict[str, Any]) -> str:
+            mine = "encibh" if r["sex"] == "F" else "encit"
+            shown = [("real", "実録音", r["variants"].get("real"))]
+            if r["id"] in decided and mine in decided[r["id"]]["variants"]:
+                shown.append((mine, "話者ごとの設定（決定済み）", decided[r["id"]]["variants"][mine]))
+            shown += [(v, label, r["variants"].get(v)) for v, label in (("enciv", "基準の声（エンコーダ I）"), ("encv", "基準の声（エンコーダ J）"))]
+            buttons = "".join(button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{m['heard']}」／large-v3-turbo「{m['heard2']}", "ref" if v == "real" else "", "small") for v, label, m in shown if m)
+            return f"""<article class="sentence">
+<p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
+<p class="text">{esc(r["text"])}</p>
+<div class="clips">{buttons}</div>
+<p class="heard" aria-live="polite">クリップを選ぶと Whisper の聞き取りを表示します。</p>
+</article>"""
+
+        picked_rows = [[x for x in rows_ if x["speaker"] == name][3 + 5 * k] for k, name in enumerate(speakers[:2] + speakers[-2:])]
+        cards = f'<div class="stack">{"".join(card(r) for r in picked_rows)}</div>'
+    return f"""<section aria-labelledby="h-release"><h2 id="h-release">{number}. 公開に向けて: 2 つの基準の声と、公開できる材料で学習し直したエンコーダ</h2>
+{{{{release_text}}}}
+{{{{release_voices}}}}
+{settings}
+{keeps}
+{{{{release_listeners}}}}
+{listeners}
+{{{{release_encoders}}}}
+{encoders}
+{{{{release_sounds}}}}
+{cards}
 </section>"""
 
 
@@ -1559,7 +1706,7 @@ TAUGHT_TEXT = """<p>日本語の録音を学習に加えます。JVS の 86 話�
 <li><b>G</b>: F に加えて、エンコーダが録音を聞く入口も wav2vec2 から mHuBERT に替える</li>
 </ul>
 <p>作り方はどれも C′ と同じで、探索も文の書き起こしも使いません。</p>"""
-TAUGHT_BETWEEN = """<p class="small">表の層は、モデルごとに日本語の合成音と別の話者を最もよく分けた層です（英語の wav2vec2 だけは、これまで使ってきた第 9 層）。物差しには mHuBERT の第 8 層を選びました。以下の Whisper と音声記号認識器は、どのエンコーダの学習にも使っていません。</p>"""
+TAUGHT_BETWEEN = """<p class="small">表の層は、モデルごとに日本語の合成音と別の話者を最もよく分けた層です（英語の wav2vec2 だけは、これまで使ってきた第 9 層）。物差しには mHuBERT の第 8 層を選びました。以下の Whisper と音声記号認識器は、どのエンコーダの学習にも使っていません。下のカードの音は、C′ と G だけです（D〜F の音は、後の節の音の場所を空けるために外しました。数値は表に残っています）。</p>"""
 
 TUNED_TEXT = """<p>第 2 節のエンコーダ G には、発話の前に余計な音が出る癖がありました。原因は学習の手本です。JVS の録音は発話の前に 0.5 秒ほど無音がありますが、学習で録音と聞き比べているのは発話の区間だけで、その外では「合成音だけで学習したエンコーダ A の出力」を手本にしていました。A は録音の部屋ノイズが始まった時点で息を出し始めるので、それを真似ていました。</p>
 <p>エンコーダ H は、G と同じ作り方で、発話の外では「息なし」を手本にします。あわせて、エンコーダ自身が足している先頭 0.2 秒の無音では、制御列を落ち着いた値から始めます。</p>"""
@@ -1615,7 +1762,7 @@ SPEAKER_BRIGHT = """<h3>女性の声に足りない「華やかさ」: 声門の
 <p>そこで、母音の強さを帯域ごとに録音と比べました（下の表）。</p>
 <ul>
 <li><b>女性の母音は、1.6〜5.5 kHz が録音より 7〜12 dB 弱い。</b>声の明るさにあたる帯域です。</li>
-<li><b>「体格 + 声門」の当てはめは、この帯域を 3〜5 dB 戻す代わりに、低い倍音を強めていた。</b>第 2 倍音が録音より 8.0 dB 強くなります（当てはめる前は 2.8 dB）。照合モデルに合わせて、声門の開放率が下がったためです（jvs093 は 0.85 から 0.59、jvs094 は 0.75）。ブザーのような聞こえ方の原因はこれだと見ていますが、耳ではまだ確かめていません。</li>
+<li><b>「体格 + 声門」の当てはめは、この帯域を 3〜5 dB 戻す代わりに、低い倍音を強めていた。</b>第 2 倍音が録音より 8.0 dB 強くなります（当てはめる前は 2.8 dB）。照合モデルに合わせて、声門の開放率が下がったためです（jvs093 は 0.85 から 0.59、jvs094 は 0.75）。ブザーのような聞こえ方の原因はこれだと見ていましたが、次の試聴では、開放率を変えずに閉じ方を鋭くしたときにも同じ話者でブザー感が出ました（この小節の最後）。第 2 倍音だけでは説明できません。</li>
 <li><b>男性では、「体格 4 値 + 声門 + 構え」が 1〜4 kHz を 5〜8 dB 戻していた。</b>試聴で「良い」と判定された音です。当てはめる前の不足は 9〜15 dB で、第 2 倍音は録音より 5.6 dB 弱かったのが、1.5 dB 強い程度になっています。</li>
 </ul>
 {{bright_table}}
@@ -1632,8 +1779,10 @@ SPEAKER_BRIGHT = """<h3>女性の声に足りない「華やかさ」: 声門の
 {{closure_apart}}
 {{closure_everyone}}
 <p>100 話者の表からは、もう 1 つ分かります。前の小節で「体格の当てはめで本人と判定されるようになったのは主に女性」と書いたのは、8 話者の中だけの話でした。100 話者の中では、体格の当てはめは女性も男性も同じくらい押し上げます（2.4% から 5.4%、3.3% から 5.6%）。11 個の値で伸びるのは男性です（20.5%。女性は 8.2%）。</p>
-<p>摩擦音も調べました。女性の無声摩擦音（s、sh、h、f）は、母音に対して録音より 3.8 dB 弱く、5.5 kHz より上では 8〜10 dB 弱くなっています（男性は 2.2 dB と 4〜6 dB）。歯の雑音を 2 倍にすると 5.5 kHz より上の不足は 2〜5 dB に縮みますが、破裂音の立ち上がりも 2.5〜5.5 kHz で 5 dB ほど強まります。破裂音は今でも録音より鋭いので、この変更は入れていません。</p>"""
-SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。女性 2 人では、実録音、これまでの鳴らし方、「体格だけ、副鼻腔を大きく」と、そこから声門の閉じ方を鋭くした 2 通り（測った値の半分と、測った値）を聞き比べられます。鋭さは jvs093 が 0.25 と 0.51、jvs094 が 0.17 と 0.33 です。「体格 + 声門」の 2 通りは外しました。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。</p>"""
+<p>摩擦音も調べました。女性の無声摩擦音（s、sh、h、f）は、母音に対して録音より 3.8 dB 弱く、5.5 kHz より上では 8〜10 dB 弱くなっています（男性は 2.2 dB と 4〜6 dB）。歯の雑音を 2 倍にすると 5.5 kHz より上の不足は 2〜5 dB に縮みますが、破裂音の立ち上がりも 2.5〜5.5 kHz で 5 dB ほど強まります。破裂音は今でも録音より鋭いので、この変更は入れていません。</p>
+<p><b>試聴の結果と決定。</b>閉じ方を鋭くすると高域が出て、良くなります。jvs094 は測った値（0.33）でも問題ありません。jvs093 は測った値（0.51）だとブザー感が出てしまい、半分（0.25）ならほとんど出ません。そこで、女性の声は「体格 + 副鼻腔 + 閉じ方の鋭さ（測った値の半分）」に決まりました。男性は前回のとおり「体格 4 値 + 声門 + 構え」です。</p>
+<p>ブザー感は、これで 2 つの条件で出たことになります。開放率を下げたとき（第 2・第 3 倍音が録音より 8〜10 dB 強い）と、閉じ方を 0.51 まで鋭くしたとき（第 2 倍音は録音どおりで、5.5 kHz より上が録音より強い）です。両方に共通する原因は、まだ特定していません。</p>"""
+SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。決まった設定だけを残しました。女性 2 人は、実録音、これまでの鳴らし方、「体格 + 副鼻腔 + 閉じ方を鋭く（半分）」です（鋭さは jvs093 が 0.25、jvs094 が 0.17）。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。聞き比べに使った他の音（「体格だけ、副鼻腔を大きく」と、測った値の鋭さ）は、次の節の音の場所を空けるために外しました。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>
 <li><b>メルスペクトログラム</b>（100 帯域、93.75 Hz）。UnivNet ボコーダで音にします。この形のモデル（FastSpeech 2）の本来の出力先です。</li>

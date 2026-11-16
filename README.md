@@ -365,10 +365,51 @@ for m in "whose_closure" "whose_closure2 --model microsoft/unispeech-sat-base-pl
   uv run python -m pmvc.whose out/jvsall --variants encir,encib,encibn,encibk,encibf,encis,encit --name $m
 done
 
-# 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
+# 13. 公開(V1)に向けて: 公開できる材料だけでエンコーダを学習し直す(エンコーダ J)
+#   エンコーダ I は公開できない: 入口と物差しの mHuBERT-147 が CC BY-NC-SA 4.0、録音の JVS が研究用で再配布不可
+#   声: 話者ごとの当てはめの代わりに、2 つの基準の声(voices/v1.json)。男性は低い声、女性は高い声(声の高さでは選ばない)
+#   低い声 = CHIMERA の成人男性 + 喉頭の上の狭め 0.78 + 舌の根を前へ 0.35 cm。高い声 = 調整 2 + 女性の平均の体格 + 副鼻腔 24 cm³ + 閉じ方の鋭さ 0.18
+V="--voice voices/v1.json --no-wall-air --closed-area 1e-6"
+uv run python -m pmvc.encoder revoice out/jvs --of enci --out enciv --split test $V        # I の制御列を基準の声で(舌の根の構えも足す)
+uv run python -m pmvc.bands out/jvs --variants enci,encibh,encit,encim,enciv --name bands_v1
+uv run python -m pmvc.whose out/jvs --variants enci,encibh,encit,encim,enciv --split test --name whose_v1
+uv run python -m pmvc.judge out/jvs --variants enci,encibh,encit,enciv --split test --name results_v1 && uv run python -m pmvc.natural out/jvs --name results_v1
+#   物差しの候補(重みのライセンスが Apache-2.0 か MIT のもの)を手順 6 と同じ比べ方で
+for m in "xlsr:facebook/wav2vec2-xls-r-300m:6,8,10,12,16" "hubert:facebook/hubert-base-ls960:6,8,9,10,12" "wavlm:microsoft/wavlm-base-plus:6,8,9,10,12"; do
+  uv run python -m pmvc.yardstick --name yardstick_${m%%:*} --models "${m#*:}"
+done
+#   録音: Emilia-YODAS(CC BY 4.0)の日本語と英語から 324 話者 × 6 文ずつ(学習 300、検証 12、テスト 12 話者)。性別の表示がないので推定する
+E=/path/to/Emilia-Dataset/Emilia-YODAS
+uv run python -m pmvc.emilia --tars $E/JA --lang ja --shards 6        # → out/emja
+uv run python -m pmvc.emilia --tars $E/EN --lang en --shards 4        # → out/emen
+uv run python -m pmvc.sexes out/emja && uv run python -m pmvc.sexes out/emen     # 声の高さで決まらない話者は、照合モデルのベクトルで男女どちらに近いか
+uv run python -m pmvc.sexes out/jvs out/transplant --check                       # 性別のわかっている話者での当たり具合
+#   規則だけで学習したエンコーダの制御列を手本にし、すべて基準の声で鳴らし直す
+for d in out/emja out/emen; do uv run python -m pmvc.encoder encode $d --models out/transplant/models --name sim --out sim --split all --no-render; done
+uv run python -m pmvc.encoder revoice --of warp --out warpv $V
+for d in out/transplant out/jvs out/emja out/emen; do uv run python -m pmvc.encoder revoice $d --of sim --out simv $V; done
+X="--listener facebook/wav2vec2-xls-r-300m --layer 16"
+T="--target simv --synthetic simv --tune 6 --silences $V --quiet-pauses"
+#   I′: I と同じ材料(TSP + JVS、mHuBERT)で、基準の声を通して学習し直す(声を替えた分だけを見る)
+uv run python -m pmvc.standin --name standin_vm --variants warpv,simv --also out/jvs --voiced $M
+uv run python -m pmvc.encoder train --name encvm --standin standin_vm --also out/jvs --ssl utter-project/mHuBERT-147 $T
+#   J0: 物差しを XLS-R に、入口を wav2vec 2.0 base に替える(録音は TSP + JVS のまま)
+uv run python -m pmvc.standin --name standin_vj --variants warpv,simv --also out/jvs --voiced $X
+uv run python -m pmvc.encoder train --name encvj --standin standin_vj --also out/jvs $T
+#   J: 録音も TSP + Emilia-YODAS に替える。公開できる材料だけ
+uv run python -m pmvc.standin --name standin_v --variants warpv,simv --also out/emja,out/emen --voiced $X
+uv run python -m pmvc.encoder train --name encv --standin standin_v --also out/emja,out/emen $T
+#   これまでと同じ 3 つのテストで比べる
+for t in "${T3[@]}"; do    # T3=("out/jvs --split test" "out/ja --split all" "out/transplant --split test")
+  uv run python -m pmvc.encoder revoice ${t%% *} --of enci --out enciv --split ${t##* } $V
+  for m in encvm encvj encv; do uv run python -m pmvc.encoder encode $t --models out/transplant/models --name $m --out $m $V --quiet-pauses; done
+  uv run python -m pmvc.judge $t --variants enci,enciv,encvm,encvj,encv --name results_rel && uv run python -m pmvc.natural ${t%% *} --name results_rel
+done
+
+# 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
-# 14. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
+# 15. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
 bash docs/report/build.sh
 ```
 

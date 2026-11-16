@@ -13,6 +13,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
        python -m pmvc.encoder revoice [dir] --of sim --out sim2c [--split all]
                                       [--voice FILE] [--no-wall-air] [--closed-area CM2]
                                       [--sinus CM3] [--speakers FILE]
+                                      [--bright X] [--share W] [--pitch SEMITONES]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -94,7 +95,11 @@ picked by the pitch is the wrong one for them. A track whose body lies between t
 may put it there) gets every number that far between, in a straight line. A track says the
 share of the high voice it was settled for (`voice`); its frames have the held channels as the
 voice holds them, and `revoice` gives the tracks of an encoder that was not taught through the
-voice its habits too (an encoder taught with such tracks writes them itself).
+voice its habits too (an encoder taught with such tracks writes them itself). The file's
+`bright` says what one unit of brightness adds to each voice's settings (how abruptly the
+glottis closes, how narrow the epilarynx is held): `--bright` turns that dial, and `revoice`
+has the two other hands a listener may turn, `--pitch` (the contour that many semitones
+higher) and `--share` (the same share of the high voice for every track, whoever spoke).
 
 These options say how the voice plays an encoder's tracks, and an encoder taught through
 a stand-in for CHIMERA's own way is not taught for another. To teach one for it: `revoice`
@@ -549,12 +554,14 @@ class Decoder:
     quiet_pauses: bool = False
     sinus: float | None = None
     family: dict[str, Any] | None = None
+    # a pair of voices' dial: how bright the voice is, 0 as the pair has it (`--bright`)
+    bright: float = 0.0
 
     @classmethod
     def of(cls, a: argparse.Namespace) -> "Decoder":
         voice: dict[str, Any] = json.loads(a.voice.read_text()) if a.voice else {}
-        family = {k: voice[k] for k in ("low", "high")} if "low" in voice else None
-        return cls(voice.get("settings"), not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None), family)
+        family: dict[str, Any] | None = {k: voice[k] for k in ("low", "high", "bright") if k in voice} if "low" in voice else None
+        return cls(voice.get("settings"), not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None), family, getattr(a, "bright", 0.0))
 
     @property
     def by_pitch(self) -> bool:
@@ -583,7 +590,12 @@ class Decoder:
         """A part of the pair's voice (`body`, `source`, ...) a share `w` of the way to the high one."""
         assert self.family is not None
         lo, hi = self.family["low"].get(part, {}), self.family["high"].get(part, {})
-        return {k: round((1 - w) * lo[k] + w * hi[k], 5) for k in lo}
+        out = {k: (1 - w) * lo[k] + w * hi[k] for k in lo}
+        # the dial: what a unit of brightness adds to each voice's settings, all of which run from 0 to 1
+        more = self.family.get("bright", {})
+        for k in more.get("low", {}).get(part, {}) if self.bright else ():
+            out[k] = float(np.clip(out[k] + self.bright * ((1 - w) * more["low"][part][k] + w * more["high"][part][k]), 0.0, 1.0))
+        return {k: round(x, 5) for k, x in out.items()}
 
     def hold(self, frames: Array, keys: list[str], w: float, habits: bool = False) -> Array:
         """`frames` with the channels the voice holds as it holds them at share `w`. With
@@ -719,7 +731,16 @@ def revoice(a: argparse.Namespace) -> None:
     pitches = speaker_pitches(d)
     ids = [i for i in sorted(p.name.split(".")[0] for p in (d / a.of).glob("*.tracks.json")) if a.split == "all" or split_in(d, i) == a.split]
     (d / a.out).mkdir(exist_ok=True)
-    tracks = [decoder.settle(json.loads((d / a.of / f"{uid}.tracks.json").read_text()), pitches[uid]) for uid in ids]
+    tracks = [json.loads((d / a.of / f"{uid}.tracks.json").read_text()) for uid in ids]
+    for t in tracks:
+        if a.share is not None:
+            t["voice"] = a.share
+        if a.pitch:
+            # the whole contour that many semitones higher, and the pitch the source idles at
+            up, f0 = 2.0 ** (a.pitch / 12.0), t["keys"].index("f0")
+            t["frames"] = [[*row[:f0], row[f0] * up, *row[f0 + 1 :]] for row in t["frames"]]
+            t["source"] = {**t["source"], "f0": round(t["source"]["f0"] * up, 2)}
+    tracks = [decoder.settle(t, pitches[uid]) for t, uid in zip(tracks, ids)]
     if a.speakers:
         # each speaker's own body and glottis, as `pmvc.speaker` fitted them
         from .speaker import settled
@@ -747,6 +768,7 @@ def main() -> None:
         p.add_argument("--no-wall-air", action="store_true", help="the voice's walls displace no air as they move: no thumps where the recording is silent")
         p.add_argument("--closed-area", type=float, default=None, help="the area (cm²) under which the voice takes a constriction for closed, if not CHIMERA's 2e-4: 1e-6 keeps the tongue from clicking as it closes")
         p.add_argument("--sinus", type=float, default=None, help="the volume (cm³, for an adult man's body) of the sinus on the voice's nose, if not CHIMERA's 14: a larger one takes more of a nasal's sound above its lowest resonance")
+        p.add_argument("--bright", type=float, default=0.0, help="with a pair of voices: how much brighter (or, negative, duller) than the pair has it, in the units of the voice file's `bright`")
         if name != "revoice":
             p.add_argument("--quiet-pauses", action="store_true", help="no breath in the recording's pauses (its silences of 120 ms and more inside the speech)")
     t = sub.choices["train"]
@@ -776,6 +798,8 @@ def main() -> None:
     e.add_argument("--no-render", action="store_true", help="write the tracks only: a corpus's, to learn from (`pmvc.tts`)")
     r = sub.choices["revoice"]
     r.add_argument("--speakers", type=Path, default=None, help="pmvc.speaker's file: each speaker's recordings are rendered under the settings fitted to the speaker")
+    r.add_argument("--share", type=float, default=None, help="with a pair of voices: every track gets this share of the high voice (0 the low voice, 1 the high one), whoever spoke")
+    r.add_argument("--pitch", type=float, default=0.0, help="the pitch contour that many semitones higher")
     r.add_argument("--of", type=str, required=True, help="the variant whose tracks are rendered again")
     r.add_argument("--out", type=str, required=True)
     r.add_argument("--split", choices=["test", "valid", "train", "all"], default="all")
