@@ -85,13 +85,16 @@ With 24 cm³ the dip is near 500 Hz and the second harmonic comes within 4 dB of
 recordings'. The men's nasals fit as they are, and with a larger sinus a verification model
 finds the men's renders a little further from their speakers; the vowels do not change.
 
-`--voice` also takes a voice that goes by the speaker's pitch throughout (a file with `pitch`,
-`low` and `high`, as `voices/v1.json`): two voices, each with its body, source, noise, glottis,
-airway and nose and with the channels it holds (`set`: the epilarynx, which no encoder moves),
-and the two median pitches between which a speaker's voice goes from the one to the other
-(along the logarithm of the pitch, every number in a straight line). Nothing then goes by the
-speaker's sex: a corpus need not say it. A track says the share of the high voice it was
-settled for (`voice`), and its frames have the held channels as the voice holds them.
+`--voice` also takes a pair of voices (a file with `low` and `high`, as `voices/v1.json`), each
+with its body, source, noise, glottis, airway and nose, with the channels it holds (`set`: the
+epilarynx, which no encoder moves) and its habits of posture (`shift`: what it adds to a
+channel in every frame). A speaker the meta calls a man gets the low one and a woman the high
+one, whatever their pitch: a man's median pitch can be 196 Hz and a woman's 173 Hz, and a body
+picked by the pitch is the wrong one for them. A track whose body lies between the two (a dial
+may put it there) gets every number that far between, in a straight line. A track says the
+share of the high voice it was settled for (`voice`); its frames have the held channels as the
+voice holds them, and `revoice` gives the tracks of an encoder that was not taught through the
+voice its habits too (an encoder taught with such tracks writes them itself).
 
 These options say how the voice plays an encoder's tracks, and an encoder taught through
 a stand-in for CHIMERA's own way is not taught for another. To teach one for it: `revoice`
@@ -356,7 +359,7 @@ def train(a: argparse.Namespace) -> None:
     listener = Listener(device, *heard_by) if a.standin or a.select == "listener" else None
     # how the voice will play the tracks, and each recording's share of the fitted voice
     decoder = Decoder.of(a)
-    share = {dd: {uid: decoder.share(pitch) for uid, pitch in speaker_pitches(dd).items()} for dd in dirs}
+    share = {dd: decoder.shares(dd) for dd in dirs}
 
     def every(variant: str, split: str) -> list[tuple[Path, str]]:
         return [(dd, i) for dd in dirs for i in ids_with(dd, variant, split)]
@@ -537,8 +540,8 @@ class Decoder:
     constriction counts as closed (`--closed-area`); `quiet_pauses`, whether an encoder's
     track gets no breath in the recording's pauses (`--quiet-pauses`); `sinus`, the volume
     (cm³, for an adult man's body) of the sinus on the nose (`--sinus`); and `family`, in place
-    of `fitted`, a voice that goes by the speaker's pitch throughout (`--voice` with a file that
-    has `low` and `high`). As it stands, CHIMERA's own way."""
+    of `fitted`, a pair of voices, the low one for men and the high one for women (`--voice`
+    with a file that has `low` and `high`). As it stands, CHIMERA's own way."""
 
     fitted: dict[str, float] | None = None
     wall_air: bool = True
@@ -550,12 +553,12 @@ class Decoder:
     @classmethod
     def of(cls, a: argparse.Namespace) -> "Decoder":
         voice: dict[str, Any] = json.loads(a.voice.read_text()) if a.voice else {}
-        family = {k: voice[k] for k in ("pitch", "low", "high")} if "low" in voice else None
+        family = {k: voice[k] for k in ("low", "high")} if "low" in voice else None
         return cls(voice.get("settings"), not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None), family)
 
     @property
     def by_pitch(self) -> bool:
-        """Whether the voice differs with the speaker's pitch (and a stand-in is told the share)."""
+        """Whether the voice differs between speakers (and a stand-in is told a speaker's share)."""
         return self.fitted is not None or self.family is not None
 
     @property
@@ -563,38 +566,50 @@ class Decoder:
         """The channels the voice holds, whatever a track's frames say."""
         return tuple(self.family["low"].get("set", {})) if self.family else ()
 
-    def share(self, pitch: float) -> float:
-        """How much of the high voice a speaker of this median pitch gets."""
+    def share(self, pitch: float, female: float = 0.0) -> float:
+        """How much of the high voice a speaker gets: of a pair of voices, as far as the body
+        is the female one; of a fitted voice, by the speaker's median pitch."""
         if self.family:
-            lo, hi = self.family["pitch"]
-            return float(np.clip(np.log(pitch / lo) / np.log(hi / lo), 0.0, 1.0))
+            return float(np.clip(female, 0.0, 1.0))
         return voice_share(pitch) if self.fitted else 0.0
 
-    def of_family(self, part: str, pitch: float) -> dict[str, float]:
-        """A part of the family's voice (`body`, `source`, ...) for a speaker of that pitch."""
+    def shares(self, d: Path) -> dict[str, float]:
+        """For each recording in `d`, its speaker's share of the high voice."""
+        if self.family:
+            return {p.stem: self.share(0.0, 1.0 if json.loads(p.read_text())["sex"] == "F" else 0.0) for p in (d / "meta").glob("*.json")}
+        return {uid: self.share(pitch) for uid, pitch in speaker_pitches(d).items()}
+
+    def of_family(self, part: str, w: float) -> dict[str, float]:
+        """A part of the pair's voice (`body`, `source`, ...) a share `w` of the way to the high one."""
         assert self.family is not None
-        w = self.share(pitch)
         lo, hi = self.family["low"].get(part, {}), self.family["high"].get(part, {})
         return {k: round((1 - w) * lo[k] + w * hi[k], 5) for k in lo}
 
-    def hold(self, frames: Array, keys: list[str], pitch: float) -> Array:
-        """`frames` with the channels the voice holds as it holds them for that pitch."""
-        for k, x in (self.of_family("set", pitch) if self.family else {}).items():
+    def hold(self, frames: Array, keys: list[str], w: float, habits: bool = False) -> Array:
+        """`frames` with the channels the voice holds as it holds them at share `w`. With
+        `habits`, also with the voice's habits of posture (`shift`: what it adds to a channel in
+        every frame). Those are for tracks written for another voice (`revoice`): an encoder
+        taught with such tracks writes the habits itself."""
+        for k, x in (self.of_family("set", w) if self.family else {}).items():
             frames[:, keys.index(k)] = x
+        for k, x in (self.of_family("shift", w) if self.family and habits else {}).items():
+            frames[:, keys.index(k)] += x
         return frames
 
     def settle(self, track: dict[str, Any], pitch: float) -> dict[str, Any]:
-        """`track` with this voice's settings for a speaker of that median pitch."""
+        """`track` with this voice's settings for its speaker: of a pair of voices by the
+        track's body (or the share it was settled for before), of a fitted voice by the
+        speaker's median pitch."""
+        w = self.share(pitch, float(track.get("voice", track["body"].get("female", 0.0))))
         track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose", "voice")}, "source": dict(track["source"])}
-        w = self.share(pitch)
         if self.family:
-            track["body"] = self.of_family("body", pitch)
-            track["source"].update(self.of_family("source", pitch))
-            track["noise"] = list(self.of_family("noise", pitch).values())
-            track.update({part: self.of_family(part, pitch) for part in ("glottis", "airway", "nose")})
+            track["body"] = self.of_family("body", w)
+            track["source"].update(self.of_family("source", w))
+            track["noise"] = list(self.of_family("noise", w).values())
+            track.update({part: self.of_family(part, w) for part in ("glottis", "airway", "nose")})
             track["voice"] = round(w, 4)
-            if "frames" in track and self.held:
-                track["frames"] = np.round(self.hold(np.array(track["frames"], dtype=np.float64), track["keys"], pitch), 5).tolist()
+            if "frames" in track and (self.held or self.family["low"].get("shift")):
+                track["frames"] = np.round(self.hold(np.array(track["frames"], dtype=np.float64), track["keys"], w, habits=True), 5).tolist()
         elif self.fitted and w > 0.0:
             s = mixed(self.fitted, w)
             track["source"].update({k: round(s[k], 5) for k in SOURCE})
@@ -611,18 +626,18 @@ class Decoder:
 
     def track(self, d: Path, uid: str, frames: Array, keys: list[str], pitch: float | None = None) -> dict[str, Any]:
         """An encoder's `frames` as a track for the voice of a recording's speaker. All the
-        voice is told of the speaker is in the recording's meta: the sex picks the body (the
-        pitch does, for a voice that goes by it throughout), and the source idles at the median
-        pitch (as `pmvc.transplant` sets them: the renders are the same to the sample). `pitch`
-        is the speaker's median pitch over all of the speaker's recordings, which picks the
-        voice; without it the recording's own counts."""
+        voice is told of the speaker is in the recording's meta: the sex picks the body (and of
+        a pair of voices, the voice), and the source idles at the median pitch (as
+        `pmvc.transplant` sets them: the renders are the same to the sample). `pitch` is the
+        speaker's median pitch over all of the speaker's recordings, which picks a fitted
+        voice's share; without it the recording's own counts."""
         meta = json.loads((d / "meta" / f"{uid}.json").read_text())
         if self.quiet_pauses:
             lead = round(LEAD * FRAME_RATE)
             for first, last in pauses(d, uid):
                 frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, keys.index("breath")] = 0.0
-        frames = self.hold(frames, keys, pitch or meta["f0Median"])
         body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
+        frames = self.hold(frames, keys, body["female"])
         track = self.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}, pitch or meta["f0Median"])
         return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
 
