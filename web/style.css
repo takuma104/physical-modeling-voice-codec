@@ -1,0 +1,42 @@
+/* A light page, on purpose: CHIMERA's own is a dark vector display, and this is not CHIMERA. */
+:root {
+  --paper: #f7f5f0;
+  --ink: #23262b;
+  --soft: #5d646e;
+  --line: #d9d4c8;
+  --card: #ffffff;
+  --accent: #0b6b62;
+  --accent-ink: #ffffff;
+  --mark: #c2410c;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.7 "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+}
+header, main, footer { max-width: 60rem; margin: 0 auto; }
+header { padding-block: 2rem 0.5rem; }
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: 0.04em; }
+h2 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+.lede { margin: 0.5rem 0 0; color: var(--soft); max-width: 46rem; }
+a { color: var(--accent); }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.25rem; margin-block: 1rem; }
+label { display: block; font-weight: 600; }
+textarea { width: 100%; margin-top: 0.4rem; padding: 0.6rem 0.75rem; font: inherit; border: 1px solid var(--line); border-radius: 8px; resize: vertical; background: #fff; color: var(--ink); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-top: 0.75rem; }
+button { font: inherit; padding: 0.45rem 1.4rem; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button:disabled { opacity: 0.45; cursor: default; }
+#status { color: var(--soft); font-size: 0.9rem; }
+.dials { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem 2rem; }
+.dial input[type="range"] { width: 100%; accent-color: var(--accent); }
+.dial output { font-weight: 400; color: var(--soft); margin-left: 0.5rem; font-variant-numeric: tabular-nums; }
+.check { font-weight: 400; font-size: 0.9rem; }
+.note { margin: 0.15rem 0 0; font-size: 0.82rem; color: var(--soft); }
+canvas { width: 100%; height: auto; display: block; margin-top: 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: #fffdf8; }
+.phones { margin: 0.5rem 0 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; color: var(--soft); overflow-wrap: anywhere; }
+footer { padding-block: 0.5rem 2.5rem; color: var(--soft); font-size: 0.85rem; }

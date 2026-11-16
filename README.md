@@ -442,6 +442,16 @@ uv run python -m pmvc.encoder encode out/cvja --models out/transplant/models --n
 uv run python -m pmvc.align train out/cvja --epochs 40 --hinted 12 --sharpen 16 && uv run python -m pmvc.align write out/cvja && uv run python -m pmvc.align prune out/cvja
 uv run python -m pmvc.tts train out/cvja --name ttsc --tracks encv --standin standin_v --stride 8 $V
 
+#   話者のベクトルを持たない TTS(声の割合と速さを入力にする。つまみで声を決められる)
+uv run python -m pmvc.tts train out/cvja --name ttscv --by voice --tracks encv --standin standin_v --stride 8 $V
+uv run python -m pmvc.tts say "こんにちは。" --models out/cvja/models --name ttscv --share 1 --pitch 240 --rate 10 --out say.wav
+#   ブラウザで鳴らす(V1 の WebUI の土台): エンジンを WebAssembly にして、制御列をブラウザの中で音にする
+#   crates/pmvc-voice は Python 用の pmvc_engine とブラウザ用の pmvc-wasm が共有する中身。同じ制御列は同じサンプルになる
+PATH="$(brew --prefix rustup)/bin:$PATH" cargo build -p pmvc-wasm --release --target wasm32-unknown-unknown    # rustup の wasm32-unknown-unknown が要る
+node tools/play_wasm.mjs target/wasm32-unknown-unknown/release/pmvc_wasm.wasm out/jvs/enciv/jvs093_079.tracks.json /tmp/a.f32    # Node で鳴らして確かめる
+uv run python -m pmvc.serve --model out/cvja/models/ttscv.pt       # → http://127.0.0.1:7860/ (テキスト → 制御列はサーバ、音はブラウザ)
+node tools/test_page.mjs http://127.0.0.1:7860 target/wasm32-unknown-unknown/release/pmvc_wasm.wasm /tmp/b.f32 1 240 -1          # ページと同じ経路をブラウザなしで
+
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
