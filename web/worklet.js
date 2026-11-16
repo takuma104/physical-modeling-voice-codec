@@ -9,7 +9,9 @@
 //                {type: "frames", frames}                    the same track with other values from here on (a dial turned)
 //                {type: "patch", kind, bytes}                settings of the voice, as JSON (1 the glottis, 3 the nose, ...)
 //                {type: "stop"}
-// messages out:  {type: "ready"}, {type: "at", frame, of}, {type: "ended"}, {type: "error", text}
+// messages out:  {type: "ready"}, {type: "ended"}, {type: "error", text}, and fifty times a second
+//                {type: "at", frame, of, voicing, glottis}: the frame now sounding (with its fraction), how
+//                much the folds vibrate (0 to 1) and how open the glottis is (cm²), from the simulation
 
 class PmvcPlayer extends AudioWorkletProcessor {
   constructor() {
@@ -48,6 +50,7 @@ class PmvcPlayer extends AudioWorkletProcessor {
       if (m.type === "wasm") {
         this.w = new WebAssembly.Instance(new WebAssembly.Module(m.bytes), {}).exports;
         this.out = this.w.pmvc_alloc(128 * 4);
+        this.probe = this.w.pmvc_alloc(9 * 8);
         this.port.postMessage({ type: "ready", rate: this.w.pmvc_sample_rate() });
       } else if (m.type === "track") {
         this.release();
@@ -100,9 +103,11 @@ class PmvcPlayer extends AudioWorkletProcessor {
     if (this.sample >= this.total) {
       this.release();
       this.port.postMessage({ type: "ended" });
-    } else if (this.told >= 2400) {
+    } else if (this.told >= 960) {
       this.told = 0;
-      this.port.postMessage({ type: "at", frame: Math.floor(this.sample / this.perFrame), of: this.rows });
+      this.w.player_probe(this.player, this.probe);
+      const [glottis, voicing] = new Float64Array(this.w.memory.buffer, this.probe, 2);
+      this.port.postMessage({ type: "at", frame: this.sample / this.perFrame, of: this.rows, voicing, glottis });
     }
     return true;
   }

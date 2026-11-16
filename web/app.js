@@ -1,21 +1,36 @@
 // The page: asks the server for a sentence's control track, hands it to the voice in the audio
-// thread (worklet.js), and turns the voice's dials (voice.js says what each position means).
+// thread (worklet.js), turns the voice's dials (voice.js says what each position means), and
+// draws what the voice is doing (draw.js).
 
-import { clamp, framesOf, glottisPatch, headerOf, shareFor } from "./voice.js";
+import { clamp, framesOf, glottisPatch, headerOf, partOf, shareFor } from "./voice.js";
+import { Body, Score, drawTract, drawTube } from "./draw.js";
+import { CHANNELS, EXAMPLES, LANGS, WORDS } from "./words.js";
 
 const $ = (id) => document.getElementById(id);
-const el = { text: $("text"), speak: $("speak"), stop: $("stop"), status: $("status"), view: $("view"), phones: $("phones") };
+const el = { text: $("text"), speak: $("speak"), stop: $("stop"), status: $("status"), phones: $("phones"), examples: $("examples"), langs: $("langs"), tract: $("tract"), tube: $("tube"), follow: $("follow") };
 const dial = Object.fromEntries(["pitch", "bright", "share", "rate", "spread"].map((k) => [k, $(k)]));
 const shown = Object.fromEntries(Object.keys(dial).map((k) => [k, $(`${k}-out`)]));
+const read = Object.fromEntries(["sound", "voice", "jaw", "lips", "velum"].map((k) => [k, $(`r-${k}`)]));
+const score = new Score($("score"));
+const QUIET = ["sil", "pau", "sp"];
 
-let about = null;     // the model's voice, from the server
+let lang = "ja";
+let words = WORDS.ja;
+const abouts = {};    // what the server says of each language's model
+let about = null;     // the one of the language now
+let wasm = null;      // the engine's bytes
+let body = null;      // the engine's geometry, in this thread
 let audio = null;     // the AudioContext, made at the first click
 let node = null;      // the voice
-let track = null;     // what is playing: {keys, frames (rows), pitch, share, phones}
+let track = null;     // the last track: {id, keys, frames (rows), rate, pitch, share, phones, starts, flat, cols}
 let playing = false;
-let at = 0;           // the frame now sounding
+let heard = { frame: 0, time: 0, voicing: 0 };   // the audio thread's last word of where it is
+let serial = 0;
+let now = -1;         // the phoneme marked in the transcription
 
 const bytes = (x) => new TextEncoder().encode(JSON.stringify(x));
+const put = (e, text) => { if (e.textContent !== text) e.textContent = text; };
+const rows = () => CHANNELS.filter(([key]) => about.keys.includes(key)).map(([key, ja, en]) => [key, lang === "ja" ? ja : en]);
 
 async function start() {
   audio = new AudioContext({ sampleRate: 48000 });
@@ -26,47 +41,64 @@ async function start() {
     node.port.onmessage = (e) => {
       const m = e.data;
       if (m.type === "ready") ok();
-      else if (m.type === "at") at = m.frame;
+      else if (m.type === "at") heard = { frame: m.frame, time: performance.now(), voicing: m.voicing };
       else if (m.type === "ended") stopped();
-      else if (m.type === "error") { el.status.textContent = `声のエラー: ${m.text}`; stopped(); }
+      else if (m.type === "error") { el.status.textContent = `${words["voice-error"]}: ${m.text}`; stopped(); }
     };
   });
-  const wasm = await (await fetch("pmvc_wasm.wasm")).arrayBuffer();
-  node.port.postMessage({ type: "wasm", bytes: wasm }, [wasm]);
+  const copy = wasm.slice(0);
+  node.port.postMessage({ type: "wasm", bytes: copy }, [copy]);
   await ready;
 }
 
 function stopped() {
   playing = false;
   el.stop.disabled = true;
-  el.speak.disabled = false;
+  mark(-1);
+  rest();
 }
 
 async function speak() {
   el.speak.disabled = true;
-  el.status.textContent = "制御列を書いています…";
+  el.speak.textContent = words.preparing;
   try {
     if (!audio) await start();
     await audio.resume();
     const pitch = Number(dial.pitch.value);
     const share = Number(dial.share.value);
-    const asked = { text: el.text.value, share, pitch, rate: Number(dial.rate.value), spread: Number(dial.spread.value) * ((1 - share) * about.spread[0] + share * about.spread[1]) };
+    const asked = { lang, text: el.text.value, share, pitch, rate: Number(dial.rate.value), spread: Number(dial.spread.value) * ((1 - share) * about.spread[0] + share * about.spread[1]) };
     const r = await fetch("api/speak", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(asked) });
-    const got = await r.json();
+    const raw = await r.text();
+    const got = JSON.parse(raw);
     if (!r.ok) throw new Error(got.error || r.statusText);
-    track = got;
-    at = 0;
+    let at = 0;
+    track = { ...got, id: ++serial, cols: got.keys.length, starts: got.phones.map(([, n]) => (at += n) - n) };
     const bright = Number(dial.bright.value);
+    const header = headerOf(about, track, bright, pitch);
     const flat = framesOf(about, track, bright, pitch);
-    node.port.postMessage({ type: "track", header: bytes(headerOf(about, track, bright, pitch)), frames: flat, cols: track.keys.length, rate: track.rate }, [flat.buffer]);
-    playing = true;
+    track.flat = flat.slice();
+    body.of({ body: header.body, keys: track.keys });
+    node.port.postMessage({ type: "track", header: bytes(header), frames: flat, cols: track.cols, rate: track.rate }, [flat.buffer]);
+    heard = { frame: 0, time: performance.now(), voicing: 0 };
+    el.status.textContent = words.status((track.frames.length / track.rate).toFixed(1), track.frames.length, track.cols, Math.round(raw.length / 1000));
+    el.phones.replaceChildren(...track.phones.flatMap(([p], i) => {
+      const s = document.createElement("span");
+      s.textContent = p;
+      if (QUIET.includes(p)) s.className = "quiet";
+      return i ? [" ", s] : [s];
+    }));
+    now = -1;
     el.stop.disabled = false;
-    el.status.textContent = `${(track.frames.length / track.rate).toFixed(1)} 秒、${track.frames.length} フレーム × ${track.keys.length} チャネル`;
-    el.phones.textContent = track.phones.map(([p]) => p).join(" ");
-    draw();
+    if (!playing) {
+      playing = true;
+      requestAnimationFrame(tick);
+    }
   } catch (err) {
-    el.status.textContent = `できませんでした: ${err.message}`;
-    stopped();
+    el.status.textContent = `${words.failed}: ${err.message}`;
+    if (playing) node.port.postMessage({ type: "stop" });
+  } finally {
+    el.speak.disabled = false;
+    el.speak.textContent = words.speak;
   }
 }
 
@@ -76,67 +108,138 @@ function turned() {
   const bright = Number(dial.bright.value);
   node.port.postMessage({ type: "patch", kind: 1, bytes: bytes(glottisPatch(about, track.share, bright)) });
   const flat = framesOf(about, track, bright, Number(dial.pitch.value));
+  track.flat = flat.slice();
   node.port.postMessage({ type: "frames", frames: flat }, [flat.buffer]);
 }
 
 function show() {
-  shown.pitch.textContent = `${dial.pitch.value} Hz`;
-  shown.bright.textContent = Number(dial.bright.value) > 0 ? `+${dial.bright.value}` : dial.bright.value;
-  shown.share.textContent = Number(dial.share.value).toFixed(2);
-  shown.rate.textContent = `${Number(dial.rate.value).toFixed(1)} 音素/秒`;
-  shown.spread.textContent = `× ${Number(dial.spread.value).toFixed(2)}`;
+  put(shown.pitch, `${dial.pitch.value} Hz`);
+  put(shown.bright, Number(dial.bright.value) > 0 ? `+${dial.bright.value}` : dial.bright.value);
+  put(shown.share, Number(dial.share.value).toFixed(2));
+  put(shown.rate, `${Number(dial.rate.value).toFixed(1)} ${words["rate-unit"]}`);
+  put(shown.spread, `× ${Number(dial.spread.value).toFixed(2)}`);
 }
 
-// A few channels of the track over time, and where the voice is.
-const DRAWN = [["f0", "声の高さ"], ["jaw", "あご"], ["tbY", "舌の高さ"], ["ttY", "舌先の高さ"], ["lipAp", "唇の開き"], ["velum", "鼻への通路"], ["breath", "息"]];
-function draw() {
-  const c = el.view;
-  const g = c.getContext("2d");
-  const css = getComputedStyle(document.documentElement);
-  g.clearRect(0, 0, c.width, c.height);
-  if (!track) return;
-  const n = track.frames.length;
-  const rowH = c.height / DRAWN.length;
-  g.font = "13px system-ui, sans-serif";
-  DRAWN.forEach(([key, label], r) => {
-    const k = track.keys.indexOf(key);
-    if (k < 0) return;
-    const xs = track.frames.map((row) => row[k]);
-    const voiced = key === "f0" ? xs.filter((x) => x > 1) : xs;
-    const lo = Math.min(...voiced), hi = Math.max(...voiced);
-    g.strokeStyle = css.getPropertyValue("--line");
-    g.strokeRect(0, r * rowH, c.width, rowH);
-    g.beginPath();
-    g.strokeStyle = css.getPropertyValue("--accent");
-    g.lineWidth = 1.5;
-    xs.forEach((x, i) => {
-      const y = (r + 0.9) * rowH - ((clamp(x, lo, hi) - lo) / (hi - lo || 1)) * rowH * 0.8;
-      if (i === 0) g.moveTo(0, y); else g.lineTo((i / (n - 1)) * c.width, y);
-    });
-    g.stroke();
-    g.fillStyle = css.getPropertyValue("--soft");
-    g.fillText(label, 6, r * rowH + 15);
-  });
-  g.fillStyle = css.getPropertyValue("--mark");
-  g.fillRect((at / Math.max(1, n - 1)) * c.width - 1, 0, 2, c.height);
-  if (playing) requestAnimationFrame(draw);
+// The phoneme now sounding, in the transcription.
+function mark(k) {
+  if (k === now) return;
+  const spans = el.phones.querySelectorAll("span");
+  if (now >= 0 && spans[now]) spans[now].classList.remove("now");
+  if (k >= 0 && spans[k]) spans[k].classList.add("now");
+  now = k;
+}
+
+function readouts(f, row, sound, voicing) {
+  const k = (name) => track.keys.indexOf(name);
+  put(read.sound, sound || "–");
+  put(read.voice, row ? (voicing > 0.3 ? `${words.voiced} ${Math.round(row[k("f0")])} Hz` : words.voiceless) : "–");
+  put(read.jaw, row ? `${row[k("jaw")].toFixed(1)} cm` : "–");
+  put(read.lips, f ? `${f.lipArea.toFixed(1)} cm²` : "–");
+  put(read.velum, f ? (f.velumPort > 0.02 ? words.open : words.shut) : "–");
+}
+
+// The body at rest, as the body dial has it.
+function rest() {
+  if (!body || !about) return;
+  body.of({ body: partOf(about, "body", Number(dial.share.value)), keys: about.keys });
+  const f = body.frame(new Float64Array(about.keys.length).fill(NaN));
+  drawTract(el.tract, f, null);
+  drawTube(el.tube, f, words);
+  score.draw(track, rows(), -1);
+  readouts(f, null, "", 0);
+}
+
+// A picture a display frame: the body where the track has it now.
+function tick() {
+  if (!playing || !track) return;
+  const n = track.frames.length, c = track.cols;
+  const late = (audio.baseLatency || 0) + (audio.outputLatency || 0);
+  const ahead = Math.min(4, ((performance.now() - heard.time) * track.rate) / 1000);
+  const pos = clamp(heard.frame + ahead - late * track.rate, 0, n - 1);
+  const i = Math.floor(pos), j = Math.min(n - 1, i + 1), u = pos - i;
+  const row = new Float64Array(c);
+  for (let k = 0; k < c; k++) row[k] = track.flat[i * c + k] * (1 - u) + track.flat[j * c + k] * u;
+  const f = body.frame(row);
+  let p = 0;
+  while (p + 1 < track.starts.length && track.starts[p + 1] <= pos) p++;
+  const name = track.phones[p][0];
+  const sound = QUIET.includes(name) ? "" : name;
+  drawTract(el.tract, f, { voicing: heard.voicing, sound });
+  drawTube(el.tube, f, words);
+  score.draw(track, rows(), pos);
+  readouts(f, row, sound, heard.voicing);
+  mark(p);
+  requestAnimationFrame(tick);
+}
+
+// The page's words, in the language that is spoken.
+function say() {
+  document.documentElement.lang = lang;
+  for (const e of document.querySelectorAll("[data-t]")) {
+    const w = words[e.dataset.t];
+    if (typeof w !== "string") continue;
+    if (w.includes("<")) e.innerHTML = w; else e.textContent = w;
+  }
+  el.examples.setAttribute("aria-label", words.examples);
+  el.examples.replaceChildren(...EXAMPLES[lang].map((text) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.title = text;
+    b.addEventListener("click", () => { el.text.value = text; });
+    return b;
+  }));
+}
+
+async function setLang(to) {
+  if (playing) node.port.postMessage({ type: "stop" });
+  about = abouts[to] || (abouts[to] = await (await fetch(`api/voice?lang=${to}`)).json());
+  const offered = Object.values(EXAMPLES).flat();
+  lang = to;
+  words = WORDS[to] || WORDS.en;
+  track = null;
+  now = -1;
+  for (const b of el.langs.children) b.setAttribute("aria-pressed", String(b.dataset.lang === to));
+  say();
+  if (!el.text.value.trim() || offered.includes(el.text.value)) el.text.value = EXAMPLES[to][0];
+  el.status.textContent = "";
+  dial.rate.value = about.pace.toFixed(1);
+  show();
+  rest();
 }
 
 el.speak.addEventListener("click", speak);
 el.stop.addEventListener("click", () => node && node.port.postMessage({ type: "stop" }));
+el.text.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !el.speak.disabled) speak();
+});
 for (const k of Object.keys(dial)) {
   dial[k].addEventListener("input", () => {
-    if (k === "pitch" && $("follow").checked) dial.share.value = shareFor(Number(dial.pitch.value));
-    if (k === "share") $("follow").checked = false;
+    if (k === "pitch" && el.follow.checked) dial.share.value = shareFor(Number(dial.pitch.value));
+    if (k === "share") el.follow.checked = false;
     show();
     if (k === "pitch" || k === "bright") turned();
+    if (!playing && (k === "share" || k === "pitch")) rest();
   });
 }
-$("follow").addEventListener("change", () => {
-  if ($("follow").checked) dial.share.value = shareFor(Number(dial.pitch.value));
+el.follow.addEventListener("change", () => {
+  if (el.follow.checked) dial.share.value = shareFor(Number(dial.pitch.value));
   show();
+  if (!playing) rest();
 });
+window.addEventListener("resize", () => { if (!playing) rest(); });
 
-about = await (await fetch("api/voice")).json();
-dial.rate.value = ((about.rate[0] + about.rate[1]) / 2).toFixed(1);
-show();
+wasm = await (await fetch("pmvc_wasm.wasm")).arrayBuffer();
+body = await Body.load(wasm.slice(0));
+const { langs } = await (await fetch("api/models")).json();
+el.langs.replaceChildren(...langs.map((l) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.lang = l;
+  b.textContent = LANGS[l] || l;
+  b.addEventListener("click", () => setLang(l));
+  return b;
+}));
+el.langs.hidden = langs.length < 2;
+const first = new URLSearchParams(location.search).get("lang") || ((navigator.language || "").startsWith("ja") ? "ja" : "en");
+await setLang(langs.includes(first) ? first : langs[0]);

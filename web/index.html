@@ -4,63 +4,90 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PMVC-TTS</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b6b62'/%3E%3Cpath d='M9 25V13c0-4 3-7 7-7s7 3 7 7' fill='none' stroke='%23f7f5f0' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M14 25c0-5 2-8 9-9' fill='none' stroke='%23f2b8a2' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header>
-  <h1>PMVC-TTS</h1>
-  <p class="lede">文字から、声道の動かし方（21 本の制御列）を書きます。音は、あなたのブラウザの中で動く声道の物理モデル
-    <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a> が出します。録音もニューラルボコーダも使っていません。</p>
+<header class="top">
+  <div class="brand">
+    <h1>PMVC-TTS</h1>
+    <p class="tagline" data-t="tagline"></p>
+  </div>
+  <div class="segmented" id="langs" role="group" aria-label="Language"></div>
 </header>
-<main>
-  <section class="say" aria-label="読ませる文">
-    <label for="text">読ませる文</label>
-    <textarea id="text" rows="3" spellcheck="false">こんにちは。声道の物理モデルで話しています。</textarea>
-    <div class="row">
-      <button id="speak" type="button" class="primary">話す</button>
-      <button id="stop" type="button" disabled>止める</button>
-      <span id="status" role="status" aria-live="polite"></span>
-    </div>
+<p class="lineage" data-t="lineage"></p>
+
+<main class="wall">
+  <section class="screen s-tract" aria-labelledby="h-tract">
+    <div class="bar"><h2 id="h-tract" data-t="tract"></h2><span class="sub" data-t="tract-sub"></span></div>
+    <canvas id="tract" class="tract"></canvas>
+    <dl class="readouts">
+      <div><dt data-t="r-sound"></dt><dd id="r-sound" class="mono">–</dd></div>
+      <div><dt data-t="r-voice"></dt><dd id="r-voice">–</dd></div>
+      <div><dt data-t="r-jaw"></dt><dd id="r-jaw">–</dd></div>
+      <div><dt data-t="r-lips"></dt><dd id="r-lips">–</dd></div>
+      <div><dt data-t="r-velum"></dt><dd id="r-velum">–</dd></div>
+    </dl>
+    <div class="bar inner"><h2 data-t="tube"></h2><span class="sub" data-t="tube-sub"></span></div>
+    <canvas id="tube" class="tube"></canvas>
   </section>
 
-  <section class="dials" aria-label="声のつまみ">
-    <div class="dial">
-      <label for="pitch">声の高さ <output id="pitch-out"></output></label>
-      <input id="pitch" type="range" min="80" max="320" step="1" value="125">
-      <p class="note">話している途中でも変えられます。</p>
-    </div>
-    <div class="dial">
-      <label for="bright">声の明るさ <output id="bright-out"></output></label>
-      <input id="bright" type="range" min="-2" max="2" step="0.1" value="0">
-      <p class="note">こもる ← → 明るい。話している途中でも変えられます。</p>
-    </div>
-    <div class="dial">
-      <label for="share">体格 <output id="share-out"></output></label>
-      <input id="share" type="range" min="0" max="1" step="0.05" value="0">
-      <label class="check"><input id="follow" type="checkbox" checked> 声の高さに合わせる</label>
-      <p class="note">男性の体格 ← → 女性の体格。次に話すときから変わります。</p>
-    </div>
-    <div class="dial">
-      <label for="rate">話す速さ <output id="rate-out"></output></label>
-      <input id="rate" type="range" min="6" max="14" step="0.2" value="10">
-      <p class="note">1 秒あたりの音素の数。次に話すときから変わります。</p>
-    </div>
-    <div class="dial">
-      <label for="spread">抑揚 <output id="spread-out"></output></label>
-      <input id="spread" type="range" min="0.4" max="1.8" step="0.05" value="1">
-      <p class="note">声の高さの動きの大きさ（モデルの話者の中央値に対する倍率）。次に話すときから変わります。</p>
-    </div>
-  </section>
+  <div class="right">
+    <section class="screen s-say" aria-labelledby="h-say">
+      <div class="bar"><h2 id="h-say" data-t="say"></h2><span class="sub" data-t="say-sub"></span></div>
+      <label for="text" class="hidden" data-t="text-label"></label>
+      <textarea id="text" rows="3" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="speak" type="button" class="primary" data-t="speak"></button>
+        <button id="stop" type="button" disabled data-t="stop"></button>
+        <span id="status" role="status" aria-live="polite"></span>
+      </div>
+      <p id="phones" class="phones" data-t="transcription"></p>
+      <div class="examples" id="examples" role="group"></div>
+    </section>
 
-  <section class="track" aria-label="制御列">
-    <h2>制御列</h2>
-    <p class="note">サーバから届くのはこの数値の列だけです（100 フレーム毎秒）。下は一部のチャネルで、縦線がいま鳴っている位置です。</p>
-    <canvas id="view" width="1200" height="300"></canvas>
-    <p id="phones" class="phones"></p>
-  </section>
+    <section class="screen s-voice" aria-labelledby="h-voice">
+      <div class="bar"><h2 id="h-voice" data-t="voice"></h2><span class="sub" data-t="voice-sub"></span></div>
+      <div class="dials">
+        <div class="dial">
+          <label for="pitch"><span data-t="pitch"></span><output id="pitch-out"></output></label>
+          <input id="pitch" type="range" min="80" max="320" step="1" value="125">
+          <p class="note live" data-t="live"></p>
+        </div>
+        <div class="dial">
+          <label for="bright"><span data-t="bright"></span><output id="bright-out"></output></label>
+          <input id="bright" type="range" min="-2" max="2" step="0.1" value="0">
+          <p class="note live"><span data-t="bright-note"></span> · <span data-t="live"></span></p>
+        </div>
+        <div class="dial">
+          <label for="share"><span data-t="share"></span><output id="share-out"></output></label>
+          <input id="share" type="range" min="0" max="1" step="0.05" value="0">
+          <p class="note"><span data-t="share-note"></span> · <label class="check"><input id="follow" type="checkbox" checked> <span data-t="follow"></span></label></p>
+        </div>
+        <div class="dial">
+          <label for="rate"><span data-t="rate"></span><output id="rate-out"></output></label>
+          <input id="rate" type="range" min="6" max="16" step="0.2" value="10">
+          <p class="note" data-t="next"></p>
+        </div>
+        <div class="dial">
+          <label for="spread"><span data-t="spread"></span><output id="spread-out"></output></label>
+          <input id="spread" type="range" min="0.4" max="1.8" step="0.05" value="1">
+          <p class="note" data-t="next"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen s-score" aria-labelledby="h-score">
+      <div class="bar"><h2 id="h-score" data-t="score"></h2><span class="sub" data-t="score-sub"></span></div>
+      <canvas id="score" class="score"></canvas>
+      <p class="note" data-t="score-note"></p>
+    </section>
+  </div>
 </main>
+
 <footer>
-  <p>声道の物理モデルは Jameson Hodge さんの <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a>（MIT ライセンス）を改変せずに使っています。歌わせたり、舌や唇を直接動かしたりするには、本家の CHIMERA をどうぞ。</p>
+  <p data-t="credits"></p>
+  <p data-t="sources"></p>
 </footer>
 <script type="module" src="app.js"></script>
 </body>

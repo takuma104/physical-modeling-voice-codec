@@ -366,6 +366,40 @@ pub fn outline(body: &str, posture: &str) -> Said<String> {
     serde_json::to_string(&HumanVocalTract::new(body).compute_new(&a)).map_err(bad)
 }
 
+/// The body of a control track in the postures of its frames, for a display: what [`outline`]
+/// gives, for a row of the track at a time. The columns that are not articulators (the pitch,
+/// the lungs' pressure, the voice's settings) do not move a body and are passed over.
+pub struct Tract {
+    tract: HumanVocalTract,
+    keys: Vec<Option<ArticKey>>,
+}
+
+impl Tract {
+    /// From the track without its frames (JSON), as a [`Player`] is: its `body` and `keys`.
+    pub fn of_track(header: &str) -> Said<Self> {
+        let t: serde_json::Value = serde_json::from_str(header).map_err(bad)?;
+        let keys: Vec<String> = serde_json::from_value(t.get("keys").cloned().ok_or_else(|| bad("the track has no keys"))?).map_err(bad)?;
+        let (_, body) = body_of(&t.get("body").ok_or_else(|| bad("the track has no body"))?.to_string())?;
+        chimera::init();
+        Ok(Tract { tract: HumanVocalTract::new(body), keys: keys.iter().map(|k| ArticKey::from_name(k)).collect() })
+    }
+
+    /// The midsagittal outlines with the articulators where a row of the track puts them
+    /// (JSON, in cm with the glottis at the origin).
+    pub fn frame(&mut self, row: &[f64]) -> Said<String> {
+        if row.len() != self.keys.len() {
+            return Err(bad(format!("the row needs {} columns", self.keys.len())));
+        }
+        let mut a = NEUTRAL;
+        for (k, x) in self.keys.iter().zip(row) {
+            if let (Some(k), true) = (k, x.is_finite()) {
+                a.set(*k, *x);
+            }
+        }
+        serde_json::to_string(&self.tract.compute_new(&a)).map_err(bad)
+    }
+}
+
 /// CHIMERA's own English front end (its dictionary, CMUdict, with letter-to-sound rules for a
 /// word that is not in it, numbers spelt out, and the reductions of running speech): text in,
 /// the phrases' segments out. The engine's planner would turn them into gestures by rule; a

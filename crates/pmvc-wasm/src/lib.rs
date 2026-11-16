@@ -10,11 +10,12 @@
 //! `pmvc_error_len` bytes. Views into the memory go stale when it grows: make them again after
 //! every call that may allocate.
 
-use pmvc_voice::Player;
+use pmvc_voice::{Player, Tract};
 use std::cell::RefCell;
 
 thread_local! {
     static ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+    static RESULT: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 fn failed(e: String) -> i32 {
@@ -51,6 +52,17 @@ pub extern "C" fn pmvc_error_ptr() -> *const u8 {
 #[unsafe(no_mangle)]
 pub extern "C" fn pmvc_error_len() -> usize {
     ERROR.with(|x| x.borrow().len())
+}
+
+/// What the last call that answers in words said (`tract_frame`): UTF-8, until the next one.
+#[unsafe(no_mangle)]
+pub extern "C" fn pmvc_result_ptr() -> *const u8 {
+    RESULT.with(|x| x.borrow().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn pmvc_result_len() -> usize {
+    RESULT.with(|x| x.borrow().len())
 }
 
 /// The output rate (Hz).
@@ -118,6 +130,20 @@ pub unsafe extern "C" fn player_clock(p: *const Player) -> f64 {
     unsafe { &*p }.clock()
 }
 
+/// What the simulation is doing now, nine numbers into `out` (`pmvc_voice::Player::probe`): the
+/// glottal area (cm²), how much the folds vibrate (0 to 1), the narrowest oral area (cm²) and
+/// its place (0 the back of the mouth, 1 the lips), the narrowest pharyngeal area, the pressure
+/// above the glottis and behind the narrowest oral place, and the flow out of the lips and of
+/// the nose.
+///
+/// # Safety
+/// `p` is a live player and `out` has room for nine f64.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn player_probe(p: *const Player, out: *mut f64) {
+    let x = unsafe { &*p }.probe();
+    unsafe { std::slice::from_raw_parts_mut(out, 9) }.copy_from_slice(&[x.0, x.1, x.2, x.3, x.4, x.5, x.6, x.7, x.8]);
+}
+
 /// Settings of the voice changed while it plays, as JSON: `kind` 0 the source, 1 the glottis,
 /// 2 the airway, 3 the nose (what `pmvc_voice::Player`'s `set_…` take). 1 if they will do.
 ///
@@ -135,6 +161,48 @@ pub unsafe extern "C" fn player_patch(p: *mut Player, kind: u32, patch: *const u
     });
     match done {
         Ok(()) => 1,
+        Err(e) => failed(e),
+    }
+}
+
+/// The body of a control track, to be drawn in the postures of its frames: from the track
+/// without its frames, as `player_new` takes it. Null if the header will not do. A page keeps
+/// one in an instance of its own, beside the one that plays in the audio thread.
+///
+/// # Safety
+/// `header` is `n` bytes of UTF-8 that JavaScript wrote.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tract_new(header: *const u8, n: usize) -> *mut Tract {
+    match unsafe { text(header, n) }.and_then(Tract::of_track) {
+        Ok(t) => Box::into_raw(Box::new(t)),
+        Err(e) => {
+            failed(e);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// # Safety
+/// `t` came from `tract_new` and is not used again.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tract_free(t: *mut Tract) {
+    if !t.is_null() {
+        drop(unsafe { Box::from_raw(t) });
+    }
+}
+
+/// The midsagittal outlines with the articulators where a row of the track (`cols` f64) puts
+/// them, as JSON at `pmvc_result_ptr` (cm, the glottis at the origin). 1 if the row will do.
+///
+/// # Safety
+/// `t` is a live tract and `row` is `cols` f64 that JavaScript wrote.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tract_frame(t: *mut Tract, row: *const f64, cols: usize) -> i32 {
+    match unsafe { &mut *t }.frame(unsafe { std::slice::from_raw_parts(row, cols) }) {
+        Ok(json) => {
+            RESULT.with(|x| *x.borrow_mut() = json);
+            1
+        }
         Err(e) => failed(e),
     }
 }
