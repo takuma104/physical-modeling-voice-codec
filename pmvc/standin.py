@@ -124,7 +124,8 @@ def main() -> None:
         dd, v, uid = job
         track = json.loads((dd / v / f"{uid}.tracks.json").read_text())
         x, _ = load(dd / v / f"{uid}.wav", LISTEN_SR)
-        voice = voice_share(pitches[dd][uid]) if a.voiced else None
+        # the share its track says (a voice that goes by pitch throughout), or the fitted voice's
+        voice = float(track.get("voice", voice_share(pitches[dd][uid]))) if a.voiced else None
         return track_input(np.array(track["frames"]), track["keys"], float(track["body"]["female"]), voice), x[SKIP * (LISTEN_SR // FRAME_RATE) :].astype(np.float32)
 
     jobs = [(dd, v, p.name.split(".")[0]) for dd in dirs for v in a.variants.split(",") for p in sorted((dd / v).glob("*.tracks.json")) if (dd / v / p.name.replace(".tracks.json", ".wav")).exists()]

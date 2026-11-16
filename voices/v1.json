@@ -1,0 +1,72 @@
+{
+ "name": "v1",
+ "about": "A voice that goes by the speaker's median pitch: `low` up to pitch[0] Hz, `high` from pitch[1] Hz, every number between them in a straight line along the logarithm of the pitch (pmvc.encoder's Decoder). `low` is CHIMERA's adult male with the epilarynx held narrow, as the fits to JVS's men had it on average (the one of their settings that moves the spectrum of the men's vowels); `high` is the voice fitted to a high-pitched speaker and chosen by ear (out/fit/voice-F2.json) on the body fitted to JVS's women on average, with a larger sinus and a glottis that closes a little more abruptly (half of what the women's recordings measure, the listener's choice).",
+ "pitch": [
+  150.0,
+  220.0
+ ],
+ "low": {
+  "body": {
+   "female": 0.0,
+   "child": 0.0
+  },
+  "source": {
+   "pressure": 8.0,
+   "tension": 0.5,
+   "breathiness": 0.15,
+   "brightness": 0.25,
+   "roughness": 0.1
+  },
+  "noise": {
+   "glottis": 1.0,
+   "constriction": 1.0,
+   "teeth": 1.0
+  },
+  "glottis": {
+   "openQuotient": 0.6,
+   "amplitudeScale": 1.0,
+   "closureSharpness": 0.2
+  },
+  "airway": {
+   "sealRate": 5.0
+  },
+  "nose": {
+   "sinusVolume": 14.0
+  },
+  "set": {
+   "epilarynx": 0.78
+  }
+ },
+ "high": {
+  "body": {
+   "female": 0.94,
+   "child": 0.2
+  },
+  "source": {
+   "pressure": 8.27985,
+   "tension": 0.0715,
+   "breathiness": 0.04895,
+   "brightness": 0.0305,
+   "roughness": 0.00994
+  },
+  "noise": {
+   "glottis": 1.0,
+   "constriction": 1.0,
+   "teeth": 1.0
+  },
+  "glottis": {
+   "openQuotient": 0.8531,
+   "amplitudeScale": 1.4,
+   "closureSharpness": 0.18
+  },
+  "airway": {
+   "sealRate": 5.0
+  },
+  "nose": {
+   "sinusVolume": 24.0
+  },
+  "set": {
+   "epilarynx": 0.0
+  }
+ }
+}

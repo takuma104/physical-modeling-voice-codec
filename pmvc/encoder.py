@@ -85,6 +85,14 @@ With 24 cm³ the dip is near 500 Hz and the second harmonic comes within 4 dB of
 recordings'. The men's nasals fit as they are, and with a larger sinus a verification model
 finds the men's renders a little further from their speakers; the vowels do not change.
 
+`--voice` also takes a voice that goes by the speaker's pitch throughout (a file with `pitch`,
+`low` and `high`, as `voices/v1.json`): two voices, each with its body, source, noise, glottis,
+airway and nose and with the channels it holds (`set`: the epilarynx, which no encoder moves),
+and the two median pitches between which a speaker's voice goes from the one to the other
+(along the logarithm of the pitch, every number in a straight line). Nothing then goes by the
+speaker's sex: a corpus need not say it. A track says the share of the high voice it was
+settled for (`voice`), and its frames have the held channels as the voice holds them.
+
 These options say how the voice plays an encoder's tracks, and an encoder taught through
 a stand-in for CHIMERA's own way is not taught for another. To teach one for it: `revoice`
 renders the tracks of a variant again as the options say (the tracks themselves stay), which
@@ -189,8 +197,9 @@ class Pair:
     # recording (frames, 768) and the span of its speech in those frames
     heard: torch.Tensor | None = None
     span: tuple[int, int] = (0, 0)
-    # the speaker's body, and the share of the fitted voice the speaker gets, for the stand-in
-    female: bool = False
+    # the speaker's body (how far towards the female one), and the share of the fitted voice
+    # the speaker gets, for the stand-in
+    female: float = 0.0
     voice: float = 0.0
 
 
@@ -229,7 +238,7 @@ def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, 
         frames[k1 + RUN_UP :, breath] = 0.0
     audio, aux, _ = hear_recording(d, uid, lead)
     n = min(len(frames), len(aux))
-    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=meta["sex"] == "F", voice=voice)
+    pair = Pair(uid, audio[: n * HOP], aux[:n], frames[:n], female=float(track["body"]["female"]), voice=voice)
     if listener is not None and track.get("shift") == LEAD:
         x, _ = load(d / "real" / f"{uid}.wav", LISTEN_SR)
         pair.heard = listener.hear(x).feats[0].half()
@@ -240,12 +249,13 @@ def real_pair(d: Path, uid: str, target: str, listener: Listener | None = None, 
 def synthetic_pair(d: Path, uid: str, variant: str, voice: float = 0.0) -> Pair:
     """A render and the track it was rendered from."""
     meta = json.loads((d / "meta" / f"{uid}.json").read_text())
-    frames = np.array(json.loads((d / variant / f"{uid}.tracks.json").read_text())["frames"], dtype=np.float32)
+    track = json.loads((d / variant / f"{uid}.tracks.json").read_text())
+    frames = np.array(track["frames"], dtype=np.float32)
     x48, sr = load(d / variant / f"{uid}.wav")
     x, _ = load(d / variant / f"{uid}.wav", LISTEN_SR)
     n = min(len(frames), len(x) // HOP)
     audio = x[: n * HOP].astype(np.float32)
-    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n], female=meta["sex"] == "F", voice=voice)
+    return Pair(uid, audio, aux_features(audio, pitch_track(x48, sr, meta["sex"]), n), frames[:n], female=float(track["body"]["female"]), voice=voice)
 
 
 class Encoder(nn.Module):
@@ -362,12 +372,13 @@ def train(a: argparse.Namespace) -> None:
     f0 = keys.index("f0")
     # a stand-in for a voice that goes by the speaker's pitch reads the speaker's share of it too
     voiced = standin is not None and standin.inp.in_features == len(keys) + 2
-    assert voiced == (standin is not None and decoder.fitted is not None), "the stand-in and --voice do not go together: one is for a fitted voice, the other is not"
+    assert voiced == (standin is not None and decoder.by_pitch), "the stand-in and --voice do not go together: one is for a fitted voice, the other is not"
     # every channel but pitch, on its spread over the tracks to learn; a channel that never
     # moves is written as its constant
     pooled = np.concatenate([p.frames for p in fit[: n_real or None] if p.frames is not None])
     mean, std = pooled.mean(axis=0), pooled.std(axis=0)
-    learned = [c for c in range(len(keys)) if c != f0 and std[c] > 1e-6]
+    # (nor is a channel the voice holds: the target's frames have it as the voice will)
+    learned = [c for c in range(len(keys)) if c != f0 and std[c] > 1e-6 and keys[c] not in decoder.held]
     stats = {"keys": keys, "mean": mean.tolist(), "std": std.tolist(), "learned": learned,
              "lo": pooled.min(axis=0).tolist(), "hi": pooled.max(axis=0).tolist()}  # fmt: skip
     mu = torch.tensor(mean[learned], device=device)
@@ -401,7 +412,7 @@ def train(a: argparse.Namespace) -> None:
             track = track.index_copy(-1, torch.tensor(learned, device=device), torch.minimum(torch.maximum(out[real] * sd + mu, lo), hi))
             # past a clip's end, its first frame: the voice at rest
             track = torch.where(mask[real][..., None], track, track[:, :1])
-            who = torch.tensor([[[1.0 if batch[i].female else 0.0, batch[i].voice][: 2 if voiced else 1]] for i in real], device=device)
+            who = torch.tensor([[[batch[i].female, batch[i].voice][: 2 if voiced else 1]] for i in real], device=device)
             said = standin(torch.cat([track, who.expand(-1, track.shape[1], -1)], dim=-1))[:, SKIP_HEARD:]
             total = out.new_zeros(())
             for row, i in enumerate(real):
@@ -524,28 +535,67 @@ class Decoder:
     voice, for speakers with a high one (`--voice`); `wall_air`, whether the walls of the tract
     displace air as they move (`--no-wall-air`); `closed_area`, the area (cm²) under which a
     constriction counts as closed (`--closed-area`); `quiet_pauses`, whether an encoder's
-    track gets no breath in the recording's pauses (`--quiet-pauses`); and `sinus`, the volume
-    (cm³, for an adult man's body) of the sinus on the nose (`--sinus`). As it stands, CHIMERA's
-    own way."""
+    track gets no breath in the recording's pauses (`--quiet-pauses`); `sinus`, the volume
+    (cm³, for an adult man's body) of the sinus on the nose (`--sinus`); and `family`, in place
+    of `fitted`, a voice that goes by the speaker's pitch throughout (`--voice` with a file that
+    has `low` and `high`). As it stands, CHIMERA's own way."""
 
     fitted: dict[str, float] | None = None
     wall_air: bool = True
     closed_area: float | None = None
     quiet_pauses: bool = False
     sinus: float | None = None
+    family: dict[str, Any] | None = None
 
     @classmethod
     def of(cls, a: argparse.Namespace) -> "Decoder":
-        return cls(json.loads(a.voice.read_text())["settings"] if a.voice else None, not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None))
+        voice: dict[str, Any] = json.loads(a.voice.read_text()) if a.voice else {}
+        family = {k: voice[k] for k in ("pitch", "low", "high")} if "low" in voice else None
+        return cls(voice.get("settings"), not a.no_wall_air, a.closed_area, getattr(a, "quiet_pauses", False), getattr(a, "sinus", None), family)
+
+    @property
+    def by_pitch(self) -> bool:
+        """Whether the voice differs with the speaker's pitch (and a stand-in is told the share)."""
+        return self.fitted is not None or self.family is not None
+
+    @property
+    def held(self) -> tuple[str, ...]:
+        """The channels the voice holds, whatever a track's frames say."""
+        return tuple(self.family["low"].get("set", {})) if self.family else ()
 
     def share(self, pitch: float) -> float:
+        """How much of the high voice a speaker of this median pitch gets."""
+        if self.family:
+            lo, hi = self.family["pitch"]
+            return float(np.clip(np.log(pitch / lo) / np.log(hi / lo), 0.0, 1.0))
         return voice_share(pitch) if self.fitted else 0.0
+
+    def of_family(self, part: str, pitch: float) -> dict[str, float]:
+        """A part of the family's voice (`body`, `source`, ...) for a speaker of that pitch."""
+        assert self.family is not None
+        w = self.share(pitch)
+        lo, hi = self.family["low"].get(part, {}), self.family["high"].get(part, {})
+        return {k: round((1 - w) * lo[k] + w * hi[k], 5) for k in lo}
+
+    def hold(self, frames: Array, keys: list[str], pitch: float) -> Array:
+        """`frames` with the channels the voice holds as it holds them for that pitch."""
+        for k, x in (self.of_family("set", pitch) if self.family else {}).items():
+            frames[:, keys.index(k)] = x
+        return frames
 
     def settle(self, track: dict[str, Any], pitch: float) -> dict[str, Any]:
         """`track` with this voice's settings for a speaker of that median pitch."""
-        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose")}, "source": dict(track["source"])}
+        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose", "voice")}, "source": dict(track["source"])}
         w = self.share(pitch)
-        if self.fitted and w > 0.0:
+        if self.family:
+            track["body"] = self.of_family("body", pitch)
+            track["source"].update(self.of_family("source", pitch))
+            track["noise"] = list(self.of_family("noise", pitch).values())
+            track.update({part: self.of_family(part, pitch) for part in ("glottis", "airway", "nose")})
+            track["voice"] = round(w, 4)
+            if "frames" in track and self.held:
+                track["frames"] = np.round(self.hold(np.array(track["frames"], dtype=np.float64), track["keys"], pitch), 5).tolist()
+        elif self.fitted and w > 0.0:
             s = mixed(self.fitted, w)
             track["source"].update({k: round(s[k], 5) for k in SOURCE})
             track["noise"] = [round(s[k], 5) for k in ("noiseGlottis", "noiseConstriction", "noiseTeeth")]
@@ -561,15 +611,17 @@ class Decoder:
 
     def track(self, d: Path, uid: str, frames: Array, keys: list[str], pitch: float | None = None) -> dict[str, Any]:
         """An encoder's `frames` as a track for the voice of a recording's speaker. All the
-        voice is told of the speaker is in the recording's meta: the sex picks the body, and the
-        source idles at the median pitch (as `pmvc.transplant` sets them: the renders are the
-        same to the sample). `pitch` is the speaker's median pitch over all of the speaker's
-        recordings, which picks the voice; without it the recording's own counts."""
+        voice is told of the speaker is in the recording's meta: the sex picks the body (the
+        pitch does, for a voice that goes by it throughout), and the source idles at the median
+        pitch (as `pmvc.transplant` sets them: the renders are the same to the sample). `pitch`
+        is the speaker's median pitch over all of the speaker's recordings, which picks the
+        voice; without it the recording's own counts."""
         meta = json.loads((d / "meta" / f"{uid}.json").read_text())
         if self.quiet_pauses:
             lead = round(LEAD * FRAME_RATE)
             for first, last in pauses(d, uid):
                 frames[lead + first + PAUSE_IN : lead + last - PAUSE_OUT, keys.index("breath")] = 0.0
+        frames = self.hold(frames, keys, pitch or meta["f0Median"])
         body = {"female": 1.0 if meta["sex"] == "F" else 0.0, "child": 0.0}
         track = self.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(meta["f0Median"], 2)}, "keys": keys}, pitch or meta["f0Median"])
         return {**track, "shift": LEAD, "frames": np.round(frames, 5).tolist()}
