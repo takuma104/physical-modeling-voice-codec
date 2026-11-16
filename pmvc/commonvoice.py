@@ -14,7 +14,7 @@ usage: python -m pmvc.commonvoice --corpus DIR [--lang ja] [--out out/cvja] [--s
 `--corpus` is the language's directory of a release as it unpacks (cv-corpus-27.0-2026-09-11/ja:
 `validated.tsv`, `clip_durations.tsv`, `clips/*.mp3`). A clip is taken if it is validated with
 no vote against it, lasts `--seconds` and its sentence is in the language's script with no
-digit (`pmvc.emilia.in_language`). Of the speakers who say they are women and of those who say
+digit (`pmvc.emilia.in_language`); it is cut to its speech, with MARGIN seconds either side. Of the speakers who say they are women and of those who say
 they are men (a clip with no voice in it, by the pitch tracker, is dropped), `--speakers` each
 are drawn among those with `--per` such clips or more, and
 `--per` clips of each; the last `--valid-clips` of a speaker's are for validation, the others
@@ -35,21 +35,33 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 
+from .audio import FRAME_RATE, speech_span
 from .emilia import in_language
 from .paths import ROOT
 from .recordings import take
 
 SEXES: dict[str, str] = {"female_feminine": "F", "male_masculine": "M"}
+# a clip is cut to this many seconds before and after its speech: the frames within FLOOR dB of
+# its loudest. A volunteer starts the recording, then speaks, then stops it, and the second of
+# room before and after would go to the sentence's first and last phoneme (`pmvc.align`)
+MARGIN: float = 0.15
+FLOOR: float = 35.0
 
 
 def decoded(job: tuple[Path, Path]) -> bool:
-    """An MP3 as a WAV (mono, as sampled); whether it could be read."""
+    """An MP3 as a WAV (mono, as sampled), cut to MARGIN seconds either side of its speech;
+    whether it could be read and has a second of sound."""
     mp3, wav = job
     try:
         x, sr = sf.read(str(mp3), dtype="float32", always_2d=True)
     except (RuntimeError, sf.LibsndfileError):
         return False
-    sf.write(str(wav), x.mean(axis=1), sr, subtype="PCM_16")
+    x = x.mean(axis=1)
+    if len(x) < sr:
+        return False
+    first, last = speech_span(x.astype(np.float64), sr, FLOOR)
+    x = x[max(0, int((first / FRAME_RATE - MARGIN) * sr)) : int((last / FRAME_RATE + MARGIN) * sr)]
+    sf.write(str(wav), x, sr, subtype="PCM_16")
     return len(x) > sr
 
 
