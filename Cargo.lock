@@ -148,10 +148,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "pmvc-engine"
 version = "0.1.0"
 dependencies = [
- "chimera",
  "numpy",
+ "pmvc-voice",
  "pyo3",
- "serde_json",
 ]
 
 [[package]]
@@ -161,6 +160,21 @@ dependencies = [
  "chimera",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pmvc-voice"
+version = "0.1.0"
+dependencies = [
+ "chimera",
+ "serde_json",
+]
+
+[[package]]
+name = "pmvc-wasm"
+version = "0.1.0"
+dependencies = [
+ "pmvc-voice",
 ]
 
 [[package]]

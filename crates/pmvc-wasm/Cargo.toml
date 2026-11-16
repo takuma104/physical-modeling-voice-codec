@@ -1,0 +1,13 @@
+[package]
+name = "pmvc-wasm"
+description = "The CHIMERA voice driven by a control track, for the browser: C-ABI exports for an AudioWorklet"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+name = "pmvc_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+pmvc-voice = { path = "../pmvc-voice" }

@@ -1,0 +1,10 @@
+[package]
+name = "pmvc-voice"
+description = "The CHIMERA voice driven by a control track: what the Python module and the browser's player share"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+chimera = { path = "../../third-party/chimera-vocal-synth/crates/chimera" }
+serde_json = "1"
