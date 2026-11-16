@@ -1,6 +1,6 @@
 """Is a render's voice as bright as the speaker's? Vowels and fricatives against the recording's, band by band.
 
-A listener missed something in the women's renders that he could only call brilliance. A voice's
+A listener missed something in the women's renders and could only call it brilliance. A voice's
 brilliance is what it has between some 2 and 5 kHz, and a consonant's what it has above that;
 this sets the renders against the recordings there, and says whether a band is made of harmonics
 (the voice) or of noise (the breath).

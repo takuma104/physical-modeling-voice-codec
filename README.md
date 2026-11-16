@@ -357,6 +357,13 @@ for m in "whose_closure" "whose_closure2 --model microsoft/unispeech-sat-base-pl
 done
 uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt,encisn,encibn,encibk,encibf,encibh --split test --name results_spk --add
 uv run python -m pmvc.natural out/jvs --name results_spk
+#   全 100 話者でも同じ鳴らし直しと照合(女性と男性に分けた値が結果に入る)
+for o in "encibn --speakers out/jvsall/speakers_body.json" "encibf --speakers out/jvsall/speakers_closure.json" "encibk --speakers out/jvsall/speakers_closure3.json"; do
+  uv run python -m pmvc.encoder revoice out/jvsall --of encir --out $o --split test $V --sinus 24
+done
+for m in "whose_closure" "whose_closure2 --model microsoft/unispeech-sat-base-plus-sv"; do
+  uv run python -m pmvc.whose out/jvsall --variants encir,encib,encibn,encibk,encibf,encis,encit --name $m
+done
 
 # 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
