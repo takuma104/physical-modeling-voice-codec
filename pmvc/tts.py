@@ -9,12 +9,15 @@ sound of a vocal tract, so its mistakes are mistakes of articulation, not of a w
 usage: python -m pmvc.tts train [dir] [--name tts] [--tracks enci] [--standin standin_2c]
                                 [--models out/transplant/models] [--closed 1.0] [--epochs 60]
                                 [--limit N] [--voice FILE] [--no-wall-air] [--closed-area CM2]
+                                [--by speaker|voice]
        python -m pmvc.tts pauses [dir] [--name tts] [--tracks enci] [--limit N]
        python -m pmvc.tts speak [dir] [--name tts] [--models DIR] [--out tts] [--split test]
                                 [--ids ...] [--timing own|recording] [--sentences FILE]
                                 [--speaker NAME] [--rate PHONEMES_A_SECOND]
+                                [--share W] [--pitch HZ] [--spread OCTAVES]
        python -m pmvc.tts say "こんにちは。" [--name tts] [--models DIR] [--out say.wav]
                               [--speaker NAME] [--rate PHONEMES_A_SECOND]
+                              [--share W] [--pitch HZ] [--spread OCTAVES]
 
 The model is of the plainest kind that needs no alignment at run time (FastSpeech 2's shape):
   - the sentence as `pmvc.japanese` reads it, phonemes with their places against the pitch
@@ -54,6 +57,15 @@ and to every frame, and writes each speaker's pitch against that speaker's own m
 spread. Of a speaker the voice is still told only the sex and the median pitch: what else
 makes the speakers differ is in the tracks, or it is lost. `speak` gives a recording's
 sentence its own speaker's voice, or `--speaker`'s.
+
+With `train --by voice` the model has no vector for a speaker. It is told two numbers of each:
+the share of the high voice (of a pair of voices, `pmvc.encoder`: 0 for a man, 1 for a woman)
+and the speaker's pace (phonemes a second). A voice nobody recorded is then two numbers and a
+pitch, which a listener can turn: `speak` and `say` take `--share` (also between the two
+voices), `--pitch` (the median, Hz), `--rate`, and `--spread` (how far the pitch moves about
+its mean); what is not given is what the model's speakers of that voice have at the median.
+Without `--share`, `speak` gives a recording's sentence a voice of its speaker's sex and
+median pitch.
 
 `speak` writes <dir>/<out>/<id>.tracks.json and <id>.wav for the sentences of a split's
 recordings (their meta's text). With `--timing recording` each phoneme lasts as long as in the
@@ -247,7 +259,7 @@ class Pausing(nn.Module):
 class Speaker(nn.Module):
     """Phonemes in, their durations and the track's channels out."""
 
-    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1, rate: float = float(FRAME_RATE)) -> None:
+    def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1, rate: float = float(FRAME_RATE), told: int = 0) -> None:
         super().__init__()
         self.phones = phones
         # how many of the model's own frames (FRAME_RATE a second) one frame of what it writes
@@ -256,7 +268,13 @@ class Speaker(nn.Module):
         self.pausing = Pausing(width) if pausing else None
         # a model of several speakers is told which one speaks: a vector for each, added to
         # every phoneme before the text is read and to every frame before the track is written
-        self.who = nn.Embedding(speakers, width) if speakers > 1 else None
+        self.who = nn.Embedding(speakers, width) if speakers > 1 and not told else None
+        # or it is told the voice and not who: `told` numbers of each speaker (`conditions`), in
+        # a table by the speaker's place, through two layers. A voice nobody recorded is then a
+        # row more in the table (`Voice.dial`)
+        self.tell = nn.Sequential(nn.Linear(told, width), nn.Tanh(), nn.Linear(width, width)) if told else None
+        self.table: torch.Tensor
+        self.register_buffer("table", torch.zeros(speakers if told else 0, told), persistent=bool(told))
         self.embed = nn.ModuleList([nn.Embedding(n, width) for n in (len(phones), *SIZES)])
         self.text = nn.ModuleList([Block(width, heads, kernel, dropout) for _ in range(text_layers)])
         self.text_norm = nn.LayerNorm(width)
@@ -276,9 +294,9 @@ class Speaker(nn.Module):
         frames."""
         h = sum(e(ids[..., k]) for k, e in enumerate(self.embed))
         assert isinstance(h, torch.Tensor)
-        if self.who is not None:
+        if self.who is not None or self.tell is not None:
             assert who is not None, "a model of several speakers has to be told who speaks"
-            h = h + self.who(who)[:, None]
+            h = h + self.spoken_by(who)[:, None]
         for block in self.text:
             h = block(h, real)
         h = self.text_norm(h)
@@ -300,10 +318,18 @@ class Speaker(nn.Module):
         since = (at - (ends - frames).gather(1, which)).float()
         place = torch.stack([(since + 0.5) / long, since / 50.0, long.log() / 4.0], dim=-1)
         x = h.gather(1, which[..., None].expand(-1, -1, h.shape[2])) + self.place(place)
-        if self.who is not None:
+        if self.who is not None or self.tell is not None:
             assert who is not None
-            x = x + self.who(who)[:, None]
+            x = x + self.spoken_by(who)[:, None]
         return x, real, total
+
+    def spoken_by(self, who: torch.Tensor) -> torch.Tensor:
+        """What is added for the speakers `who` (their places): each one's vector, or what the
+        model makes of what it is told of each."""
+        if self.tell is not None:
+            return self.tell(self.table[who])
+        assert self.who is not None
+        return self.who(who)
 
     def finish(self, x: torch.Tensor, real: torch.Tensor, total: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """The frames' states through the frame layers and out, at the rate of what is written.
@@ -332,6 +358,14 @@ class Talker:
     sex: str
     f0: float
     pitch: tuple[float, float]
+    # how fast the speaker talks: phonemes a second, pauses counted in the time (0: not known)
+    rate: float = 0.0
+    # the share of the high voice, for a voice between the two a pair has (None: as the sex says)
+    share: float | None = None
+
+    @property
+    def high(self) -> float:
+        return self.share if self.share is not None else 1.0 if self.sex == "F" else 0.0
 
 
 @dataclass
@@ -352,7 +386,7 @@ class Voice:
 
     def state(self) -> dict[str, Any]:
         return {"keys": self.keys, "mean": self.mean.tolist(), "std": self.std.tolist(), "lo": self.lo.tolist(), "hi": self.hi.tolist(), "learned": self.learned,
-                "talkers": [{"name": t.name, "sex": t.sex, "f0": t.f0, "pitch": list(t.pitch)} for t in self.talkers], "pace": list(self.pace),
+                "talkers": [{"name": t.name, "sex": t.sex, "f0": t.f0, "pitch": list(t.pitch), "rate": t.rate} for t in self.talkers if t.share is None], "pace": list(self.pace),
                 "decoder": {"fitted": self.decoder.fitted, "wall_air": self.decoder.wall_air, "closed_area": self.decoder.closed_area, "family": self.decoder.family}}  # fmt: skip
 
     @classmethod
@@ -361,7 +395,7 @@ class Voice:
         talkers = s.get("talkers") or [{"name": "", "sex": s["sex"], "f0": s["f0"], "pitch": s["pitch"]}]
         pace = s.get("pace", [1.0, 1.0])
         return cls(s["keys"], np.array(s["mean"]), np.array(s["std"]), np.array(s["lo"]), np.array(s["hi"]), s["learned"],
-                   [Talker(t["name"], t["sex"], t["f0"], (t["pitch"][0], t["pitch"][1])) for t in talkers], Decoder(**s["decoder"]), (pace[0], pace[1]))  # fmt: skip
+                   [Talker(t["name"], t["sex"], t["f0"], (t["pitch"][0], t["pitch"][1]), t.get("rate", 0.0)) for t in talkers], Decoder(**s["decoder"]), (pace[0], pace[1]))  # fmt: skip
 
     def who(self, name: str) -> int:
         """A speaker's place among the model's; a model of one speaker has only that one."""
@@ -384,7 +418,7 @@ class Voice:
     def track(self, frames: Array, free: bool, who: int = 0) -> dict[str, Any]:
         """The frames as a track for the speaker's voice."""
         t = self.talkers[who]
-        body = {"female": 1.0 if t.sex == "F" else 0.0, "child": 0.0}
+        body = {"female": t.high, "child": 0.0}
         track = self.decoder.settle({"rate": float(FRAME_RATE), "body": body, "source": {"f0": round(t.f0, 2)}, "keys": self.keys}, t.f0)
         # the channels a pair of voices holds are the voice's to say, not the model's
         frames = self.decoder.hold(frames, self.keys, body["female"])
@@ -394,9 +428,31 @@ class Voice:
         """What a stand-in is told of a speaker: the body (how far towards the female one) and,
         for a voice that differs between speakers, the speaker's share of the high voice."""
         t = self.talkers[who]
-        female = 1.0 if t.sex == "F" else 0.0
-        w = self.decoder.share(t.f0, female)
-        return [self.decoder.of_family("body", w)["female"] if self.decoder.family else female, w][: 2 if self.decoder.by_pitch else 1]
+        w = self.decoder.share(t.f0, t.high)
+        return [self.decoder.of_family("body", w)["female"] if self.decoder.family else t.high, w][: 2 if self.decoder.by_pitch else 1]
+
+    def dial(self, share: float, f0: float, rate: float = 0.0, spread: float = 0.0) -> int:
+        """A speaker nobody recorded, for a model that is told the voice and not who speaks:
+        `share` of the high voice (0 the low one, 1 the high one), a median pitch of `f0` Hz, so
+        many phonemes a second, and the pitch moving `spread` octaves about its mean (0 for
+        either: what the model's speakers of that voice have at the median). Returns the
+        speaker's place among the model's."""
+        women = [t for t in self.talkers if t.share is None and t.sex == "F"] or self.talkers
+        men = [t for t in self.talkers if t.share is None and t.sex == "M"] or self.talkers
+
+        def between(of: Any) -> float:
+            return float((1 - share) * np.median([of(t) for t in men]) + share * np.median([of(t) for t in women]))
+
+        f0 = f0 or float(2.0 ** between(lambda t: np.log2(t.f0)))
+        self.talkers.append(Talker("dial", "F" if share >= 0.5 else "M", f0, (float(np.log2(f0)), spread or between(lambda t: t.pitch[1])), rate or between(lambda t: t.rate), share))
+        return len(self.talkers) - 1
+
+
+
+def conditions(talkers: list[Talker]) -> torch.Tensor:
+    """What a model that is told the voice is told of each speaker: the share of the high voice,
+    and the pace (octaves about ten phonemes a second)."""
+    return torch.tensor([[t.high, float(np.log2(max(t.rate, 1.0) / 10.0))] for t in talkers], dtype=torch.float32)
 
 
 def collate(batch: list[Sentence], phones: list[str], device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -601,7 +657,10 @@ def train(a: argparse.Namespace) -> None:
     talkers: list[Talker] = []
     for name, theirs in sorted(by.items()):
         octaves = np.log2(np.concatenate([s.track[:, f0] for s in theirs]).astype(np.float64))
-        talkers.append(Talker(name, theirs[0].sex, float(np.median([s.f0 for s in theirs])), (float(octaves.mean()), float(octaves.std()))))
+        # the speaker's pace: the phonemes that sound, over the time between the first and the last of each sentence
+        sounds = sum(sum(not p.silent for p in s.phones[1:-1]) for s in theirs)
+        seconds = sum(int(s.frames[1:-1].sum()) for s in theirs) / FRAME_RATE
+        talkers.append(Talker(name, theirs[0].sex, float(np.median([s.f0 for s in theirs])), (float(octaves.mean()), float(octaves.std())), sounds / max(seconds, 1e-3)))
     places = {t.name: k for k, t in enumerate(talkers)}
     held = [s for s in held if s.speaker in places and all(p.p in phones for p in s.phones)]
     for s in (*fit, *held):
@@ -617,7 +676,10 @@ def train(a: argparse.Namespace) -> None:
     centre = torch.tensor([t.pitch[0] for t in talkers], device=device, dtype=torch.float32)
     spread = torch.tensor([t.pitch[1] for t in talkers], device=device, dtype=torch.float32)
 
-    model = Speaker(phones, len(learned) + 1, a.width, text_layers=a.text_layers, frame_layers=a.frame_layers, speakers=len(talkers)).to(device)
+    table = conditions(talkers) if a.by == "voice" else None
+    model = Speaker(phones, len(learned) + 1, a.width, text_layers=a.text_layers, frame_layers=a.frame_layers, speakers=len(talkers), told=0 if table is None else table.shape[1]).to(device)
+    if table is not None:
+        model.table.copy_(table)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
     steps = a.epochs * len(chunks(fit, a.batch, None))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.05)
@@ -697,7 +759,7 @@ def train(a: argparse.Namespace) -> None:
                 voice.pace = pace(model, fit[:: max(1, len(fit) // 1000)], device)
                 row["pace"], row["pace:pauses"] = voice.pace
                 torch.save({"state": model.state_dict(), "phones": phones, "voice": voice.state(), "width": a.width, "text_layers": a.text_layers, "frame_layers": a.frame_layers,
-                            "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out_dir / f"{a.name}.pt")  # fmt: skip
+                            "told": 0 if table is None else table.shape[1], "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out_dir / f"{a.name}.pt")  # fmt: skip
         log.append(row)
         print(f"epoch {epoch:3d}  " + "  ".join(f"{k} {v:.4f}" for k, v in row.items() if k != "epoch") + ("  *" if row.get("listener") == best else ""), flush=True)
         (out_dir / f"{a.name}.json").write_text(json.dumps({"best": best, "epochs": log}, indent=1))
@@ -730,7 +792,7 @@ def load_model(path: Path, device: str) -> tuple[Speaker, Voice]:
     ck = torch.load(path, map_location="cpu", weights_only=False)
     voice = Voice.of(ck["voice"])
     voice.decoder.quiet_pauses = True
-    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False), speakers=len(voice.talkers))
+    model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False), speakers=len(voice.talkers), told=ck.get("told", 0))
     model.load_state_dict({k: v for k, v in ck["state"].items() if ck.get("pausing") or not k.startswith("pausing.")})
     return model.to(device).eval(), voice
 
@@ -750,6 +812,16 @@ def phonemes(model: Speaker, text: str) -> list[Phone]:
     return out
 
 
+def dialled(model: Speaker, voice: Voice, a: argparse.Namespace, sex: str = "", f0: float = 0.0) -> int:
+    """The place of the voice the dial's options ask of a model that is told the voice
+    (`--share`, `--pitch`, `--rate`, `--spread`); without `--share`, a voice of that sex and
+    median pitch (a recording's speaker's)."""
+    share = a.share if a.share is not None else 1.0 if sex == "F" else 0.0
+    who = voice.dial(share, a.pitch or (f0 if a.share is None else 0.0), a.rate, a.spread)
+    model.table = torch.cat([model.table, conditions([voice.talkers[who]]).to(model.table.device)])
+    return who
+
+
 def speak(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
@@ -758,16 +830,25 @@ def speak(a: argparse.Namespace) -> None:
         # sentences nobody recorded: all there is of each is its text
         (d / "meta").mkdir(parents=True, exist_ok=True)
         for k, text in enumerate(filter(None, (line.strip() for line in a.sentences.read_text(encoding="utf-8").splitlines())), 1):
-            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": voice.talkers[voice.who(a.speaker)].sex, "lang": "ja", "text": text, "split": "test"}
+            sex = ("F" if (a.share or 0.0) >= 0.5 else "M") if model.tell is not None and not a.speaker else voice.talkers[voice.who(a.speaker)].sex
+            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": sex, "lang": "ja", "text": text, "split": "test"}
             (d / "meta" / f"{meta['id']}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
     ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang") == "ja"]
     timed = aligned(d) if a.timing == "recording" else {}
     (d / a.out).mkdir(exist_ok=True)
     tracks: list[dict[str, Any]] = []
+    voices: dict[tuple[str, float], int] = {}
     for uid in ids:
         meta = json.loads((d / "meta" / f"{uid}.json").read_text())
-        # in the voice asked for, or else the recording's own speaker's
-        who = voice.who(a.speaker or meta["speaker"])
+        # in the voice asked for, or else the recording's own speaker's (for a model that is
+        # told the voice: the dial's, or one of the speaker's sex and median pitch)
+        if model.tell is not None and not a.speaker:
+            asked = (meta.get("sex", ""), 0.0 if a.share is not None else round(meta.get("f0Median", 0.0)))
+            if asked not in voices:
+                voices[asked] = dialled(model, voice, a, *asked)
+            who = voices[asked]
+        else:
+            who = voice.who(a.speaker or meta["speaker"])
         if timed:
             phones, frames = timed[uid]
             track, _ = write_track(model, voice, phones, device, np.array(frames, dtype=np.int64), who)
@@ -784,7 +865,7 @@ def speak(a: argparse.Namespace) -> None:
 def say(a: argparse.Namespace) -> None:
     device = pick_device()
     model, voice = load_model(a.models / f"{a.name}.pt", device)
-    who = voice.who(a.speaker)
+    who = dialled(model, voice, a) if model.tell is not None and not a.speaker else voice.who(a.speaker)
     phones = phrased(model, phonemes(model, a.text), device, who)
     frames, lasting = write_track(model, voice, phones, device, None, who, a.rate)
     track = voice.track(frames, True, who)
@@ -810,6 +891,7 @@ def main() -> None:
     for p in (t, u):
         p.add_argument("--tracks", type=str, default="enci", help="the variant whose tracks are learned from")
         p.add_argument("--limit", type=int, default=0, help="learn from only so many of the recordings")
+    t.add_argument("--by", choices=["speaker", "voice"], default="speaker", help="what a model of several speakers is told: who speaks (a vector for each), or the voice (its share of the high voice and its pace), which a dial can then set")
     t.add_argument("--models", type=Path, default=ROOT / "out" / "transplant" / "models", help="where the stand-in is")
     t.add_argument("--standin", type=str, default="standin_2c")
     t.add_argument("--closed", type=float, default=1.0, help="the weight of the term through the stand-in; 0 for none")
@@ -835,6 +917,9 @@ def main() -> None:
     for p in (s, y):
         p.add_argument("--speaker", type=str, default="", help="which of the model's speakers speaks (a model of several): for sentences nobody recorded, or instead of a recording's own speaker")
         p.add_argument("--rate", type=float, default=0.0, help="phonemes a second, for a sentence the model times itself (0: the pace of the speaker's vector)")
+        p.add_argument("--share", type=float, default=None, help="for a model that is told the voice: the share of the high voice (0 the low one, 1 the high one)")
+        p.add_argument("--pitch", type=float, default=0.0, help="for such a model: the voice's median pitch (Hz); 0: what its speakers of that voice have")
+        p.add_argument("--spread", type=float, default=0.0, help="for such a model: how far the pitch moves about its mean (octaves, one standard deviation); 0: what its speakers have")
     y.add_argument("--models", type=Path, default=ROOT / "out" / "hfcm" / "models")
     y.add_argument("--out", type=Path, default=Path("say.wav"))
     a = ap.parse_args()
