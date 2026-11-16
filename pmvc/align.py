@@ -34,8 +34,9 @@ stop's.) With `--no-pauses` the phonemes stay as the text gives them.
 `prune` is for recordings whose text a recogniser wrote (Emilia-YODAS): where the text has a
 word the speaker did not say, or lacks one, the alignment gives a run of phonemes a frame each
 and a neighbour the rest. It takes out of <dir>/aligned.json the recordings where more than
-`--vowels` of the vowels take one frame, where a phoneme takes more than `--longest` frames or
-a pause more than `--pause`, and keeps what `write` wrote as aligned_all.json. With people
+`--vowels` of the vowels take one frame, where a phoneme (but the sentence's last, which has the
+silence after it too) takes more than `--longest` frames or a pause more than `--pause`, and
+keeps what `write` wrote as aligned_all.json. With people
 talking and no way to check the text, twelve epochs do not find the alignment; forty do
 (`train --epochs 40 --hinted 12 --sharpen 16`).
 """
@@ -321,7 +322,8 @@ def prune(a: argparse.Namespace) -> None:
     kept: dict[str, Any] = {}
     for uid, r in rows.items():
         held = [f for p, f in zip(r["p"], r["frames"]) if p in vowels]
-        longest = max((f for p, f in zip(r["p"], r["frames"]) if p not in ("sil", "pau", "sp")), default=0)
+        # (the sentence's last phoneme has the silence after it too, as `write` leaves it)
+        longest = max((f for p, f in zip(r["p"][:-2], r["frames"][:-2]) if p not in ("sil", "pau", "sp")), default=0)
         pause = max((f for p, f in zip(r["p"], r["frames"]) if p in ("pau", "sp")), default=0)
         if sum(f <= 1 for f in held) <= a.vowels * len(held) and longest <= a.longest and pause <= a.pause:
             kept[uid] = r
