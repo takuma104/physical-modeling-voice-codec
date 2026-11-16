@@ -224,3 +224,6 @@ out/
 
 # technical report: fonts are downloaded by docs/report/build.sh
 docs/report/fonts/
+
+# mac ds_store
+.DS_Store
