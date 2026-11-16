@@ -38,6 +38,8 @@ class Phone:
     a2: int
     a3: int
     ask: bool
+    # the language whose front end read it: `pmvc.english` gives the three places other meanings
+    lang: str = "ja"
 
     @property
     def silent(self) -> bool:
@@ -45,8 +47,9 @@ class Phone:
 
     @property
     def ends_mora(self) -> bool:
-        """Whether a mora can end with it: a vowel, ん or っ."""
-        return self.p in ("a", "i", "u", "e", "o", "A", "I", "U", "E", "O", "N", "cl")
+        """Whether a mora can end with it: a vowel, ん or っ. (In English the places are a
+        phoneme's own, and any phoneme can be its word's last.)"""
+        return self.lang != "ja" or self.p in ("a", "i", "u", "e", "o", "A", "I", "U", "E", "O", "N", "cl")
 
     def ids(self, phones: list[str]) -> list[int]:
         """The phone as five small numbers, each from 0: its place in `phones` (a model's list
@@ -61,12 +64,17 @@ SIZES: tuple[int, int, int, int] = (2 * NUCLEUS + 2, PLACE + 1, PLACE + 1, 2)
 
 
 def border(phones: list[Phone], k: int) -> bool:
-    """Whether an accent phrase ends before phoneme `k` and the next starts with it."""
+    """Whether an accent phrase ends before phoneme `k` and the next starts with it (in English: a word)."""
     return k > 0 and not phones[k].silent and phones[k].a2 == 1 and phones[k - 1].ends_mora and phones[k - 1].a3 == 1
 
 
-def read(text: str) -> list[Phone]:
-    """The sentence's phonemes, from the silence before it to the silence after."""
+def read(text: str, lang: str = "ja") -> list[Phone]:
+    """The sentence's phonemes, from the silence before it to the silence after, as the
+    language's front end reads it."""
+    if lang == "en":
+        from .english import read as read_english
+
+        return read_english(text)
     import pyopenjtalk
 
     labels: list[str] = pyopenjtalk.extract_fullcontext(text)

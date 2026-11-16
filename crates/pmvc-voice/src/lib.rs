@@ -11,6 +11,7 @@ use chimera::anatomy::human::{ArticKey, BodyMix, HumanBody, HumanVocalTract, NEU
 use chimera::control::articulators::ARTIC_SPECS;
 use chimera::control::score::{ControlKey, Gesture, Targets};
 use chimera::math::PI;
+use chimera::phonetics::english::EnglishG2P;
 use chimera::voice::human_voice::{HumanVoice, SourcePatch, oversample_for};
 
 /// The output rate (Hz), as every CHIMERA render.
@@ -363,4 +364,28 @@ pub fn outline(body: &str, posture: &str) -> Said<String> {
         a.set(ArticKey::from_name(name).ok_or_else(|| bad(format!("unknown articulator {name:?}")))?, *x);
     }
     serde_json::to_string(&HumanVocalTract::new(body).compute_new(&a)).map_err(bad)
+}
+
+/// CHIMERA's own English front end (its dictionary, CMUdict, with letter-to-sound rules for a
+/// word that is not in it, numbers spelt out, and the reductions of running speech): text in,
+/// the phrases' segments out. The engine's planner would turn them into gestures by rule; a
+/// text-to-speech model (`pmvc.tts`) takes them as what it reads instead.
+pub struct English {
+    g: EnglishG2P,
+}
+
+impl English {
+    /// `dict`: the dictionary's text, a line a word ("word\tPHONES": the file CHIMERA ships as
+    /// `public/data/cmudict.txt.gz`, unzipped).
+    pub fn new(dict: &str) -> Self {
+        let mut g = EnglishG2P::new();
+        g.load_dict(dict);
+        English { g }
+    }
+
+    /// The text's phrases as JSON: for each its `segments` (`ipa`, and where they apply
+    /// `stress` and `wordEnd`), its `intonation`, the `pause` after it (s) and its `words`.
+    pub fn phrases(&self, text: &str) -> Said<String> {
+        serde_json::to_string(&self.g.to_phrases(text)).map_err(bad)
+    }
 }

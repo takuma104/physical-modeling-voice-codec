@@ -11,9 +11,9 @@ every recording is its sentence's phonemes in order, each for at least one frame
 likelihood of all such paths together is what CTC computes. The best single path is then the
 alignment.
 
-usage: python -m pmvc.align train [dir] [--name aligner] [--epochs 12]
+usage: python -m pmvc.align train [dir] [--name aligner] [--epochs 12] [--lang ja]
        python -m pmvc.align write [dir] [--name aligner] [--models DIR] [--split all] [--ids ...]
-                                  [--no-pauses]
+                                  [--no-pauses] [--lang ja]
        python -m pmvc.align prune [dir] [--run 4] [--longest 80] [--pause 150]
 
 `train` learns from every recording of <dir> with Japanese text (the alignment of a test
@@ -89,7 +89,7 @@ def item(job: tuple[Path, str]) -> Item:
     mel = log_mel(audio.astype(np.float64), n_mels=MELS)[: len(aux)]
     k = round(LEAD * FRAME_RATE)
     span = (k + round(meta["span"][0] * FRAME_RATE), k + round(meta["span"][1] * FRAME_RATE))
-    return Item(uid, read(meta["text"]), mel.astype(np.float16), span, [(k + a, k + b) for a, b in pauses(d, uid)])
+    return Item(uid, read(meta["text"], meta.get("lang", "ja")), mel.astype(np.float16), span, [(k + a, k + b) for a, b in pauses(d, uid)])
 
 
 def items(d: Path, ids: list[str], jobs: int) -> list[Item]:
@@ -198,7 +198,7 @@ def train(a: argparse.Namespace) -> None:
     torch.manual_seed(a.seed)
     rng = np.random.default_rng(a.seed)
     device = pick_device()
-    ids = [i for i in ids_in(d, "all") if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang") == "ja"]
+    ids = [i for i in ids_in(d, "all") if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang", "ja") == a.lang]
     data = items(d, ids, a.jobs)
     phones = sorted({p.p for x in data for p in x.phones})
     model = Aligner(phones).to(device)
@@ -259,14 +259,14 @@ def with_pauses(x: Item, frames: list[int]) -> list[Phone] | None:
         at.update(k for k in range(over[0], min(len(x.phones), over[-1] + 2)) if border(x.phones, k))
     if not at:
         return None
-    return [q for k, p in enumerate(x.phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask), p) if k in at else (p,))]
+    return [q for k, p in enumerate(x.phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask, p.lang), p) if k in at else (p,))]
 
 
 def write(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
     model = load_aligner((a.models or d / "models") / f"{a.name}.pt", device)
-    ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang") == "ja"]
+    ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang", "ja") == a.lang]
     data = items(d, ids, a.jobs)
     known = [x for x in data if all(p.p in model.phones for p in x.phones)]
     if len(known) < len(data):
@@ -294,7 +294,7 @@ def write(a: argparse.Namespace) -> None:
     path = d / "aligned.json"
     out: dict[str, Any] = json.loads(path.read_text()) if path.exists() else {}
     for x in known:
-        out[x.uid] = {"p": [p.p for p in x.phones], "a1": [p.a1 for p in x.phones], "a2": [p.a2 for p in x.phones], "a3": [p.a3 for p in x.phones], "ask": x.phones[0].ask, "frames": lasting[x.uid]}
+        out[x.uid] = {"p": [p.p for p in x.phones], "a1": [p.a1 for p in x.phones], "a2": [p.a2 for p in x.phones], "a3": [p.a3 for p in x.phones], "ask": x.phones[0].ask, "lang": x.phones[0].lang, "frames": lasting[x.uid]}
     path.write_text(json.dumps(out, ensure_ascii=False))
     # what the alignment says of the speaker, to check it by
     by: dict[str, list[int]] = {}
@@ -309,7 +309,7 @@ def aligned(d: Path) -> dict[str, tuple[list[Phone], list[int]]]:
     """What `write` wrote for <dir>: each recording's phonemes and their frames."""
     out: dict[str, tuple[list[Phone], list[int]]] = {}
     for uid, r in json.loads((d / "aligned.json").read_text()).items():
-        out[uid] = ([Phone(p, a1, a2, a3, r["ask"]) for p, a1, a2, a3 in zip(r["p"], r["a1"], r["a2"], r["a3"])], r["frames"])
+        out[uid] = ([Phone(p, a1, a2, a3, r["ask"], r.get("lang", "ja")) for p, a1, a2, a3 in zip(r["p"], r["a1"], r["a2"], r["a3"])], r["frames"])
     return out
 
 
@@ -346,6 +346,7 @@ def main() -> None:
         p = sub.add_parser(name)
         p.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "hfcm")
         p.add_argument("--name", type=str, default="aligner")
+        p.add_argument("--lang", type=str, default="ja", help="the language of the recordings taken (their meta's): ja, or en (`pmvc.english`)")
         p.add_argument("--batch", type=int, default=32)
         p.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     t = sub.choices["train"]

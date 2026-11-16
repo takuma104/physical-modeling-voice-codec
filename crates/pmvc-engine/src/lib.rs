@@ -128,6 +128,26 @@ impl Voice {
     }
 }
 
+/// CHIMERA's English front end: text in, the phrases' segments out (see `pmvc_voice::English`).
+#[pyclass]
+struct English {
+    e: pmvc_voice::English,
+}
+
+#[pymethods]
+impl English {
+    /// `dict`: the dictionary's text ("word\tPHONES" lines).
+    #[new]
+    fn new(dict: &str) -> Self {
+        English { e: pmvc_voice::English::new(dict) }
+    }
+
+    /// The text's phrases as JSON.
+    fn phrases(&self, text: &str) -> PyResult<String> {
+        self.e.phrases(text).map_err(bad)
+    }
+}
+
 /// The midsagittal outlines of a body in a posture, as CHIMERA computes them for its own
 /// display and for the airway's areas: JSON, in cm with the glottis at the origin. `body` as
 /// for a [`Voice`]; `posture`: a JSON object of articulator values, the rest neutral.
@@ -139,6 +159,7 @@ fn outline(body: &str, posture: &str) -> PyResult<String> {
 #[pymodule]
 fn pmvc_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Voice>()?;
+    m.add_class::<English>()?;
     m.add_function(wrap_pyfunction!(outline, m)?)?;
     m.add("SAMPLE_RATE", FS as u32)?;
     Ok(())

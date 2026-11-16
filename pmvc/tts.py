@@ -262,6 +262,8 @@ class Speaker(nn.Module):
     def __init__(self, phones: list[str], channels: int, width: int = 256, heads: int = 4, text_layers: int = 4, frame_layers: int = 6, kernel: int = 5, dropout: float = 0.1, pausing: bool = False, speakers: int = 1, rate: float = float(FRAME_RATE), told: int = 0) -> None:
         super().__init__()
         self.phones = phones
+        # the language whose front end reads a sentence for it (`pmvc.japanese.read`)
+        self.lang = "ja"
         # how many of the model's own frames (FRAME_RATE a second) one frame of what it writes
         # takes: 1 for a control track; more for a latent with fewer frames a second (`pmvc.control`)
         self.step = FRAME_RATE / rate
@@ -584,7 +586,7 @@ def phrased(model: Speaker, phones: list[Phone], device: str, who: int = 0) -> l
     h, _ = model.read(ids, torch.ones(1, len(phones), dtype=torch.bool, device=device), torch.tensor([who], device=device))
     k = torch.tensor(at, device=device)
     put = {i for i, logit in zip(at, model.pausing(h[0, k - 1], h[0, k]).tolist()) if logit > 0.0}
-    return [q for i, p in enumerate(phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask), p) if i in put else (p,))]
+    return [q for i, p in enumerate(phones) for q in ((Phone("sp", NONE, NONE, NONE, p.ask, p.lang), p) if i in put else (p,))]
 
 
 @torch.no_grad()
@@ -676,10 +678,12 @@ def train(a: argparse.Namespace) -> None:
     centre = torch.tensor([t.pitch[0] for t in talkers], device=device, dtype=torch.float32)
     spread = torch.tensor([t.pitch[1] for t in talkers], device=device, dtype=torch.float32)
 
+    lang = fit[0].phones[1].lang
     table = conditions(talkers) if a.by == "voice" else None
     model = Speaker(phones, len(learned) + 1, a.width, text_layers=a.text_layers, frame_layers=a.frame_layers, speakers=len(talkers), told=0 if table is None else table.shape[1]).to(device)
     if table is not None:
         model.table.copy_(table)
+    model.lang = lang
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=0.01)
     steps = a.epochs * len(chunks(fit, a.batch, None))
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.05)
@@ -759,7 +763,7 @@ def train(a: argparse.Namespace) -> None:
                 voice.pace = pace(model, fit[:: max(1, len(fit) // 1000)], device)
                 row["pace"], row["pace:pauses"] = voice.pace
                 torch.save({"state": model.state_dict(), "phones": phones, "voice": voice.state(), "width": a.width, "text_layers": a.text_layers, "frame_layers": a.frame_layers,
-                            "told": 0 if table is None else table.shape[1], "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out_dir / f"{a.name}.pt")  # fmt: skip
+                            "told": 0 if table is None else table.shape[1], "lang": lang, "epoch": epoch, "args": {k: str(v) for k, v in vars(a).items()}}, out_dir / f"{a.name}.pt")  # fmt: skip
         log.append(row)
         print(f"epoch {epoch:3d}  " + "  ".join(f"{k} {v:.4f}" for k, v in row.items() if k != "epoch") + ("  *" if row.get("listener") == best else ""), flush=True)
         (out_dir / f"{a.name}.json").write_text(json.dumps({"best": best, "epochs": log}, indent=1))
@@ -793,6 +797,7 @@ def load_model(path: Path, device: str) -> tuple[Speaker, Voice]:
     voice = Voice.of(ck["voice"])
     voice.decoder.quiet_pauses = True
     model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False), speakers=len(voice.talkers), told=ck.get("told", 0))
+    model.lang = ck.get("lang", "ja")
     model.load_state_dict({k: v for k, v in ck["state"].items() if ck.get("pausing") or not k.startswith("pausing.")})
     return model.to(device).eval(), voice
 
@@ -802,10 +807,10 @@ def phonemes(model: Speaker, text: str) -> list[Phone]:
     the model never met (kw in クィ, say) is said as the consonant and the glide; any other
     stranger cannot be said."""
     out: list[Phone] = []
-    for p in read(text):
+    for p in read(text, model.lang):
         if p.p in model.phones:
             out.append(p)
-        elif len(p.p) > 1 and p.p[-1] in "yw" and p.p[:-1] in model.phones:
+        elif p.lang == "ja" and len(p.p) > 1 and p.p[-1] in "yw" and p.p[:-1] in model.phones:
             out += [Phone(p.p[:-1], p.a1, p.a2, p.a3, p.ask), Phone(p.p[-1], p.a1, p.a2, p.a3, p.ask)]
         else:
             raise ValueError(f"the model was not taught the phoneme {p.p} of {text!r}")
@@ -831,9 +836,9 @@ def speak(a: argparse.Namespace) -> None:
         (d / "meta").mkdir(parents=True, exist_ok=True)
         for k, text in enumerate(filter(None, (line.strip() for line in a.sentences.read_text(encoding="utf-8").splitlines())), 1):
             sex = ("F" if (a.share or 0.0) >= 0.5 else "M") if model.tell is not None and not a.speaker else voice.talkers[voice.who(a.speaker)].sex
-            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": sex, "lang": "ja", "text": text, "split": "test"}
+            meta = {"id": f"{a.set}_{k:03d}", "speaker": a.set, "sex": sex, "lang": model.lang, "text": text, "split": "test"}
             (d / "meta" / f"{meta['id']}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
-    ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang") == "ja"]
+    ids = a.ids.split(",") if a.ids else [i for i in ids_in(d, a.split) if json.loads((d / "meta" / f"{i}.json").read_text()).get("lang", "ja") == model.lang]
     timed = aligned(d) if a.timing == "recording" else {}
     (d / a.out).mkdir(exist_ok=True)
     tracks: list[dict[str, Any]] = []
