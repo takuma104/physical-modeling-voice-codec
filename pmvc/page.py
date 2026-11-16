@@ -149,7 +149,7 @@ RETAUGHT_NOTES: dict[str, str] = {
     "enci": "H と同じ作り方で、調整後の声を通して学習し直し、調整後の声で鳴らす",
 }
 # towards the release: the pair of voices and the encoders taught with what may be passed on
-RELEASE_VOICES: dict[str, str] = {"real": "実録音（値）", "enci": "これまで", "decided": "話者ごとの設定（決定済み）", "enciv": "2 つの基準の声"}
+RELEASE_KEPT: dict[str, str] = {"real": "実録音（値）", "enci": "これまで", "decided": "話者ごとの設定（決定済み）", "enciv": "2 つの基準の声"}
 RELEASE_LABELS: dict[str, str] = {
     "real": "実録音",
     "enci": "エンコーダ I",
@@ -166,7 +166,7 @@ RELEASE_NOTES: dict[str, str] = {
     "encvj": "I′ の物差しを XLS-R に、入口を wav2vec 2.0 base に替える（録音は TSP + JVS のまま）",
     "encv": "J0 の JVS を Emilia-YODAS（日本語と英語）に替える。公開できる材料だけで学習",
 }
-RELEASE_LISTENERS: dict[str, str] = {
+RELEASE_MODELS: dict[str, str] = {
     "utter-project/mHuBERT-147": "mHuBERT-147（147 言語。これまでの物差し）｜CC BY-NC-SA 4.0",
     "facebook/wav2vec2-xls-r-300m": "XLS-R 300M（128 言語）｜Apache-2.0",
     "sarulab-speech/hubert-base-jtube": "hubert-base-jtube（日本語）｜MIT",
@@ -1108,9 +1108,31 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
         f"""<div class="scroll"><table>
 <caption>{sex}のテスト {by[x]["n"]} 文。エンコーダ I の制御列を 3 通りの設定で鳴らしたものです。左の 5 列は母音の録音との差（dB、0 に近いほど録音どおり。1 行目は録音の値）、「本人との類似度」は話者照合モデル（WavLM）によるその話者の録音との近さ（実録音どうしは 0.98）。「話者ごとの設定」は、{note}</caption>
 <thead><tr><th scope="col">条件</th>{heads}</tr></thead>
-<tbody>{"".join(f'<tr><th scope="row">{esc(label)}</th>{kept(x, v)}</tr>' for v, label in RELEASE_VOICES.items())}</tbody></table></div>"""
+<tbody>{"".join(f'<tr><th scope="row">{esc(label)}</th>{kept(x, v)}</tr>' for v, label in RELEASE_KEPT.items())}</tbody></table></div>"""
         for x, sex, note in (("F", "女性", "体格 + 副鼻腔 + 閉じ方の鋭さ（測った値の半分）。"), ("M", "男性", "体格 4 値 + 声門 + 構えの 11 個の値。"))
     )
+
+    # the dial: brightness, pitch, and the other body
+    dial = ""
+    if (jvs / "results_dial.json").exists() and (jvs / "bands_dial.json").exists():
+        turned = json.loads((jvs / "results_dial.json").read_text())["summary"]
+        lit = json.loads((jvs / "bands_dial.json").read_text())["sexes"]
+        band = next(k for k, lo in enumerate(edges[:-1]) if lo == 2500)
+
+        def turn(x: str, v: str) -> str:
+            m = turned[f"ja-{x}"][v]
+            level = f'{lit[x][v]["vowels"][band] - lit[x]["real"]["vowels"][band]:+.1f}' if v in lit[x] else "–"
+            return f'<td class="num">{level}</td><td class="num">{m["rate2"][0]:.1f}</td><td class="num">{m["phoneRate"][0]:.1f}</td><td class="num">{m["quality"]:.2f}</td>'
+
+        hands = (
+            ("enciv", "enciv", "基準の声のまま"), ("encivd", "encivd", "明るさ −1"), ("encivu", "encivu", "明るさ +1"),
+            ("encivlo", "encivlo", "声の高さ −3 半音"), ("encivhi", "encivhi", "声の高さ +3 半音"),
+            ("encivL", "encivH", "もう一方の声で鳴らす（女性の制御列を低い声で 10 半音下、男性の制御列を高い声で 9 半音上）"),
+        )  # fmt: skip
+        dial = f"""<div class="scroll"><table>
+<caption>つまみを動かしたときの、テストの女性 100 文と男性 100 文。制御列はエンコーダ I のもので、鳴らすときの設定だけを変えています。「2.5〜4 kHz」は母音のその帯域の、録音との差（dB）。</caption>
+<thead><tr><th scope="col">条件</th>{"".join(f'<th scope="col">{x}2.5〜4 kHz</th><th scope="col">large-v3-turbo %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA 品質</th>' for x in ("女性: ", "男性: "))}</tr></thead>
+<tbody>{"".join(f'<tr><th scope="row">{esc(label)}</th>{turn("F", f)}{turn("M", m)}</tr>' for f, m, label in hands)}</tbody></table></div>"""
 
     # the listeners that may be used
     listeners = ""
@@ -1124,7 +1146,7 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
             f'<tr><th scope="row">{esc(label.split("｜")[0])}<span class="sub">第 {best[name]["layer"]} 層</span></th><td>{esc(label.split("｜")[1])}</td>'
             + "".join(f'<td class="num">{best[name][lang]["ratio"]:.2f}</td><td class="num">{best[name][lang]["dprime"]:+.2f}</td>' for lang in ("ja", "en"))
             + f'<td class="num">{best[name]["judges"]["phones"]:.2f}</td></tr>'
-            for name, label in RELEASE_LISTENERS.items() if name in best
+            for name, label in RELEASE_MODELS.items() if name in best
         )  # fmt: skip
         listeners = f"""<div class="scroll"><table>
 <caption>物差し（聞き手のモデル）の候補。第 2 節と同じ比べ方で、各モデルの、日本語の合成音と別の話者をいちばんよく区別する層を載せています。「比」は、録音と合成音の距離を、同じ文を読んだ別の話者との距離で割ったもの（1 なら合成音は別人の読み上げと同じ近さ）。「差」はその 2 つの距離の差を、ばらつきで割ったもの（大きいほど、合成音の足りなさを聞き取れる）。右端は、音声記号認識器の判定との順位相関です。</caption>
@@ -1152,12 +1174,20 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
         own = json.loads((jvs / "results_spk.json").read_text())["utterances"] if (jvs / "results_spk.json").exists() else []
         decided = {r["id"]: r for r in own}
 
+        dialled = {r["id"]: r["variants"] for r in json.loads((jvs / "results_dial.json").read_text())["utterances"]} if (jvs / "results_dial.json").exists() else {}
+        spoken = {r["id"]: r["variants"] for r in json.loads((jvs / "results_ttse.json").read_text())["utterances"]} if (jvs / "results_ttse.json").exists() else {}
+
         def card(r: dict[str, Any]) -> str:
             mine = "encibh" if r["sex"] == "F" else "encit"
             shown = [("real", "実録音", r["variants"].get("real"))]
             if r["id"] in decided and mine in decided[r["id"]]["variants"]:
                 shown.append((mine, "話者ごとの設定（決定済み）", decided[r["id"]]["variants"][mine]))
-            shown += [(v, label, r["variants"].get(v)) for v, label in (("enciv", "基準の声（エンコーダ I）"), ("encv", "基準の声（エンコーダ J）"))]
+            shown.append(("enciv", "基準の声", r["variants"].get("enciv")))
+            other = ("encivL", "低い声で 10 半音下（体格を入れ替え）") if r["sex"] == "F" else ("encivH", "高い声で 9 半音上（体格を入れ替え）")
+            shown += [(v, label, dialled.get(r["id"], {}).get(v)) for v, label in (("encivd", "基準の声、明るさ −1"), ("encivu", "基準の声、明るさ +1"), other)]
+            shown.append(("encv", "エンコーダ J（基準の声）", r["variants"].get("encv")))
+            said = "ttse_f" if r["sex"] == "F" else "ttse_m"
+            shown.append((said, "TTS（Emilia-YODAS で学習）", spoken.get(r["id"], {}).get(said)))
             buttons = "".join(button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{m['heard']}」／large-v3-turbo「{m['heard2']}", "ref" if v == "real" else "", "small") for v, label, m in shown if m)
             return f"""<article class="sentence">
 <p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
@@ -1173,13 +1203,42 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
 {{{{release_voices}}}}
 {settings}
 {keeps}
+{{{{release_dial}}}}
+{dial}
 {{{{release_listeners}}}}
 {listeners}
 {{{{release_encoders}}}}
 {encoders}
+{{{{release_more}}}}
+{{{{release_tts}}}}
 {{{{release_sounds}}}}
 {cards}
 </section>"""
+
+
+def release_tts_table(jvs: Path) -> str:
+    """The first text-to-speech model taught with recordings that may be passed on, on JVS's
+    test sentences: beside the recordings, encoder J and the model taught with JVS."""
+    if not (jvs / "results_ttse.json").exists():
+        return ""
+    spoken = json.loads((jvs / "results_ttse.json").read_text())["summary"]["ja"]
+    heard = json.loads((jvs / "results_rel.json").read_text())["summary"]["ja"] if (jvs / "results_rel.json").exists() else {}
+    rows = (
+        ("実録音", "話者本人（8 話者）", spoken.get("real")), ("エンコーダ J", "録音から。基準の声", heard.get("encv")),
+        ("TTS（JVS で学習）", "100 話者のモデル（TTS 編）。これまでの声、各文をその話者の声で", spoken.get("ttsj")),
+        ("TTS（Emilia-YODAS で学習）、男性の声", "全 200 文を、学習した男性話者 1 人の声（低い声）で", spoken.get("ttse_m")),
+        ("TTS（Emilia-YODAS で学習）、女性の声", "全 200 文を、学習した女性話者 1 人の声（高い声）で", spoken.get("ttse_f")),
+    )  # fmt: skip
+
+    def cells(m: dict[str, Any]) -> str:
+        phone = f'{m["phoneRate"][0]:.1f}' if "phoneRate" in m else "–"
+        return f'<td class="num">{m["rate2"][0]:.1f}</td><td class="num">{m["rate"][0]:.1f}</td><td class="num">{phone}</td><td class="num">{m["quality"]:.2f}</td><td class="num">{m["natural"]:.2f}</td>'
+
+    lines = "".join(f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(note)}</span></th>{cells(m)}</tr>' for label, note, m in rows if m)
+    return f"""<div class="scroll"><table>
+<caption>JVS のテスト 200 文（8 話者 × 25 文。どのモデルも学習していない文）。Whisper の誤りは音素の割合 %、音声記号の不一致は録音との比較です。</caption>
+<thead><tr><th scope="col">条件</th><th scope="col">large-v3-turbo %</th><th scope="col">small %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA 品質</th><th scope="col">NISQA 自然さ</th></tr></thead>
+<tbody>{lines}</tbody></table></div>"""
 
 
 def perturb_table(summary: dict[str, Any], conds: list[str], tag: str = "", kinds: dict[str, str] = KIND_LABELS, drive: str = "100 Hz × 21 チャネルで再駆動（以下の基準）") -> str:
@@ -1549,6 +1608,12 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     fitted = speaker_section(jvs, everyone, clips).replace("{{speaker_text}}", SPEAKER_TEXT).replace("{{speaker_costs}}", SPEAKER_COSTS).replace("{{speaker_sounds}}", SPEAKER_SOUNDS) if everyone is not None else ""
     body += fitted
     last = (5 if retaught else 4) + (1 if fitted else 0)
+    released = release_section(d, ja, jvs, clips, last)
+    for name, text in (("release_text", RELEASE_TEXT), ("release_voices", RELEASE_VOICES), ("release_dial", RELEASE_DIAL), ("release_listeners", RELEASE_LISTENERS), ("release_encoders", RELEASE_ENCODERS),
+                       ("release_more", RELEASE_MORE.replace("{{more}}", RELEASE_MORE_RESULT)), ("release_tts", RELEASE_TTS if (jvs / "results_ttse.json").exists() else ""), ("release_sounds", RELEASE_SOUNDS), ("tts_table", release_tts_table(jvs))):  # fmt: skip
+        released = released.replace("{{" + name + "}}", text)
+    body += released
+    last += 1 if released else 0
     said = pointer(last, "テキストからの合成（TTS）", "エンコーダ I の制御列を手本に、テキストから制御列を書くモデルを作った結果は別のページにあります: ", TITLE_TTS, tts_url, "tts")
     body += said + pointer(last + 1 if said else last, "英語の録音での実験", "エンコーダ A・C・C′ の作り方と、英語（TSP）での結果は別のページにあります: ", TITLE_EN, en_url)
     return shell(TITLE_JA, LEDE_JA, notes, body, CREDITS_JA, clips)
@@ -1782,6 +1847,70 @@ SPEAKER_BRIGHT = """<h3>女性の声に足りない「華やかさ」: 声門の
 <p>摩擦音も調べました。女性の無声摩擦音（s、sh、h、f）は、母音に対して録音より 3.8 dB 弱く、5.5 kHz より上では 8〜10 dB 弱くなっています（男性は 2.2 dB と 4〜6 dB）。歯の雑音を 2 倍にすると 5.5 kHz より上の不足は 2〜5 dB に縮みますが、破裂音の立ち上がりも 2.5〜5.5 kHz で 5 dB ほど強まります。破裂音は今でも録音より鋭いので、この変更は入れていません。</p>
 <p><b>試聴の結果と決定。</b>閉じ方を鋭くすると高域が出て、良くなります。jvs094 は測った値（0.33）でも問題ありません。jvs093 は測った値（0.51）だとブザー感が出てしまい、半分（0.25）ならほとんど出ません。そこで、女性の声は「体格 + 副鼻腔 + 閉じ方の鋭さ（測った値の半分）」に決まりました。男性は前回のとおり「体格 4 値 + 声門 + 構え」です。</p>
 <p>ブザー感は、これで 2 つの条件で出たことになります。開放率を下げたとき（第 2・第 3 倍音が録音より 8〜10 dB 強い）と、閉じ方を 0.51 まで鋭くしたとき（第 2 倍音は録音どおりで、5.5 kHz より上が録音より強い）です。両方に共通する原因は、まだ特定していません。</p>"""
+RELEASE_TEXT = """<p>ここからは公開（V1）に向けた作業です。公開するモデルの重みは、再配布できる材料だけから作られている必要があります。調べると、これまでのモデルはその条件を満たしていませんでした。</p>
+<div class="scroll"><table>
+<caption>これまでのモデルが依存している材料と、その利用条件（2026-11-16 に各配布元の表示で確認）。</caption>
+<thead><tr><th scope="col">材料</th><th scope="col">使っているところ</th><th scope="col">利用条件</th><th scope="col">公開版では</th></tr></thead>
+<tbody>
+<tr><th scope="row">mHuBERT-147</th><td>エンコーダ I が録音を聞く入口（調整した層が重みに入っている）と、学習の物差し</td><td>CC BY-NC-SA 4.0（非営利・継承）</td><td>入口は wav2vec 2.0 base、物差しは XLS-R 300M（どちらも Apache-2.0）</td></tr>
+<tr><th scope="row">JVS</th><td>エンコーダの学習の録音、100 話者の TTS</td><td>研究と個人利用のみ。再配布不可</td><td>Emilia-YODAS（CC BY 4.0）。JVS は評価にだけ使う</td></tr>
+<tr><th scope="row">Hi-Fi-CAPTAIN</th><td>1 話者の TTS、高い声の設定の調整</td><td>CC BY-NC-SA 4.0</td><td>TTS の録音は選び直す（未定）</td></tr>
+<tr><th scope="row">TSP</th><td>英語の録音、規則で作る最初の制御列</td><td>BSD 2-Clause（著作権表示のみ）</td><td>そのまま使う</td></tr>
+<tr><th scope="row">wav2vec 2.0 base 960h</th><td>規則だけで学習する最初のエンコーダの入口</td><td>Apache-2.0（学習は LibriSpeech、CC BY 4.0）</td><td>そのまま使う</td></tr>
+<tr><th scope="row">NISQA、Whisper、音声記号認識器、話者照合モデル</th><td>評価。NISQA は高い声の設定の調整にも使った</td><td>NISQA の重みは CC BY-NC-SA 4.0</td><td>評価にだけ使う</td></tr>
+</tbody></table></div>
+<p>エンコーダ I は、入口の mHuBERT の層を重みの中に持っているので、公開できません。その制御列で学習した 2 つの TTS も同じです。そこで、エンコーダから作り直しました。替えたのは、声、物差し、録音の 3 つです。</p>"""
+RELEASE_VOICES = """<h3>2 つの基準の声</h3>
+<p>第 5 節の設定は、話者ごとに録音から当てはめたものです。V1 では利用者が声の高さと明るさを選ぶだけなので、当てはめは使えません。そこで、決まった設定を男女それぞれでまとめ、男性用の低い声と女性用の高い声の 2 つにしました（リポジトリの voices/v1.json）。</p>
+<ul>
+<li><b>高い声</b>は、第 3 節の調整 2 に、女性の体格の平均（声道は成人男性の 0.87 倍）、副鼻腔 24 cm³、閉じ方の鋭さ 0.18（測った値の半分の平均）を足したものです。</li>
+<li><b>低い声</b>は、CHIMERA の成人男性に、喉頭の上の狭め 0.78 と、舌の根を 0.35 cm 前に出す構えを足したものです。11 個の値を 1 つずつ試すと、男性の合成音を録音に近づけるのはこの 2 つでした。話者照合モデルによる本人との類似度は 0.870 から 0.903 に上がります（11 個すべての平均を当てると 0.899）。開放率、息漏れ、ゆらぎの設定は効きませんでした。</li>
+<li><b>どちらの声を使うかは、声の高さではなく性別で決めます。</b>JVS の男性には声の高さの中央値が 196 Hz の話者がいて、TSP の女性は 173 Hz から始まります。声の高さで体格を混ぜると、高めの男性に女性寄りの体格が当たり、男性の本人との類似度は 0.850 から 0.812 に下がりました。</li>
+</ul>
+<p>これまでの鳴らし方では、声の高さが 150 Hz を超える男性に、女性用の柔らかい声源が混ざっていました（テストの男性 4 人のうち 3 人。jvs099 は 9 割）。そのため第 2 倍音が録音より 5.6 dB 弱くなっていました。試聴で男性の「体格 4 値 + 声門 + 構え」が良く聞こえた理由の 1 つは、当てはめがこの声源を男性側に戻していたことだと見ています（耳では確かめていません）。</p>
+<p>下の 2 つの表は、エンコーダ I の制御列をこの 2 つの声で鳴らした結果です。女性は、話者ごとの設定とほぼ同じ釣り合いになります。男性は、1〜4 kHz の不足が 9〜15 dB から 5〜8 dB に縮み、第 2 倍音は録音どおりになり、音声記号の不一致は 27.4% から 25.8% に下がります。話者ごとの設定に及ばないのは本人との類似度で、これは全員に同じ設定を当てているためです。</p>"""
+RELEASE_DIAL = """<h3>声のつまみ: 明るさ、高さ、体格</h3>
+<p><b>声の明るさのつまみ。</b>V1 の「こもる ←→ 明るい」にあたるつまみも、この 2 つの声に付けました。1 目盛りで、声門の閉じ方の鋭さを 0.18 動かし、低い声では喉頭の上の狭めも 0.22 動かします。母音の 2.5〜4 kHz は、1 目盛り下げると女性で 3.0 dB、男性で 3.8 dB 弱まり、1 目盛り上げると女性で 4.8 dB、男性で 4.5 dB 強まります。第 2 倍音は 1 dB 以内しか動きません。鳴っている途中でも変えられる設定です。聞き取りやすさは変わらず、NISQA の品質は、女性の声では明るくするほど下がります（3.89、3.64、3.44）。</p>
+<p><b>声の高さ</b>は、制御列の高さの列を上下するだけです。3 半音上げ下げしても、聞き取りやすさはほとんど変わりません。</p>
+<p><b>体格を入れ替えても読めます。</b>女性の録音から書いた制御列を低い声（男性の体格）で、男性の録音から書いた制御列を高い声（女性の体格）で鳴らしても、Whisper の誤りは 3.1〜3.8% のままです。制御列は体格にあまり依存していないので、1 つの TTS で、つまみのどの位置の声も鳴らせる見通しです。この実験からはもう 1 つ分かります。男性の制御列を高い声で鳴らすと、音声記号の不一致は 25.8% から 31.7% に、NISQA は 4.34 から 3.59 になり、女性の制御列を低い声で鳴らすと 31.7% から 29.3% に、3.64 から 4.74 になります。女性の合成音の点が低いのは、女性の制御列のせいではなく、高い声そのもののせいです。</p>"""
+RELEASE_LISTENERS = """<h3>公開できる物差し</h3>
+<p>学習の物差し（聞き手のモデル）は、合成音と録音の距離を測る役です。重みのライセンスが Apache-2.0 か MIT のモデルを、第 2 節と同じ方法で比べ直しました。XLS-R 300M の第 16 層は、日本語でも英語でも合成音の足りなさを聞き取れます（差が +0.97 と +0.33。mHuBERT は +1.32 と −0.05）。これを物差しにし、エンコーダの入口は、最初のエンコーダと同じ wav2vec 2.0 base にしました。</p>
+<p class="small">XLS-R の重みは Apache-2.0 ですが、その事前学習には VoxPopuli、MLS、Common Voice、VoxLingua107 のほかに、配布に制限のある BABEL が使われています。事前学習の材料まで公開できるものに限るなら、物差しは英語の wav2vec 2.0 base に戻ることになり、日本語の音声記号の不一致は 5 ポイントほど悪くなります（第 2 節のエンコーダ D と F の差）。</p>"""
+RELEASE_ENCODERS = """<h3>エンコーダを学習し直す</h3>
+<p>エンコーダは 3 つ学習しました。違いを 1 つずつ足して、何がどれだけ効くかを分けています。どれも基準の声を通して学習し、基準の声で鳴らします。</p>
+<ul>
+<li><b>I′</b>: I と同じ材料（TSP と JVS の録音、mHuBERT）のまま、声だけを基準の声に替えて学習し直したもの。</li>
+<li><b>J0</b>: I′ の物差しを XLS-R に、入口を wav2vec 2.0 base に替えたもの。録音は TSP と JVS のままです。</li>
+<li><b>J</b>: J0 の JVS を Emilia-YODAS に替えたもの（日本語と英語、各 300 話者 × 6 文、計 6 時間ほど）。公開できる材料だけで学習しています。</li>
+</ul>
+<p>Emilia-YODAS には話者の性別の表示がありません。声の高さで決まる話者（中央値が 135 Hz 未満か 235 Hz 超）はそのまま決め、その間の話者は、話者照合モデルのベクトルが男女どちらの集団に近いかで決めました。性別のわかっている JVS と TSP で試すと、その間の話者の 90〜95% が合います（声の高さだけで、いちばん良い境目を選んだ場合と同じ程度です）。</p>
+<p>結果は下の表のとおりです。</p>
+<ul>
+<li><b>声を替えた分の学習し直しは、少ししか効きません。</b>JVS の音声記号の不一致は、I の制御列を基準の声で鳴らすだけで 29.3% から 28.8% になり、学習し直した I′ で 28.0% です。Whisper の誤りは区間の中で変わりません。英語（TSP）は 9.4% から 10.1% で、わずかに悪くなります。</li>
+<li><b>物差しと入口を公開できるモデルに替えると、はっきり悪くなります。</b>J0 は I′ に比べて、JVS の音声記号の不一致が 28.0% から 32.8%、Whisper large-v3-turbo の誤りが 3.6% から 5.0% です。TSP でも 10.1% から 12.7%、4.1% から 7.0% です。</li>
+<li><b>録音を Emilia-YODAS に替えるのは、損ではなく得でした。</b>J は J0 より、どのテストでも良くなります（JVS で 32.8% から 31.5%、TSP で 12.7% から 10.6%）。JVS の録音を一度も聞いていないのに、JVS のテストでも J0 を上回ります。話者が 86 人から 600 人に増えた効果だと見ています。</li>
+<li><b>差し引きで、J は I′ より日本語で 3.5 ポイント悪い。</b>JVS で 28.0% から 31.5%（Whisper の誤りは 3.6% から 4.9%）、Hi-Fi-CAPTAIN と JSUT で 27.2% から 30.7%（0.5% から 1.2%）。英語は 0.5 ポイント以内です。NISQA の品質は変わりません。</li>
+</ul>"""
+RELEASE_MORE = """<p><b>次に試すこと。</b>損が物差しと入口から来ているので、公開できる範囲で別の組み合わせを、J0 と同じ録音（TSP と JVS）で試しています。{{more}}</p>"""
+RELEASE_MORE_RESULT = "入口を XLS-R にしたもの、物差しを XLS-R の第 12 層にしたもの、物差しを日本語の hubert-base-jtube（MIT）にしたものの 3 つです。このページを作った時点では学習中で、結果はまだありません。"
+RELEASE_TTS = """<h3>公開できる録音だけで学習した、最初の TTS</h3>
+<p>J の制御列を手本に、Emilia-YODAS の日本語だけで TTS を学習しました（TTS 編のページの 100 話者のモデルと同じ作りで、話者ごとにベクトルを 1 つ持ちます）。Emilia-YODAS は、動画の中の話し言葉を自動で書き起こしたものです。読み上げの録音とは 3 つの点で違いました。</p>
+<ul>
+<li><b>話者が偏っています。</b>1 人あたり 12 文以上ある話者 1,500 人のうち、声の高い話者は 180 人でした。学習に使った 783 人のうち、女性と推定されたのは 101 人です。</li>
+<li><b>音素と音の対応付けが難しくなります。</b>これまでの設定（12 エポック）では対応が見つからず、すべての音素が 1 フレームに潰れました。40 エポック学習すると見つかります。</li>
+<li><b>書き起こしが音と合わない録音があります。</b>対応付けの結果から、母音の 1 割以上が 1 フレームに潰れている録音などを外すと、9,600 文のうち 5,356 文（学習用は 4,903 文、8.2 時間）が残りました。</li>
+</ul>
+{{tts_table}}
+<p>JVS のテスト 200 文（どのモデルも学習していない文）を、学習した話者のうち男性 1 人と女性 1 人の声で読ませました。Whisper large-v3-turbo の誤りは、男性の声で 3.8%、女性の声で 5.6% です。JVS で学習したこれまでのモデルは 2.3%、実録音は 2.5%、エンコーダ J が録音から書いた制御列は 4.9% でした。話し言葉 8 時間からの最初の試みとしては読めていますが、読み上げの録音で学習したモデルには届いていません。女性の声のほうが悪い理由は 2 つ考えられます。高い声そのものの点が低いこと（上の、体格を入れ替える実験）と、学習した女性が少ないことです。どちらがどれだけ効いているかは、まだ分けていません。</p>
+<p class="small">「音声記号の不一致」は、TTS では文の読み方も間の取り方も録音の話者と違うので、エンコーダの値とは比べられません（JVS で学習したモデルでも 34%）。</p>"""
+RELEASE_SOUNDS = """<h3>聴いてほしい音</h3>
+<p>下のカードは、これまでと同じ 4 話者・4 文です。左から、実録音、第 5 節で決まった話者ごとの設定、2 つの基準の声（エンコーダ I の制御列）、その明るさを 1 目盛り下げたものと上げたもの、体格を入れ替えたもの、エンコーダ J、最後が Emilia-YODAS で学習した TTS です。TTS は録音を聞かず、文だけから読んでいます（声は、学習した話者のうち男性 1 人と女性 1 人）。</p>
+<ul>
+<li>「話者ごとの設定」と「基準の声」を比べて、基準の声を V1 の男性の声・女性の声の出発点にしてよいか。</li>
+<li>明るさのつまみの「−1」「+1」は、「こもる ←→ 明るい」として使える変わり方か。1 目盛りの幅は適当か。</li>
+<li>「基準の声」（エンコーダ I）と「エンコーダ J」で、聞き取りやすさに差を感じるか。</li>
+<li>TTS は、公開版の出発点として聴けるか。</li>
+</ul>"""
 SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。決まった設定だけを残しました。女性 2 人は、実録音、これまでの鳴らし方、「体格 + 副鼻腔 + 閉じ方を鋭く（半分）」です（鋭さは jvs093 が 0.25、jvs094 が 0.17）。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。聞き比べに使った他の音（「体格だけ、副鼻腔を大きく」と、測った値の鋭さ）は、次の節の音の場所を空けるために外しました。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>

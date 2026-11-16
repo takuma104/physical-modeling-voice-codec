@@ -405,6 +405,24 @@ for t in "${T3[@]}"; do    # T3=("out/jvs --split test" "out/ja --split all" "ou
   for m in encvm encvj encv; do uv run python -m pmvc.encoder encode $t --models out/transplant/models --name $m --out $m $V --quiet-pauses; done
   uv run python -m pmvc.judge $t --variants enci,enciv,encvm,encvj,encv --name results_rel && uv run python -m pmvc.natural ${t%% *} --name results_rel
 done
+#   声のつまみ(基準の声の明るさ、声の高さ、もう一方の声): 鳴らすときの設定だけを変える
+for o in "encivd --bright -1" "encivu --bright 1" "encivlo --pitch -3" "encivhi --pitch 3" "encivL --share 0 --pitch -10" "encivH --share 1 --pitch 9"; do
+  uv run python -m pmvc.encoder revoice out/jvs --of enci --out ${o%% *} --split test $V ${o#* }
+done
+uv run python -m pmvc.bands out/jvs --variants enciv,encivd,encivu --name bands_dial
+uv run python -m pmvc.judge out/jvs --variants enciv,encivd,encivu,encivlo,encivhi,encivL,encivH --split test --name results_dial && uv run python -m pmvc.natural out/jvs --name results_dial
+#   公開できる録音だけの TTS(最初の試み): Emilia-YODAS の日本語から 800 話者 × 12 文。J の制御列、基準の声
+uv run python -m pmvc.emilia --tars $E/JA --lang ja --out out/emjatts --shards 30 --speakers 800 --per 12 --held 0 --valid-clips 1 --draw 2
+uv run python -m pmvc.sexes out/emjatts --also out/emja
+uv run python -m pmvc.encoder encode out/emjatts --models out/transplant/models --name encv --out encv --split all $V --quiet-pauses --no-render
+uv run python -m pmvc.align train out/emjatts --epochs 40 --hinted 12 --sharpen 16     # 話し言葉と自動書き起こしでは、既定の 12 エポックでは対応付けが見つからない
+uv run python -m pmvc.align write out/emjatts
+uv run python -m pmvc.align prune out/emjatts                                           # 書き起こしと音が合っていない録音を外す(9,600 → 5,356 文)
+uv run python -m pmvc.tts train out/emjatts --name ttse --tracks encv --standin standin_v --stride 8 $V
+#   JVS のテスト文を、学習した話者のうち男性 1 人・女性 1 人の声で読ませる
+uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_m --speaker JA_BrOouMZCkBA_SPEAKER_00
+uv run python -m pmvc.tts speak out/jvs --models out/emjatts/models --name ttse --split test --out ttse_f --speaker JA_yD5DCCvSJSI_SPEAKER_00
+uv run python -m pmvc.judge out/jvs --variants ttsj,ttse_m,ttse_f --split test --name results_ttse && uv run python -m pmvc.natural out/jvs --name results_ttse
 
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html

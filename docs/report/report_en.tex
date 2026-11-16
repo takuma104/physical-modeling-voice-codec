@@ -665,6 +665,91 @@ model: encoder I's renders of the recordings get 2.7. The quality score is the o
 with listening, in \S\ref{sec:voice} and for the untuned decoders of this section. What tuning the
 vocoder gains, about half a point, the listener could not hear with any confidence.
 
+\section{Towards a release}\label{sec:release}
+
+None of the models above can be passed on. Encoder I hears through mHuBERT and is taught against
+it, and mHuBERT's weights, some of which sit inside the encoder's, are licensed for non-commercial
+use (CC BY-NC-SA 4.0). JVS is for research and may not be redistributed; Hi-Fi-CAPTAIN is
+CC BY-NC-SA. This section rebuilds the chain from what may be: TSP (a BSD licence),
+Emilia-YODAS~\cite{emilia} (speech from videos under a Creative Commons licence, CC BY 4.0), and
+two models whose weights are under Apache-2.0, wav2vec 2.0 base and XLS-R~\cite{xlsr}.
+
+\textbf{A pair of voices.} Settings fitted to a speaker need the speaker's recordings, and a
+text-to-speech demo has none. The decided settings were therefore reduced to two voices. The high
+one is the adjusted voice of \S\ref{sec:voice} on the women's average fitted body, with the larger
+sinus and the average of the closures chosen by ear (0.18). The low one is the simulator's adult
+male with two habits of posture, the epilarynx held narrow (0.78) and the tongue root 0.35\,cm
+forward: tried one at a time, these are the two of the men's eleven numbers that bring a render
+nearer its speaker for a verification model (0.870 to 0.903 on the test men; all eleven at their
+average give 0.899). Which voice a speaker gets goes by sex and not by pitch. A man's median pitch
+reaches 196\,Hz in JVS and a woman's starts at 173\,Hz in TSP, and with the body mixed by pitch
+the men's renders moved away from the men (0.850 to 0.812). The voice the encoders had been
+taught through did a milder version of that: it gave men above 150\,Hz a share of the soft source
+fitted for high voices, three of the four test men among them, and their second harmonic came
+out 5.6\,dB too weak. With encoder I's tracks the pair leaves the women's renders where the
+per-speaker settings had them on average, and brings the men's to where the eleven numbers had
+them (what is missing between 1 and 4\,kHz 5--8\,dB, the second harmonic within 1.1\,dB,
+similarity 0.900 against 0.917). It cannot tell speakers apart, and is not meant to.
+
+The pair has a dial. One unit of brightness adds 0.18 to the closure's sharpness and, for the low
+voice, 0.22 to the epilarynx: the vowels' level between 2.5 and 4\,kHz moves by 3 to 5\,dB either
+way and the second harmonic by less than 1\,dB. And the tracks depend little on the body. A
+woman's track played by the low voice ten semitones down, or a man's by the high voice nine
+semitones up, is read as well as before (3.1 to 3.8\% by large-v3-turbo). The swap also says
+where the women's lower scores come from. Played by the high voice, the men's tracks score as the
+women's do (phone mismatch 25.8 $\rightarrow$ 31.7\%, NISQA 4.34 $\rightarrow$ 3.59); played by
+the low one, the women's score as the men's (31.7 $\rightarrow$ 29.3\%, 3.64 $\rightarrow$ 4.74).
+It is the high voice, not the tracks written for women.
+
+\begin{table}[t]
+\centering\footnotesize\setlength{\tabcolsep}{2.6pt}
+\caption{Encoders towards a release, on the tests of Table~\ref{tab:japanese}: Whisper
+large-v3-turbo errors (\%) and phone mismatch (\%). All but the first row are played by the pair
+of voices. Each row changes one thing in the row above it; only J is taught with nothing but
+what may be passed on.}
+\label{tab:release}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+& \multicolumn{2}{c}{JVS} & \multicolumn{2}{c}{HFC+JSUT} & \multicolumn{2}{c}{TSP (en)}\\
+& err. & phone & err. & phone & err. & phone\\
+\midrule
+I (its own voice) & 3.4 & 29.3 & 0.4 & 27.3 & 3.2 & 9.4\\
+I, played by the pair & 3.4 & 28.8 & 0.5 & 27.6 & 4.2 & 9.7\\
+I$'$ (taught through the pair) & 3.6 & 28.0 & 0.5 & 27.2 & 4.1 & 10.1\\
+J0 (XLS-R, wav2vec 2.0 base) & 5.0 & 32.8 & 1.6 & 31.6 & 7.0 & 12.7\\
+J (Emilia-YODAS for JVS) & 4.9 & 31.5 & 1.2 & 30.7 & 5.0 & 10.6\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Encoders.} Compared as in \S\ref{sec:encoder}, XLS-R's layer 16 hears a Japanese render as
+further from its recording than another speaker is, as mHuBERT's layer 8 does ($d'$ 0.97 against
+1.32), and an English one too (0.33 against $-0.05$); it became the listener, and wav2vec 2.0
+base the front end. Emilia-YODAS does not say a speaker's sex, which picks the voice. Where the
+pitch leaves no doubt (a median under 135\,Hz or over 235\,Hz) it decides; a speaker between is
+of the sex whose speakers' mean verification vector is nearer, which is right for 90 to 95\% of
+such speakers in JVS and TSP. Three encoders separate what each change costs
+(Table~\ref{tab:release}). Teaching the encoder through the pair of voices (I$'$) gains little: the
+phone mismatch on JVS falls from 28.8 to 28.0\%, and English is a little worse. The models that
+may be used cost most: with XLS-R and wav2vec 2.0 base in mHuBERT's place (J0) the mismatch is
+32.8\% on JVS and Whisper's error 5.0\% instead of 3.6\%. The recordings cost nothing. With
+Emilia-YODAS in JVS's place (J: 300 speakers of each language, six clips each, about six hours)
+every test improves, JVS's own included, although J never heard a JVS recording; it has 600
+speakers where J0 had 86. On balance J is 3.5 points behind I$'$ in Japanese phone mismatch and
+about one point in Whisper's error, and within half a point in English, at the same NISQA.
+
+\textbf{A first text-to-speech model.} Taught with Emilia-YODAS's Japanese alone, on encoder J's
+tracks and the pair of voices, the model of \S\ref{sec:tts} meets three things read speech did
+not have. The corpus is people talking, and what they said was written down by a recogniser. Its
+speakers are mostly men: of the 783 learned from, 101 were placed as women. The aligner, which
+found the alignment of read speech in twelve epochs, leaves every phoneme a single frame until it
+is taught for forty. And where the text has a word the speaker did not say, the alignment shows
+it, as a run of phonemes of one frame each; without such recordings 5,356 of 9,600 remain
+(8.2 hours to learn from). On JVS's test sentences, read in the voice of one of the corpus's men
+and of one of its women, large-v3-turbo gets 3.8\% and 5.6\% of the phonemes wrong, where the
+model taught with JVS has 2.3\%, the recordings 2.5\% and encoder J's tracks of them 4.9\%. This
+is one run on one corpus, not yet heard by the listener.
+
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
 say the same thing; asking that the track sound right, through a crude model of the simulator,
@@ -770,5 +855,9 @@ speech processing. \emph{IEEE JSTSP} 16(6), 2022.
 \emph{ICLR}, 2021.
 \bibitem{ota} R.~Badlani, A.~Łańcucki, K.~J.~Shih, R.~Valle, W.~Ping, B.~Catanzaro. One TTS
 alignment to rule them all. \emph{ICASSP}, 2022.
+\bibitem{emilia} H.~He et al. Emilia: A large-scale, extensive, multilingual, and diverse dataset
+for speech generation. arXiv:2501.15907, 2025.
+\bibitem{xlsr} A.~Babu et al. XLS-R: Self-supervised cross-lingual speech representation learning
+at scale. Interspeech, 2022.
 \end{thebibliography}
 \end{document}
