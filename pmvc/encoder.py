@@ -14,6 +14,7 @@ usage: python -m pmvc.encoder train [dir] [--name encoder] [--target simcopy] [-
                                       [--voice FILE] [--no-wall-air] [--closed-area CM2]
                                       [--sinus CM3] [--speakers FILE]
                                       [--bright X] [--share W] [--pitch SEMITONES]
+       python -m pmvc.encoder export MODEL.pt OUT [--note "..."]
 
 The network hears the recording through wav2vec2 (a learned mix of its layers: the model
 `pmvc.listener` scores with, or `--ssl`'s; its last `--tune` layers learn too, the rest is frozen), and is
@@ -477,12 +478,44 @@ def train(a: argparse.Namespace) -> None:
     (out / f"{a.name}.json").write_text(json.dumps({"select": a.select, "best": best, "epochs": log}, indent=1))
 
 
+# what a published encoder's JSON says it is
+RELEASE: str = "pmvc-encoder/1"
+
+
+def export(a: argparse.Namespace) -> None:
+    """A trained encoder as it is published: `OUT.safetensors`, the weights it learned (its own
+    layers and the layers of the pretrained model it tuned; the rest of that model comes from
+    where it was published), and `OUT.json`, what it needs beside them to write a track (the
+    channels and their spread, the pretrained model's name). `load_model` reads either."""
+    from safetensors.torch import save_file
+
+    ck = torch.load(a.model, map_location="cpu", weights_only=False)
+    state: dict[str, torch.Tensor] = {k: v.contiguous() for k, v in ck["state"].items()}
+    about = {"format": RELEASE, "ssl": ck.get("ssl", MODEL), "tune": ck.get("tune", 0), "hidden": ck["hidden"], "stats": ck["stats"],
+             "silences": ck.get("args", {}).get("silences") == "True", "taught": {"epoch": ck.get("epoch"), "note": a.note}}  # fmt: skip
+    out: Path = a.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    save_file(state, str(out.with_suffix(".safetensors")), metadata={"format": RELEASE, "ssl": about["ssl"]})
+    out.with_suffix(".json").write_text(json.dumps(about, ensure_ascii=False, indent=1) + "\n")
+    print(f"{out.with_suffix('.safetensors')} ({sum(v.numel() for v in state.values()) / 1e6:.1f} M weights beside {about['ssl']}) and {out.with_suffix('.json').name}")
+
+
 def load_model(path: Path, device: str) -> tuple[Encoder, dict[str, Any]]:
-    ck = torch.load(path, map_location="cpu", weights_only=False)
+    """An encoder and what its tracks are written against: from a checkpoint of `train` (.pt),
+    or from a published encoder (`export`: .json or .safetensors, the two beside each other)."""
+    if path.suffix in (".json", ".safetensors"):
+        from safetensors.torch import load_file
+
+        ck = {**json.loads(path.with_suffix(".json").read_text()), "state": load_file(str(path.with_suffix(".safetensors")))}
+        assert ck.get("format") == RELEASE, f"{path}: not an encoder this code reads ({ck.get('format')})"
+        silences = bool(ck["silences"])
+    else:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+        silences = ck.get("args", {}).get("silences") == "True"
     model = Encoder(len(ck["stats"]["learned"]), ck["hidden"], tune=ck.get("tune", 0), ssl=ck.get("ssl", MODEL))
     model.load_state_dict(ck["state"], strict=False)
     # whether it was taught the silences: its tracks then have no breath in the lead either
-    stats = {**ck["stats"], "silences": ck.get("args", {}).get("silences") == "True"}
+    stats = {**ck["stats"], "silences": silences}
     return model.to(device).eval(), stats
 
 
@@ -706,7 +739,9 @@ class ClosedLoop:
 def encode(a: argparse.Namespace) -> None:
     d: Path = a.dir
     device = pick_device()
-    model, stats = load_model((a.models or d / "models") / f"{a.name}.pt", device)
+    at: Path = a.models or d / "models"
+    # a checkpoint of train, or a published encoder of that name
+    model, stats = load_model(at / f"{a.name}.pt" if (at / f"{a.name}.pt").exists() else at / f"{a.name}.json", device)
     ids = a.ids.split(",") if a.ids else ids_in(d, a.split)
     (d / a.out).mkdir(exist_ok=True)
     decoder = Decoder.of(a)
@@ -810,8 +845,12 @@ def main() -> None:
     r.add_argument("--of", type=str, required=True, help="the variant whose tracks are rendered again")
     r.add_argument("--out", type=str, required=True)
     r.add_argument("--split", choices=["test", "valid", "train", "all"], default="all")
+    x = sub.add_parser("export")
+    x.add_argument("model", type=Path, help="a checkpoint of train")
+    x.add_argument("out", type=Path, help="where to write: OUT.safetensors and OUT.json")
+    x.add_argument("--note", type=str, default="", help="what to say in the JSON of how the encoder was taught")
     a = ap.parse_args()
-    {"train": train, "encode": encode, "revoice": revoice}[a.command](a)
+    {"train": train, "encode": encode, "revoice": revoice, "export": export}[a.command](a)
 
 
 if __name__ == "__main__":

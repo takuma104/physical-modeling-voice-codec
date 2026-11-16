@@ -1223,6 +1223,15 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
 </section>"""
 
 
+def release_web(d: Path, jvs: Path) -> str:
+    """The subsection on the page in the browser, with a picture of it if there is one
+    (<dir>/web.jpg) and the command for the model that the cards play."""
+    shot = d / "web.jpg"
+    picture = f'<figure><img src="data:image/jpeg;base64,{base64.b64encode(shot.read_bytes()).decode()}" alt="PMVC-TTS の画面: 左に声道の断面図、右に文の入力、声のつまみ、制御列"><figcaption>話している途中の画面。断面図の橙色の文字と、制御列の縦線が、いま鳴っている音です。</figcaption></figure>' if shot.exists() else ""
+    both = (jvs / "ttsja_m").exists()
+    return RELEASE_WEB.replace("{{web_shot}}", picture).replace("{{web_model}}", "out/jatts/models/ttsja.pt" if both else "out/cvja/models/ttscv2.pt")
+
+
 def release_tts_table(jvs: Path) -> str:
     """The text-to-speech models taught with recordings that may be passed on, on JVS's test
     sentences, the low voice and the high one side by side: beside the recordings, encoder J2
@@ -1632,7 +1641,7 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     last = (5 if retaught else 4) + (1 if fitted else 0)
     released = release_section(d, ja, jvs, clips, last)
     for name, text in (("release_text", RELEASE_TEXT), ("release_voices", RELEASE_VOICES), ("release_dial", RELEASE_DIAL), ("release_listeners", RELEASE_LISTENERS), ("release_encoders", RELEASE_ENCODERS),
-                       ("release_more", RELEASE_MORE.replace("{{more}}", RELEASE_MORE_RESULT)), ("release_tts", RELEASE_TTS if (jvs / "results_ttse.json").exists() else ""), ("release_web", RELEASE_WEB), ("release_sounds", RELEASE_SOUNDS), ("tts_table", release_tts_table(jvs))):  # fmt: skip
+                       ("release_more", RELEASE_MORE.replace("{{more}}", RELEASE_MORE_RESULT)), ("release_tts", RELEASE_TTS if (jvs / "results_ttse.json").exists() else ""), ("release_web", release_web(d, jvs)), ("release_sounds", RELEASE_SOUNDS), ("tts_table", release_tts_table(jvs))):  # fmt: skip
         released = released.replace("{{" + name + "}}", text)
     body += released
     last += 1 if released else 0
@@ -1700,6 +1709,8 @@ p, ul { margin: 0; } ul { padding-left: 1.2rem; } li + li { margin-top: 0.35rem;
 .scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
 caption { caption-side: top; text-align: left; color: var(--muted); padding-bottom: 0.5rem; }
+figure { margin: 1rem 0; max-width: 46rem; } figure img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; } figcaption { color: var(--muted); font-size: 0.875rem; padding-top: 0.4rem; }
+pre { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.75rem 1rem; font-size: 0.8125rem; }
 th, td { padding: 0.45rem 0.75rem 0.45rem 0; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
 thead th { font-weight: 500; color: var(--muted); white-space: nowrap; }
 tbody th { font-weight: 500; min-width: 15rem; }
@@ -1927,11 +1938,13 @@ RELEASE_TTS = """<h3>公開できる録音だけで学習した TTS</h3>
 </ul>
 <p><b>話す速さ。</b>最初の版の TTS は、jvs100_094 が早口すぎるとの指摘でした。測ると、その声は全部の文で速く（1 秒に 13.3 音素。JVS の録音は 10.2）、いちばん長い 094 が最も速くなっていました。話し言葉は読み上げより速く、話者ごとの速さは話者のベクトルに入っていました。いまは速さを指定でき（<code>--rate</code>）、つまみ用のモデルでは入力の 1 つです。表とカードの TTS は、すべて録音と同じ 10.2 に揃えています。</p>
 <p class="small"><b>前の版からの訂正。</b>前の版では「Emilia-YODAS は、書き起こしと音が合わない録音を 4 割強外した」と書きましたが、外す基準のほうが誤っていました。「1 フレームしかない母音が 1 割を超える録音」を外していたため、「おいしい」のように同じ母音が続く文まで落ちていました（続く 2 つの母音は、片方が 1 フレームになります）。「1 フレームの音素が 4 つ以上続く録音」（文にあって音にない語の跡）に直すと、外れるのは Emilia-YODAS で 27%、Common Voice で 14% です。また、Common Voice の録音は発話の前後に長い無音があり、切り詰めてから使っています。</p>"""
-RELEASE_WEB = """<h3>ブラウザで鳴らす試作</h3>
-<p>V1 の画面の土台として、制御列をブラウザの中で音にする部分を作りました。CHIMERA のエンジンを、私たちの制御列を再生する形で WebAssembly にしたものです（651 KB）。Python で鳴らした音と 1 サンプルも違わず、1 コアで実時間の 5.5〜5.9 倍の速さで動きます。その上に、文を入れて「話す」を押す簡単な画面を付けました。声の高さと明るさは話している途中でも変えられ、体格、話す速さ、抑揚は次に話すときから変わります。サーバが返すのは制御列だけで、音はブラウザの中で作ります。</p>
-<p>ブラウザの外では一通り確かめましたが、実際のブラウザではまだ開いていません。手元で試すには、リポジトリで次の 2 行を実行して http://127.0.0.1:7860/ を開きます。</p>
+RELEASE_WEB = """<h3>ブラウザの画面</h3>
+<p>V1 の画面を作りました。CHIMERA の Speak 画面に倣った構成で、配色は明るくして見分けがつくようにしています。左に声道の断面図と管の太さ、右に文の入力、声のつまみ、制御列の全 21 チャネルです。断面図は、いま鳴っているフレームの姿勢を、エンジンが管を計算するのに使う幾何そのもので描いています。日本語と英語を切り替えられ、画面の言葉もそれに合わせて替わります。CHIMERA 本家へのリンクは冒頭と末尾に置きました。</p>
+{{web_shot}}
+<p>音はブラウザの中で作ります。CHIMERA のエンジンを、私たちの制御列を再生する形で WebAssembly にしたもので（667 KB）、Python で鳴らした音と 1 サンプルも違わず、1 コアで実時間の 5.5〜5.9 倍の速さで動きます。サーバが返すのは制御列だけです（1 文で数十 kB。2 コアの CPU で 0.15 秒）。声の高さと明るさは話している途中でも変えられ、体格、話す速さ、抑揚は次に話すときから変わります。</p>
+<p><b>本物のブラウザで確かめました。</b>ヘッドレスの Chrome でページを開き、「話す」を押し、話している途中につまみを回して、出てきた音を測るテストです（<code>tools/test_browser.mjs</code>）。音が出ること、声の高さのつまみを 120 Hz から 240 Hz に回すと測った高さが 143 Hz から 235 Hz に移ること、「止める」で止まること、エラーが出ないこと、スマートフォンの幅で横にはみ出さないことを確かめています。耳での確認はまだです。手元で試すには、リポジトリで次の 2 行を実行して http://127.0.0.1:7860/ を開きます。</p>
 <pre><code>PATH="$(brew --prefix rustup)/bin:$PATH" cargo build -p pmvc-wasm --release --target wasm32-unknown-unknown
-uv run python -m pmvc.serve --model out/cvja/models/ttscv2.pt</code></pre>"""
+uv run python -m pmvc.serve --model {{web_model}}</code></pre>"""
 RELEASE_SOUNDS = """<h3>試聴の結果と、足した音</h3>
 <p>このページの最初の版（基準の声、明るさのつまみ、エンコーダ J、TTS）への試聴の結果は、次のとおりでした。</p>
 <ul>
