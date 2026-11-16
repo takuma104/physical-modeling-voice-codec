@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import numpy as np
-import parselmouth
 import soundfile as sf
 from numpy.typing import NDArray
 from scipy.fft import dct
@@ -30,6 +29,9 @@ def load(path: Path, sr: int | None = None) -> tuple[Array, int]:
 
 def pitch_track(x: Array, sr: int, sex: str) -> Array:
     """f0 (Hz) at `i / FRAME_RATE` seconds, 0 where unvoiced (Praat's autocorrelation method)."""
+    # Praat is needed where recordings are heard, not where a model only speaks (`pmvc.serve`)
+    import parselmouth
+
     floor, ceiling = (100.0, 500.0) if sex == "F" else (60.0, 350.0)
     pitch = parselmouth.Sound(x, sampling_frequency=sr).to_pitch_ac(
         time_step=1.0 / FRAME_RATE, pitch_floor=floor, pitch_ceiling=ceiling
