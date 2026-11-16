@@ -54,7 +54,7 @@ h2 { margin: 0; font-size: 0.8rem; letter-spacing: 0.12em; text-transform: upper
 .sub { color: var(--soft); font-size: 0.8rem; }
 
 canvas { display: block; width: 100%; }
-.tract { aspect-ratio: 1 / 1; max-height: 60vh; }
+.tract { aspect-ratio: 124 / 128; max-height: 60vh; }
 .tube { height: 84px; }
 .score { height: 400px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
 

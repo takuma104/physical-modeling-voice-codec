@@ -61,7 +61,7 @@ export class Body {
 }
 
 // The part of the head that is drawn (cm, the glottis near the bottom): the same for every body, so that a smaller one looks smaller.
-const BOX = { x0: -2.9, x1: 9.5, y0: 0.0, y1: 12.4 };
+const BOX = { x0: -2.9, x1: 9.5, y0: -0.75, y1: 12.05 };
 
 // The midsagittal section, facing right, as a textbook draws it: flesh, and the air's way
 // through it. The walls, the tongue, the soft palate, the teeth and the lips are the engine's
