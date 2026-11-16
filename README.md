@@ -341,6 +341,22 @@ done
 uv run python -m pmvc.nasals out/jvs --variants enci,encin,encib,encibn,encis,encisn,encit,encitn --split test
 uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt,encisn,encibn --split test --name results_spk --add
 uv run python -m pmvc.natural out/jvs --name results_spk
+#   女性の声の明るさ(試聴で「華やかさが足りない」「声門を当てはめるとブザーのよう」との指摘): 女性の母音は 1.6〜5.5 kHz が録音より 7〜12 dB 弱い
+#   声門の閉じ方の鋭さを、話者ごとに録音のスペクトルから測る(照合モデルは使わない。学習用の 6 文を鋭さ 6 通りで鳴らし、有声区間の 1.6〜5.5 kHz が録音と同じ強さになる値)
+uv run python -m pmvc.speaker closure out/jvsall --start out/jvsall/speakers_body.json --sex F --name speakers_closure               # 測った値
+uv run python -m pmvc.speaker closure out/jvsall --start out/jvsall/speakers_body.json --sex F --share 0.5 --name speakers_closure_half  # その半分
+uv run python -m pmvc.speaker closure out/jvsall --start out/jvsall/speakers_body.json --sex F --value 0.3 --name speakers_closure3     # 全員 0.3
+for o in "encibh --speakers out/jvsall/speakers_closure_half.json" "encibf --speakers out/jvsall/speakers_closure.json" "encibk --speakers out/jvsall/speakers_closure3.json"; do
+  uv run python -m pmvc.encoder revoice out/jvs --of enci --out $o --split test $V --sinus 24
+done
+#   母音と摩擦音の強さを帯域ごとに録音と比べる(倍音の釣り合い、各帯域の強さ、帯域ごとの倍音と雑音の比)
+uv run python -m pmvc.bands out/jvs --variants enci,encib,encibn,encibh,encibf,encibk,encis,encit --split test
+uv run python -m pmvc.nasals out/jvs --variants enci,encibn,encibh,encibf,encibk --split test --name nasals_closure
+for m in "whose_closure" "whose_closure2 --model microsoft/unispeech-sat-base-plus-sv"; do
+  uv run python -m pmvc.whose out/jvs --variants enci,encib,encibn,encibh,encibf,encibk,encis,encit --split test --name $m
+done
+uv run python -m pmvc.judge out/jvs --variants enci,ttsj,encis,ttsjs,encib,ttsjb,encit,ttsjt,encisn,encibn,encibk,encibf,encibh --split test --name results_spk --add
+uv run python -m pmvc.natural out/jvs --name results_spk
 
 # 13. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html

@@ -210,6 +210,9 @@ SPEAKER_LABELS: dict[str, str] = {
     "encit": "体格 4 値 + 声門 + 構えを当てはめ",
     "encisn": "体格 + 声門、副鼻腔を大きく",
     "encibn": "体格だけ、副鼻腔を大きく",
+    "encibh": "体格 + 副鼻腔、声門の閉じ方を鋭く（半分）",
+    "encibf": "体格 + 副鼻腔、声門の閉じ方を鋭く（測った値）",
+    "encibk": "体格 + 副鼻腔、声門の閉じ方を鋭く（全員 0.3）",
     "ttsj": "これまで（TTS）",
     "ttsjb": "TTS、体格を当てはめ",
     "ttsjs": "TTS、体格 + 声門を当てはめ",
@@ -222,16 +225,22 @@ SPEAKER_NOTES: dict[str, str] = {
     "encit": "話者ごとに 11 個の値: 体格の 4 つ、声門の 3 つ、構えの 4 つ",
     "encisn": "「体格 + 声門」のまま、鼻腔につながる副鼻腔の容積を 14 → 24 cm³ に",
     "encibn": "体格の 2 つの値だけを当てはめ、声門は調整後の声のまま。副鼻腔は 24 cm³",
+    "encibh": "「体格だけ、副鼻腔を大きく」から、女性の声門の閉じ方の鋭さを、録音から測った値の半分に",
+    "encibf": "同じく、録音から測った値に（話者ごと。男性は変えない）",
+    "encibk": "同じく、女性の全員を 0.3 に",
     "ttsj": "100 話者の TTS。声に伝えるのは性別と声の高さだけ",
     "ttsjb": "同じ制御列を、話者の体格で鳴らす",
     "ttsjs": "同じ制御列を、話者の体格と声門で鳴らす",
     "ttsjt": "同じ制御列を、話者の 11 個の値で鳴らす",
 }
 # what the cards of the speakers' section play beside the recording and the render as it was: the
-# women's with the nose's sinus enlarged (what the listener heard in them was a blocked nose), the
-# men's with the eleven settings (which the listener could not tell from the body and glottis)
+# women's with the body fitted and the nose's sinus enlarged (the listener's "a good direction"
+# for one of them) and from there with the glottis closing more sharply, half as much as measured
+# and as measured (what the listener missed in the women's voices was brilliance; the glottis
+# fitted to a verification model was a buzz to him); the men's with the eleven settings (better
+# than as they were, to his ear)
 SPEAKER_HEARD: dict[str, tuple[tuple[str, str], ...]] = {
-    "F": (("encis", "体格 + 声門を当てはめ"), ("encisn", "体格 + 声門、副鼻腔を大きく"), ("encibn", "体格だけ、副鼻腔を大きく")),
+    "F": (("encibn", "体格だけ、副鼻腔を大きく"), ("encibh", "＋ 閉じ方を鋭く（半分）"), ("encibf", "＋ 閉じ方を鋭く（測った値）")),
     "M": (("encit", "体格 4 値 + 声門 + 構えを当てはめ"),),
 }
 # the speakers whose voices the page's cards are in
@@ -912,6 +921,47 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 <thead><tr><th scope="col">条件</th>{heads}</tr></thead>
 <tbody>{lines}</tbody></table></div>"""
 
+    def bright_table(rows: dict[str, str]) -> str:
+        """The renders' vowels against the recordings', band by band (`pmvc.bands`); nothing before it is there."""
+        if not (jvs / "bands.json").exists():
+            return ""
+        got = json.loads((jvs / "bands.json").read_text())
+        edges, by = got["edges"], got["sexes"]
+        picked = [k for k, lo in enumerate(edges[:-1]) if 1000 <= lo < 7500]
+
+        def cells(v: str) -> str:
+            out = ""
+            for x in "FM":
+                real = by[x]["real"]
+                out += f'<td class="num">{by[x][v]["h2"] - (real["h2"] if v != "real" else 0.0):+.1f}</td>'
+                out += "".join(f'<td class="num">{by[x][v]["vowels"][k] - (real["vowels"][k] if v != "real" else 0.0):+.1f}</td>' for k in picked)
+            return out
+
+        lines = "".join(f'<tr><th scope="row">{esc(label)}</th>{cells(v)}</tr>' for v, label in rows.items() if v in by["F"])
+        heads = "".join(f'<th scope="col">{x}第 2 倍音</th>' + "".join(f'<th scope="col">{edges[k] / 1000:g}〜{edges[k + 1] / 1000:g} kHz</th>' for k in picked) for x in ("女性: ", "男性: "))
+        return f"""<div class="scroll"><table>
+<caption>母音の中ほどのフレームでの、録音と合成音の比較（テストの女性 {by["F"]["n"]} 文、男性 {by["M"]["n"]} 文）。単位は dB。1 行目は録音の値、2 行目からは録音との差で、0 に近いほど録音どおりです。「第 2 倍音」は基本波に対する強さ、帯域は母音全体の強さに対するその帯域の強さです。閉じ方の鋭さは女性だけに当てているので、その 3 行の男性の値は「体格だけ、副鼻腔を大きく」と同じです。</caption>
+<thead><tr><th scope="col">条件</th>{heads}</tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    def closure_table() -> str:
+        """The sharpness of the closure measured for the test's women (`pmvc.speaker closure`); nothing before it is there."""
+        if not (jvs / "speakers_closure.json").exists():
+            return ""
+        got = json.loads((jvs / "speakers_closure.json").read_text())["speakers"]
+        lines = "".join(
+            f'<tr><th scope="row">{esc(n)}</th><td class="num">{got[n]["closure"]["level"][0]:+.1f}</td><td class="num">{got[n]["settings"]["closureSharpness"]:.2f}</td><td class="num">{got[n]["settings"]["closureSharpness"] / 2:.2f}</td></tr>'
+            for n in speakers if "closure" in got.get(n, {})
+        )  # fmt: skip
+        return f"""<div class="scroll"><table>
+<caption>テストの女性 4 人の、声門の閉じ方の鋭さ（0 がいちばん柔らかく、1 がいちばん鋭い）。学習用の 6 文で測りました。「鋭さ 0 での差」は、これまでの声（鋭さ 0）で鳴らしたときの 1.6〜5.5 kHz の強さの、録音との差（dB）。</caption>
+<thead><tr><th scope="col">話者</th><th scope="col">鋭さ 0 での差</th><th scope="col">測った値</th><th scope="col">半分</th></tr></thead>
+<tbody>{lines}</tbody></table></div>"""
+
+    with_closure = {
+        "real": "実録音", "enci": "これまで", "encibn": "体格だけ、副鼻腔を大きく", "encibh": "＋ 閉じ方を鋭く（半分）", "encibf": "＋ 閉じ方を鋭く（測った値）", "encibk": "＋ 閉じ方を鋭く（全員 0.3）",
+        "encis": "体格 + 声門を当てはめ", "encit": "体格 4 値 + 声門 + 構えを当てはめ",
+    }  # fmt: skip
     with_sinus = {
         "real": "実録音", "enci": "これまで", "encin": "これまで、副鼻腔を大きく", "encib": "体格を当てはめ", "encibn": "体格だけ、副鼻腔を大きく", "encis": "体格 + 声門を当てはめ",
         "encisn": "体格 + 声門、副鼻腔を大きく", "encit": "体格 4 値 + 声門 + 構えを当てはめ", "encitn": "体格 4 値 + 声門 + 構え、副鼻腔を大きく",
@@ -974,6 +1024,7 @@ def speaker_section(jvs: Path, everyone: Path, clips: dict[str, str]) -> str:
 {costs}
 {settings}
 {SPEAKER_NOSE.replace("{{nasal_table}}", nasal_table({**with_sinus, "real": "実録音（値）"})).replace("{{apart_table}}", apart_table(("whose_nose", "whose_nose2"), with_sinus)) if (jvs / "whose_nose.json").exists() else ""}
+{SPEAKER_BRIGHT.replace("{{bright_table}}", bright_table({**with_closure, "real": "実録音（値）"})).replace("{{closure_table}}", closure_table()).replace("{{closure_apart}}", apart_table(("whose_closure", "whose_closure2"), with_closure)) if (jvs / "whose_closure.json").exists() else ""}
 {{{{speaker_sounds}}}}
 <div class="stack">{"".join(card(r) for r in picked)}</div>
 </section>"""
@@ -1549,12 +1600,32 @@ SPEAKER_NOSE = """<h3>女性の声が鼻詰まりのように聞こえる点</h3
 <li><b>「体格 + 声門」の当てはめは、女性の母音の倍音を強めていた。</b>第 2・第 3 倍音が録音より 6.9 dB と 9.1 dB 強くなります（当てはめる前は 1.6 dB と 4.5 dB）。照合モデルに合わせて、声門の開放率が下がったためです。</li>
 </ul>
 {{nasal_table}}
-<p>どれも「鼻を通る低い響きが足りない」向きのずれで、鼻が詰まった声の特徴と合います。ただし、指摘された聞こえ方の原因がこれだと確かめたわけではありません。確かめるための音を下のカードに載せました。</p>
+<p>どれも「鼻を通る低い響きが足りない」向きのずれで、鼻が詰まった声の特徴と合います。ただし、指摘された聞こえ方の原因がこれだとは言えません。次の試聴では、副鼻腔だけを変えた音（「体格 + 声門」と、その副鼻腔を大きくした版）は聞き分けられず、鼻声かどうかも「自信がなくなってきた」とのことでした。</p>
 <p>次に、制御列や設定を 1 つずつ変えて鳴らし、どれが効くかを調べました。鼻への通路（軟口蓋）を閉じ切っても、母音は変わりません。通路を 2 倍に開いても、鼻孔を狭めても、鼻音はほとんど変わりません。効いたのは副鼻腔の容積でした。CHIMERA の鼻腔には副鼻腔が 1 つ（14 cm³）付いていて、鼻音の 700 Hz 付近を削ります。人の上顎洞は左右を合わせて 30 cm³ ほどです。容積を 24 cm³ にすると、削る位置が 500 Hz 付近に下がり、女性の鼻音の第 2 倍音のずれは 10 dB から 5 dB に縮みます（鼻音から離れた母音は変わりません）。エンジンは無改造で、ラッパーから鼻腔の設定を渡しています。</p>
 <p>鼻音の強さの不足（4.6 dB）は残りました。CHIMERA の鼻腔は壁の損失が大きく、低い共鳴が鈍いためで、ラッパーから変えられる設定では直せませんでした。</p>
 <p>下の表は、話者の照合を女性と男性に分けたものです。副鼻腔を大きくすると、女性では本人の録音との類似度が 0.01 ほど上がり、男性では下がります（11 個の値を当てはめた声では変わりません）。聞き取りやすさと NISQA は変わりません（上の表の「副鼻腔を大きく」の行）。この表からは、体格の当てはめで本人と判定されるようになったのは主に女性で、男性は 11 個の値を当てはめてようやく 40% になることも分かります。</p>
 {{apart_table}}"""
-SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。女性 2 人では、実録音、これまでの鳴らし方、「体格 + 声門」に加えて、副鼻腔を大きくした 2 通りを聞き比べられます。「体格 + 声門、副鼻腔を大きく」は鼻音の音色だけを変えたもの、「体格だけ、副鼻腔を大きく」はさらに声門を当てはめる前の声に戻したものです。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です（試聴で「体格 + 声門」と聞き分けられなかったので、ページの容量の都合で片方にしました）。</p>"""
+SPEAKER_BRIGHT = """<h3>女性の声に足りない「華やかさ」: 声門の閉じ方</h3>
+<p>次の試聴での指摘は、こうでした。男性は「体格 4 値 + 声門 + 構え」のほうが良い。女性は、リアルさに何かが大きく足りない（鼻声かと問われると自信がない。華やかさのようなもの）。jvs093 は、声門を当てはめると有声音がブザーのように人工的になる。jvs093 の「これまで」から「体格だけ、副鼻腔を大きく」への変化は良い方向。jvs094 は 4 つとも聞き分けられない。</p>
+<p>そこで、母音の強さを帯域ごとに録音と比べました（下の表）。</p>
+<ul>
+<li><b>女性の母音は、1.6〜5.5 kHz が録音より 7〜12 dB 弱い。</b>声の明るさにあたる帯域です。</li>
+<li><b>「体格 + 声門」の当てはめは、この帯域を 3〜5 dB 戻す代わりに、低い倍音を強めていた。</b>第 2 倍音が録音より 8.0 dB 強くなります（当てはめる前は 2.8 dB）。照合モデルに合わせて、声門の開放率が下がったためです（jvs093 は 0.85 から 0.59、jvs094 は 0.75）。ブザーのような聞こえ方の原因はこれだと見ていますが、耳ではまだ確かめていません。</li>
+<li><b>男性では、「体格 4 値 + 声門 + 構え」が 1〜4 kHz を 5〜8 dB 戻していた。</b>試聴で「良い」と判定された音です。当てはめる前の不足は 9〜15 dB で、第 2 倍音は録音より 5.6 dB 弱かったのが、1.5 dB 強い程度になっています。</li>
+</ul>
+{{bright_table}}
+<p>設定を 1 つずつ変えて鳴らすと、低い倍音を変えずにこの帯域を戻せるのは、声門の閉じ方の鋭さでした。日本語編で決めた高い声は、閉じ方がいちばん柔らかい設定（0）になっています。開放率を下げる、あるいは閉じる側を速くすると、この帯域と一緒に第 2・第 3 倍音が 4〜8 dB 強まります。喉頭の上の狭めは、女性ではほとんど効きません（2 dB 以内）。</p>
+<p>鋭さは、照合モデルを使わずに話者ごとに測れます。学習用の 6 文を鋭さ 0〜0.8 の 6 通りで鳴らし、録音が有声の区間で 1.6〜5.5 kHz の強さが録音と同じになる値を取ります。JVS の女性 51 人では 0〜0.62、平均 0.35 でした。</p>
+{{closure_table}}
+<p>測った値で鳴らすと、女性の 1.6〜5.5 kHz の不足は 3 dB 以内になり、第 2 倍音のずれも 2.5 dB から 1.6 dB に縮みます。聞き取りやすさは変わりません（上の表の「声門の閉じ方を鋭く」の行）。代わりに悪くなる点が 2 つあります。</p>
+<ul>
+<li><b>5.5〜7.5 kHz が録音より 7 dB 強くなる。</b>録音の母音は、この帯域でその下より 10 dB 落ち込みます。合成音にはその落ち込みがなく、下の帯域を合わせるとここが出すぎます。</li>
+<li><b>NISQA の品質が 3.90 から 3.55 に下がる。</b>自然さは 3.63 から 3.71 に上がります。多言語のリスナーから見た録音との距離は、0.217 から 0.227 に少し増えます。</li>
+</ul>
+<p>測った値の半分にすると、得るものも失うものも半分ほどです（1.6〜5.5 kHz の不足は 4〜6 dB、5.5〜7.5 kHz は +2.7 dB、品質は 3.68）。照合は、モデルによって向きが違います（下の表）。体格の当てはめに使っていないモデル（UniSpeech-SAT）では、女性を本人と判定する割合が 58% から 85% に上がります。体格の当てはめに使ったモデル（WavLM）では 79% から 68% に下がります。女性は 100 文なので、10 ポイントほどの差は偶然でも出ます。</p>
+{{closure_apart}}
+<p>摩擦音も調べました。女性の無声摩擦音（s、sh、h、f）は、母音に対して録音より 3.8 dB 弱く、5.5 kHz より上では 8〜10 dB 弱くなっています（男性は 2.2 dB と 4〜6 dB）。歯の雑音を 2 倍にすると 5.5 kHz より上の不足は 2〜5 dB に縮みますが、破裂音の立ち上がりも 2.5〜5.5 kHz で 5 dB ほど強まります。破裂音は今でも録音より鋭いので、この変更は入れていません。</p>"""
+SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。女性 2 人では、実録音、これまでの鳴らし方、「体格だけ、副鼻腔を大きく」と、そこから声門の閉じ方を鋭くした 2 通り（測った値の半分と、測った値）を聞き比べられます。鋭さは jvs093 が 0.25 と 0.51、jvs094 が 0.17 と 0.33 です。「体格 + 声門」の 2 通りは外しました。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>
 <ul>
 <li><b>メルスペクトログラム</b>（100 帯域、93.75 Hz）。UnivNet ボコーダで音にします。この形のモデル（FastSpeech 2）の本来の出力先です。</li>
