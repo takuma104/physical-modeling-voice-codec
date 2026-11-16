@@ -1179,7 +1179,6 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
 
         dialled = {r["id"]: r["variants"] for r in json.loads((jvs / "results_dial.json").read_text())["utterances"]} if (jvs / "results_dial.json").exists() else {}
         spoken = {r["id"]: r["variants"] for r in json.loads((jvs / "results_ttse.json").read_text())["utterances"]} if (jvs / "results_ttse.json").exists() else {}
-        tried = {r["id"]: r["variants"] for r in json.loads((jvs / "results_listen.json").read_text())["utterances"]} if (jvs / "results_listen.json").exists() else {}
 
         def card(r: dict[str, Any]) -> str:
             mine = "encibh" if r["sex"] == "F" else "encit"
@@ -1187,13 +1186,11 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
             if r["id"] in decided and mine in decided[r["id"]]["variants"]:
                 shown.append((mine, "話者ごとの設定（決定済み）", decided[r["id"]]["variants"][mine]))
             shown.append(("enciv", "基準の声", r["variants"].get("enciv")))
-            shown += [(v, label, dialled.get(r["id"], {}).get(v)) for v, label in (("encivd", "基準の声、明るさ −1（調整後）"), ("encivu", "基準の声、明るさ +1"))]
-            shown.append(("encv", "エンコーダ J", r["variants"].get("encv")))
-            shown += [(v, label, tried.get(r["id"], {}).get(v)) for v, label in (("encvlat", "J、舌の側面と先の巻きを I に合わせる"), ("encvxf", "入口を XLS-R にしたエンコーダ"))]
-            shown.append(("encv2", "エンコーダ J2", r["variants"].get("encv2")))
-            best = "ttsja" if "ttsja_m" in spoken.get(r["id"], {}) else ""
-            said = (f"{best}_f" if best else "ttscv2_f") if r["sex"] == "F" else (f"{best}_m" if best else "ttsev2_m")
-            shown.append((said, "TTS（つまみ用モデル、J2 の制御列）", spoken.get(r["id"], {}).get(said)))
+            shown += [(v, label, dialled.get(r["id"], {}).get(v)) for v, label in (("encivd", "基準の声、明るさ −1"), ("encivu", "基準の声、明るさ +1"))]
+            shown.append(("encv2", "エンコーダ J2（公開用）", r["variants"].get("encv2")))
+            # the text-to-speech models, each in the voice of the sentence's speaker's sex: the two taught with one corpus, and the one taught with both
+            voice = "f" if r["sex"] == "F" else "m"
+            shown += [(f"{v}_{voice}", label, spoken.get(r["id"], {}).get(f"{v}_{voice}")) for v, label in (("ttsev2", "TTS: Emilia-YODAS だけ"), ("ttscv2", "TTS: Common Voice だけ"), ("ttsja", "TTS: 両方（V1 の日本語モデル）"))]
             buttons = "".join(button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{m['heard']}」／large-v3-turbo「{m['heard2']}", "ref" if v == "real" else "", "small") for v, label, m in shown if m)
             return f"""<article class="sentence">
 <p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
@@ -1229,7 +1226,7 @@ def release_web(d: Path, jvs: Path) -> str:
     shot = d / "web.jpg"
     picture = f'<figure><img src="data:image/jpeg;base64,{base64.b64encode(shot.read_bytes()).decode()}" alt="PMVC-TTS の画面: 左に声道の断面図、右に文の入力、声のつまみ、制御列"><figcaption>話している途中の画面。断面図の橙色の文字と、制御列の縦線が、いま鳴っている音です。</figcaption></figure>' if shot.exists() else ""
     both = (jvs / "ttsja_m").exists()
-    return RELEASE_WEB.replace("{{web_shot}}", picture).replace("{{web_model}}", "out/jatts/models/ttsja.pt" if both else "out/cvja/models/ttscv2.pt")
+    return RELEASE_WEB.replace("{{web_shot}}", picture).replace("{{web_model}}", "../pmvc-tts/ja.json ../pmvc-tts/en.json" if both else "out/cvja/models/ttscv2.pt")
 
 
 def release_tts_table(jvs: Path) -> str:
@@ -1934,8 +1931,10 @@ RELEASE_TTS = """<h3>公開できる録音だけで学習した TTS</h3>
 <ul>
 <li><b>エンコーダが録音をどれだけ写せるかで、TTS の出来が決まります。</b>エンコーダが書いた制御列を鳴らしたときの Whisper の誤りは、J では Emilia-YODAS の録音で 7.7%、Common Voice の録音で 13.9% でした（録音そのものは 4.0% と 3.2%）。J2 では 5.0% と 7.0% です。Common Voice は録音した部屋もマイクもまちまちで、エンコーダには難しい録音でした。J の制御列で学習した Common Voice の TTS が悪かった（話者を 6 人替えても 6.6〜15.7%）のは、このためです。</li>
 <li><b>話者のベクトルをやめたほうが良く読めます。</b>同じ Common Voice と J の制御列で、話者ベクトルのモデルは 11.7% と 5.7%、つまみ用のモデルは 5.4% と 4.1% でした。1 人あたり十数文しかない話者のベクトルは、その話者の録音の悪さも覚えてしまいます。つまみ用のモデルは、同じ声の話者を全員まとめて学習します。</li>
-<li><b>J2 の制御列で、実録音の水準に近づきました。</b>低い声は Emilia-YODAS で学習したものが 2.4%、高い声は Common Voice で学習したものが 2.8% です（実録音は 2.5%、JVS で学習したこれまでのモデルは 2.3%）。良いコーパスが声で分かれるのは、Emilia-YODAS に女性が少なく（学習した約 800 人のうち、女性と推定されたのは 100 人ほど）、Common Voice は録音の条件が悪いためだと見ています。つまみ用のモデルには話者のベクトルがないので、2 つを合わせて学習できます。合わせたモデルは、このページを作った時点で学習中です。</li>
+<li><b>J2 の制御列で、実録音の水準に近づきました。</b>低い声は Emilia-YODAS で学習したものが 2.4%、高い声は Common Voice で学習したものが 2.8% です（実録音は 2.5%、JVS で学習したこれまでのモデルは 2.3%）。良いコーパスが声で分かれるのは、Emilia-YODAS に女性が少なく（学習した約 800 人のうち、女性と推定されたのは 100 人ほど）、Common Voice は録音の条件が悪いためだと見ています。</li>
+<li><b>2 つの録音を合わせると、1 つのモデルで両方の声が読めます。</b>つまみ用のモデルには話者のベクトルがないので、2 つを合わせて学習できます（15,279 文、22 時間、約 1,400 人）。合わせたモデルは低い声 3.0%、高い声 2.9% でした。それぞれの声でいちばん良かった単独のモデル（2.4% と 2.8%）にはわずかに届きませんが、単独のモデルの苦手な側（3.6% と 4.8%）よりずっと良くなります。体格のつまみを 2 つの声の途中に置けるのも、1 つのモデルで両方を学習した場合だけです。V1 の日本語モデルはこれにします。</li>
 </ul>
+<p><b>英語のモデル。</b>読みには、CHIMERA 自身の英語フロントエンド（CMUdict と、辞書にない語のための綴りからの規則）を、エンジンを変えずに呼び出して使います。録音は LibriTTS-R の train-clean-100（朗読、CC BY 4.0。使ったのは 7,534 文、12.9 時間、240 人）で、モデルの作りは日本語のつまみ用モデルと同じです。TSP のテスト文（4 話者 × 60 文）を読ませると、Whisper の誤りは低い声で 1.9%、高い声で 3.1% でした（実録音は 1.6%、エンコーダ J2 の制御列は 4.6%）。このページに英語の音はありません。下の「ブラウザの画面」で聴けます。</p>
 <p><b>話す速さ。</b>最初の版の TTS は、jvs100_094 が早口すぎるとの指摘でした。測ると、その声は全部の文で速く（1 秒に 13.3 音素。JVS の録音は 10.2）、いちばん長い 094 が最も速くなっていました。話し言葉は読み上げより速く、話者ごとの速さは話者のベクトルに入っていました。いまは速さを指定でき（<code>--rate</code>）、つまみ用のモデルでは入力の 1 つです。表とカードの TTS は、すべて録音と同じ 10.2 に揃えています。</p>
 <p class="small"><b>前の版からの訂正。</b>前の版では「Emilia-YODAS は、書き起こしと音が合わない録音を 4 割強外した」と書きましたが、外す基準のほうが誤っていました。「1 フレームしかない母音が 1 割を超える録音」を外していたため、「おいしい」のように同じ母音が続く文まで落ちていました（続く 2 つの母音は、片方が 1 フレームになります）。「1 フレームの音素が 4 つ以上続く録音」（文にあって音にない語の跡）に直すと、外れるのは Emilia-YODAS で 27%、Common Voice で 14% です。また、Common Voice の録音は発話の前後に長い無音があり、切り詰めてから使っています。</p>"""
 RELEASE_WEB = """<h3>ブラウザの画面</h3>
@@ -1944,21 +1943,19 @@ RELEASE_WEB = """<h3>ブラウザの画面</h3>
 <p>音はブラウザの中で作ります。CHIMERA のエンジンを、私たちの制御列を再生する形で WebAssembly にしたもので（667 KB）、Python で鳴らした音と 1 サンプルも違わず、1 コアで実時間の 5.5〜5.9 倍の速さで動きます。サーバが返すのは制御列だけです（1 文で数十 kB。2 コアの CPU で 0.15 秒）。声の高さと明るさは話している途中でも変えられ、体格、話す速さ、抑揚は次に話すときから変わります。</p>
 <p><b>本物のブラウザで確かめました。</b>ヘッドレスの Chrome でページを開き、「話す」を押し、話している途中につまみを回して、出てきた音を測るテストです（<code>tools/test_browser.mjs</code>）。音が出ること、声の高さのつまみを 120 Hz から 240 Hz に回すと測った高さが 143 Hz から 235 Hz に移ること、「止める」で止まること、エラーが出ないこと、スマートフォンの幅で横にはみ出さないことを確かめています。耳での確認はまだです。手元で試すには、リポジトリで次の 2 行を実行して http://127.0.0.1:7860/ を開きます。</p>
 <pre><code>PATH="$(brew --prefix rustup)/bin:$PATH" cargo build -p pmvc-wasm --release --target wasm32-unknown-unknown
-uv run python -m pmvc.serve --model {{web_model}}</code></pre>"""
-RELEASE_SOUNDS = """<h3>試聴の結果と、足した音</h3>
-<p>このページの最初の版（基準の声、明るさのつまみ、エンコーダ J、TTS）への試聴の結果は、次のとおりでした。</p>
+uv run python -m pmvc.serve --model {{web_model}}</code></pre>
+<p><b>公開の準備。</b>モデルは公開する形に書き出しました。重みは safetensors、それ以外に要るものは JSON で、学習に使った話者の名前は入りません（チェックポイントと同じ制御列を書くことを確かめています）。日本語と英語の TTS、エンコーダ J2、2 つの声の定義を、モデルカードと一緒に Hugging Face のモデル用リポジトリに置きました（非公開のまま）。新しく clone したリポジトリで、README の手順どおりにモデルを取得して画面が動くところまで確かめています。</p>
+<p>Space は Docker の構成で一式を作り、Space 用のリポジトリに置きました。同じイメージが手元の Linux で動くこと（2 コアで 1 文 0.05〜0.15 秒、メモリ 400 MB）は確かめましたが、<b>Hugging Face の上ではまだ動いていません。</b>この Space は ZeroGPU のハードウェアで作られていて、ZeroGPU は Gradio の SDK でしか使えません。CPU のハードウェアへの切り替えは「PRO の契約が必要」と断られました。</p>"""
+RELEASE_SOUNDS = """<h3>試聴の結果と、いまのカード</h3>
+<p>このページへの試聴は 2 回ありました。</p>
 <ul>
-<li><b>基準の声は問題ない。</b>V1 の男性の声と女性の声は、この 2 つを出発点にします。</li>
-<li><b>明るさのつまみは良い。</b>細かく言うと、基準から −1 への変化が、+1 への変化より少し小さい。下げ側を調整しました（上の「声のつまみ」）。</li>
-<li><b>エンコーダ J は、I と比べると少し巻き舌に聞こえる。</b>比べないと分からない程度の差。</li>
-<li><b>TTS は、jvs100_094 以外は出発点として良い。</b>jvs100_094 は早口すぎる。話す速さを指定できるようにしました（上の「公開できる録音だけで学習した TTS」）。</li>
+<li><b>1 回目。</b>基準の声は問題ない。明るさのつまみは良いが、下げ側の変化が上げ側より少し小さい。エンコーダ J は I と比べると少し巻き舌に聞こえる（比べないと分からない程度）。TTS は、jvs100_094 が早口すぎる以外は出発点として良い。</li>
+<li><b>2 回目</b>（つまみの下げ側の調整、エンコーダ J2、話す速さを揃えた TTS のあと）。明るさは良い。巻き舌は非常に微妙な差で、日本語の HuBERT を物差しにした J2 で当面は良い。速さは良い。</li>
 </ul>
-<p><b>巻き舌について。</b>J と I の制御列を、音素の種類ごとに比べました。J は、舌の側面を開く動き（英語の l で使う通り道）が全体に大きく、ラ行の区間で 0.154（I は 0.127）、母音で 0.053（0.046）です。舌先の巻きも、母音で 0.017（0.015）と少し大きくなっています。J0 も J と同じ値なので、録音ではなくモデルの入れ替えで生じた違いです。入口を XLS-R にしたエンコーダでは、ラ行で 0.139、母音で 0.046、巻きは 0.015 で、I に近づきます。J の入口は英語だけで学習した wav2vec 2.0 base なので、日本語の音を英語寄りの舌の形で書いているのかもしれません。ただし、これが巻き舌に聞こえる原因だとは確かめていません。切り分けのために、J の制御列のうち舌の側面と舌先の巻きの 2 つだけを I の値に差し替えた音を作りました。</p>
-<p>下のカードは、これまでと同じ 4 話者・4 文です。聴いてほしい点は 3 つです。</p>
+<p>これで、声（2 つの声と明るさのつまみ）、公開用のエンコーダ（J2）、話す速さ（1 秒 10.2 音素から始める）が決まりました。巻き舌については、J の制御列は舌の側面を開く動きが I より大きい（ラ行で 0.154 と 0.127）ことまでは測りましたが、それが原因かどうかは確かめていません。J2 でもこの値は同じです。</p>
+<p>下のカードは、これまでと同じ 4 話者・4 文です。決まったものだけを残し、TTS を 3 つ並べました。聴いてほしいのは 1 点です。</p>
 <ul>
-<li><b>明るさ −1（調整後）</b>は、+1 と同じくらいの変わり方になったか。</li>
-<li><b>巻き舌</b>は、「エンコーダ J」に対して、「J、舌の側面と先の巻きを I に合わせる」「入口を XLS-R にしたエンコーダ」「エンコーダ J2」のどれで消えるか（XLS-R のものは、録音が TSP と JVS のままの試作です。J2 の舌の側面の動きは J と同じ大きさなので、J2 で巻き舌が残るかどうかが、この動きが原因かどうかの手がかりになります）。</li>
-<li><b>TTS（つまみ用モデル）</b>は、jvs100_094 も含めて出発点として聴けるか。前の版の TTS（Emilia-YODAS、J、話者ベクトル）から、エンコーダも、モデルの作りも、話す速さも替わっています。男性の文は Emilia-YODAS で、女性の文は Common Voice で学習したモデルの音です。</li>
+<li><b>TTS の 3 つ</b>（Emilia-YODAS だけ、Common Voice だけ、両方）を聴き比べて、両方で学習したモデルを V1 の日本語モデルにして良いか。男性の文は低い声、女性の文は高い声で読ませています。数字の上では、男性の文は Emilia-YODAS だけ、女性の文は Common Voice だけのモデルがわずかに良く、両方のモデルはその中間です。</li>
 </ul>"""
 SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。決まった設定だけを残しました。女性 2 人は、実録音、これまでの鳴らし方、「体格 + 副鼻腔 + 閉じ方を鋭く（半分）」です（鋭さは jvs093 が 0.25、jvs094 が 0.17）。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。聞き比べに使った他の音（「体格だけ、副鼻腔を大きく」と、測った値の鋭さ）は、次の節の音の場所を空けるために外しました。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>

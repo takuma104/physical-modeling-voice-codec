@@ -716,10 +716,10 @@ but what may be passed on.}
 \midrule
 I (its own voice) & 3.4 & 29.3 & 0.4 & 27.3 & 3.2 & 9.4\\
 I, played by the pair & 3.4 & 28.8 & 0.5 & 27.6 & 4.2 & 9.7\\
-I$'$ (taught through the pair) & 3.6 & 28.0 & 0.5 & 27.2 & 4.1 & 10.1\\
-J0 (XLS-R, wav2vec 2.0 base) & 5.0 & 32.8 & 1.6 & 31.6 & 7.0 & 12.7\\
-J (Emilia-YODAS for JVS) & 4.9 & 31.5 & 1.2 & 30.7 & 5.0 & 10.6\\
-J2 (a Japanese HuBERT listens) & 3.6 & 28.1 & 0.5 & 27.5 & 4.6 & 10.5\\
+I$'$ (taught by the pair) & 3.6 & 28.0 & 0.5 & 27.2 & 4.1 & 10.1\\
+J0 (XLS-R listens) & 5.0 & 32.8 & 1.6 & 31.6 & 7.0 & 12.7\\
+J (Emilia for JVS) & 4.9 & 31.5 & 1.2 & 30.7 & 5.0 & 10.6\\
+J2 (a HuBERT listens) & 3.6 & 28.1 & 0.5 & 27.5 & 4.6 & 10.5\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -764,14 +764,36 @@ vector learnt from a dozen clips keeps what was wrong with them. Third, with J2'
 dial's model comes level with the recordings: 2.4\% in the low voice when taught with
 Emilia-YODAS and 2.8\% in the high voice when taught with Common Voice, where the recordings have
 2.5\% and the model taught with JVS 2.3\%. Each corpus is the better one for the voice it has
-more clean examples of. Two things had to be set right on the way. People talking are a third
-faster than people reading, so the pace is given. And the aligner needs forty epochs with either
-corpus where read studio speech needed twelve. The listener has not heard these models yet.
+more clean examples of. A model that is told the voice has no speakers to keep apart, so the two
+corpora can be put together (15,279 recordings, 22 hours, about 1,400 speakers). That model gets
+3.0\% wrong in the low voice and 2.9\% in the high one: a little behind the better corpus in
+each voice, well ahead of the worse (3.6\% and 4.8\%), and the only one whose body can be set
+between the two voices. It is the release's Japanese model. Two things had to be set right on
+the way. People talking are a third faster than people reading, so the pace is given, and the
+listener found the recordings' pace right. And the aligner needs forty epochs with either corpus
+where read studio speech needed twelve. The combined model has not been heard yet.
+
+\textbf{English.} The same model was taught for English with the clean hundred hours of
+LibriTTS-R~\cite{librittsr} (7,534 sentences of 240 readers, 12.9 hours). Its text is read by
+CHIMERA's own English front end, the CMU dictionary with letter-to-sound rules, which is called
+as the engine has it. On the 240 test sentences of TSP the model gets 1.9\% of the phonemes
+wrong in the low voice and 3.1\% in the high one, where the recordings have 1.6\%.
+
+\textbf{What is published.} A model is published as its weights and a description beside them
+that names no speaker of the recordings: speaking in a voice that is told needs only what the
+men and the women had at the median (pitch, pace, the pitch's spread). The published model
+writes the tracks the trained one wrote.
 
 \textbf{In the browser.} The engine with the track player around it compiles to WebAssembly
-(651\,kB) and renders the same samples as the Python module, at more than five times real time
-on one core. A page can then ask a server for a sentence's control track, some kilobytes of
-numbers, and make the sound itself, with the pitch and the brightness turned while it speaks.
+(667\,kB) and renders the same samples as the Python module, at more than five times real time
+on one core. A page asks a server for a sentence's control track (some tens of kilobytes of
+numbers, written in 0.15\,s on two cores) and makes the sound itself, so the pitch and the
+brightness can be turned while the voice speaks. The page is remade after CHIMERA's Speak
+screen: it draws the midsagittal section in the posture of the frame now sounding, from the
+geometry the engine computes its tube from, beside the tube's areas and all 21 channels of the
+track. A test drives it in a headless Chrome: with the pitch dial at 120\,Hz the sound that
+comes out of the audio thread has a median pitch of 143\,Hz, and of 235\,Hz after the dial is
+turned to 240\,Hz in the middle of the sentence.
 
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
@@ -885,5 +907,6 @@ at scale. Interspeech, 2022.
 \bibitem{jtube} sarulab-speech. hubert-base-jtube: a HuBERT model trained on JTubeSpeech.
 \url{https://huggingface.co/sarulab-speech/hubert-base-jtube}.
 \bibitem{commonvoice} R.~Ardila et al. Common Voice: A massively-multilingual speech corpus. LREC, 2020.
+\bibitem{librittsr} Y.~Koizumi et al. LibriTTS-R: A restored multi-speaker text-to-speech corpus. Interspeech, 2023.
 \end{thebibliography}
 \end{document}
