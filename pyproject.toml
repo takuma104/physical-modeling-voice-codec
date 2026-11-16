@@ -14,6 +14,7 @@ dependencies = [
     "praat-parselmouth>=0.4.7",
     "pyopenjtalk-plus>=0.4.1.post10",
     "pyyaml>=6.0.3",
+    "safetensors>=0.8.0",
     "scipy>=1.18.1",
     "soundfile>=0.14.0",
     "torch>=2.15.0",

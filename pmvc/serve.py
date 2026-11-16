@@ -156,6 +156,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.said(self.model(str(asked.get("lang", ""))).speak(asked))
         except (ValueError, KeyError, TypeError) as e:
             self.said({"error": str(e)}, 400)
+        except Exception as e:  # noqa: BLE001
+            # whatever else goes wrong with a sentence is the server's to log, and the page's to be told of
+            print(f"speak: {type(e).__name__}: {e}", flush=True)
+            self.said({"error": "the server could not write this sentence"}, 500)
 
     def end_headers(self) -> None:
         # the page's files change with the server: a browser asks again before it uses one it has

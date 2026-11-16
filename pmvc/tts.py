@@ -18,6 +18,7 @@ usage: python -m pmvc.tts train [dir] [--name tts] [--tracks enci] [--standin st
        python -m pmvc.tts say "こんにちは。" [--name tts] [--models DIR] [--out say.wav]
                               [--speaker NAME] [--rate PHONEMES_A_SECOND]
                               [--share W] [--pitch HZ] [--spread OCTAVES]
+       python -m pmvc.tts export MODEL.pt OUT [--note "..."]
 
 The model is of the plainest kind that needs no alignment at run time (FastSpeech 2's shape):
   - the sentence as `pmvc.japanese` reads it, phonemes with their places against the pitch
@@ -792,8 +793,54 @@ def pauses(a: argparse.Namespace) -> None:
     teach_pauses(d / "models" / f"{a.name}.pt", fewer(fit, a.limit), held, pick_device())
 
 
+# what a published model's JSON says it is
+RELEASE: str = "pmvc-tts/1"
+
+
+def export(a: argparse.Namespace) -> None:
+    """A trained model as it is published: `OUT.safetensors`, its weights, and `OUT.json`, what
+    it needs beside them to speak (its language, phonemes and sizes, and the voice: the
+    channels' spread and how the simulated voice is to play a track). `load_model` reads either.
+
+    Of a model that is told the voice, the speakers it was taught with are left out: all that
+    speaking needs of them is what the men and the women have at the median (pitch, pace and
+    the pitch's spread), and two speakers called `low` and `high` carry that. The recordings'
+    speakers are then not named in what is published."""
+    ck = torch.load(a.model, map_location="cpu", weights_only=False)
+    voice = Voice.of(ck["voice"])
+    state: dict[str, torch.Tensor] = {k: v.contiguous() for k, v in ck["state"].items()}
+    taught = {sex: sum(t.sex == sex for t in voice.talkers) for sex in "MF"}
+    if ck.get("told"):
+        medians: list[Talker] = []
+        for name, sex in (("low", "M"), ("high", "F")):
+            mine = [t for t in voice.talkers if t.sex == sex] or voice.talkers
+            medians.append(Talker(name, sex, float(np.median([t.f0 for t in mine])), (float(np.median([t.pitch[0] for t in mine])), float(np.median([t.pitch[1] for t in mine]))), float(np.median([t.rate for t in mine]))))  # fmt: skip
+        voice.talkers = medians
+        state["table"] = conditions(medians)
+    about = {
+        "format": RELEASE, "lang": ck.get("lang", "ja"), "phones": ck["phones"], "width": ck["width"], "text_layers": ck["text_layers"], "frame_layers": ck["frame_layers"],
+        "pausing": bool(ck.get("pausing", False)), "told": int(ck.get("told", 0)), "voice": voice.state(),
+        "taught": {"speakers": taught, "epoch": ck.get("epoch"), "tracks": ck.get("args", {}).get("tracks"), "note": a.note},
+    }  # fmt: skip
+    from safetensors.torch import save_file
+
+    out: Path = a.out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    save_file(state, str(out.with_suffix(".safetensors")), metadata={"format": RELEASE, "lang": about["lang"]})
+    out.with_suffix(".json").write_text(json.dumps(about, ensure_ascii=False, indent=1) + "\n")
+    print(f"{out.with_suffix('.safetensors')} ({sum(v.numel() for v in state.values()) / 1e6:.1f} M weights) and {out.with_suffix('.json').name}: {about['lang']}, {len(voice.talkers)} speakers kept of {sum(taught.values())}")
+
+
 def load_model(path: Path, device: str) -> tuple[Speaker, Voice]:
-    ck = torch.load(path, map_location="cpu", weights_only=False)
+    """A model and its voice: from a checkpoint of `train` (.pt), or from a published model
+    (`export`: .json or .safetensors, the two beside each other)."""
+    if path.suffix in (".json", ".safetensors"):
+        from safetensors.torch import load_file
+
+        ck = {**json.loads(path.with_suffix(".json").read_text()), "state": load_file(str(path.with_suffix(".safetensors")))}
+        assert ck.get("format") == RELEASE, f"{path}: not a model this code reads ({ck.get('format')})"
+    else:
+        ck = torch.load(path, map_location="cpu", weights_only=False)
     voice = Voice.of(ck["voice"])
     voice.decoder.quiet_pauses = True
     model = Speaker(ck["phones"], len(voice.learned) + 1, ck["width"], text_layers=ck["text_layers"], frame_layers=ck["frame_layers"], pausing=ck.get("pausing", False), speakers=len(voice.talkers), told=ck.get("told", 0))
@@ -927,8 +974,12 @@ def main() -> None:
         p.add_argument("--spread", type=float, default=0.0, help="for such a model: how far the pitch moves about its mean (octaves, one standard deviation); 0: what its speakers have")
     y.add_argument("--models", type=Path, default=ROOT / "out" / "hfcm" / "models")
     y.add_argument("--out", type=Path, default=Path("say.wav"))
+    x = sub.add_parser("export")
+    x.add_argument("model", type=Path, help="a checkpoint of train")
+    x.add_argument("out", type=Path, help="where to write: OUT.safetensors and OUT.json")
+    x.add_argument("--note", type=str, default="", help="what to say in the JSON of how the model was taught")
     a = ap.parse_args()
-    {"train": train, "pauses": pauses, "speak": speak, "say": say}[a.command](a)
+    {"train": train, "pauses": pauses, "speak": speak, "say": say, "export": export}[a.command](a)
 
 
 if __name__ == "__main__":
