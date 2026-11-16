@@ -157,6 +157,7 @@ RELEASE_LABELS: dict[str, str] = {
     "encvm": "エンコーダ I′",
     "encvj": "エンコーダ J0",
     "encv": "エンコーダ J",
+    "encv2": "エンコーダ J2",
 }
 RELEASE_NOTES: dict[str, str] = {
     "real": "話者本人",
@@ -165,6 +166,7 @@ RELEASE_NOTES: dict[str, str] = {
     "encvm": "I と同じ材料（TSP + JVS、mHuBERT）で、基準の声を通して学習し直す",
     "encvj": "I′ の物差しを XLS-R に、入口を wav2vec 2.0 base に替える（録音は TSP + JVS のまま）",
     "encv": "J0 の JVS を Emilia-YODAS（日本語と英語）に替える。公開できる材料だけで学習",
+    "encv2": "J の物差しを、日本語の HuBERT（hubert-base-jtube、MIT）に替える。公開できる材料だけで学習",
 }
 RELEASE_MODELS: dict[str, str] = {
     "utter-project/mHuBERT-147": "mHuBERT-147（147 言語。これまでの物差し）｜CC BY-NC-SA 4.0",
@@ -1187,9 +1189,11 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
             shown.append(("enciv", "基準の声", r["variants"].get("enciv")))
             shown += [(v, label, dialled.get(r["id"], {}).get(v)) for v, label in (("encivd", "基準の声、明るさ −1（調整後）"), ("encivu", "基準の声、明るさ +1"))]
             shown.append(("encv", "エンコーダ J", r["variants"].get("encv")))
-            shown += [(v, label, tried.get(r["id"], {}).get(v)) for v, label in (("encvlat", "J、舌の側面と先の巻きを I に合わせる"), ("encvxf", "入口を XLS-R にしたエンコーダ"), ("encvt", "物差しを日本語の HuBERT にしたエンコーダ"))]
-            said = "ttse_fr" if r["sex"] == "F" else "ttse_mr"
-            shown.append((said, "TTS（Emilia-YODAS で学習、録音と同じ速さ）", spoken.get(r["id"], {}).get(said)))
+            shown += [(v, label, tried.get(r["id"], {}).get(v)) for v, label in (("encvlat", "J、舌の側面と先の巻きを I に合わせる"), ("encvxf", "入口を XLS-R にしたエンコーダ"))]
+            shown.append(("encv2", "エンコーダ J2", r["variants"].get("encv2")))
+            best = "ttsja" if "ttsja_m" in spoken.get(r["id"], {}) else ""
+            said = (f"{best}_f" if best else "ttscv2_f") if r["sex"] == "F" else (f"{best}_m" if best else "ttsev2_m")
+            shown.append((said, "TTS（つまみ用モデル、J2 の制御列）", spoken.get(r["id"], {}).get(said)))
             buttons = "".join(button(clips, f"{r['id']}/{v}", jvs / v / f"{r['id']}.wav", label, f"{m['heard']}」／large-v3-turbo「{m['heard2']}", "ref" if v == "real" else "", "small") for v, label, m in shown if m)
             return f"""<article class="sentence">
 <p class="meta">{esc(r["id"])} · {"女性" if r["sex"] == "F" else "男性"}（JVS {esc(r["speaker"])}）</p>
@@ -1213,35 +1217,49 @@ def release_section(d: Path, ja: Path, jvs: Path, clips: dict[str, str], number:
 {encoders}
 {{{{release_more}}}}
 {{{{release_tts}}}}
+{{{{release_web}}}}
 {{{{release_sounds}}}}
 {cards}
 </section>"""
 
 
 def release_tts_table(jvs: Path) -> str:
-    """The first text-to-speech model taught with recordings that may be passed on, on JVS's
-    test sentences: beside the recordings, encoder J and the model taught with JVS."""
+    """The text-to-speech models taught with recordings that may be passed on, on JVS's test
+    sentences, the low voice and the high one side by side: beside the recordings, encoder J2
+    and the model taught with JVS (their men's and women's sentences)."""
     if not (jvs / "results_ttse.json").exists():
         return ""
-    spoken = json.loads((jvs / "results_ttse.json").read_text())["summary"]["ja"]
-    heard = json.loads((jvs / "results_rel.json").read_text())["summary"]["ja"] if (jvs / "results_rel.json").exists() else {}
+    spoken = json.loads((jvs / "results_ttse.json").read_text())["summary"]
+    heard = json.loads((jvs / "results_rel.json").read_text())["summary"] if (jvs / "results_rel.json").exists() else {}
+
+    def both(of: dict[str, Any], v: str) -> tuple[Any, Any]:
+        return of.get("ja-M", {}).get(v), of.get("ja-F", {}).get(v)
+
+    def voices(name: str) -> tuple[Any, Any]:
+        return spoken["ja"].get(f"{name}_m"), spoken["ja"].get(f"{name}_f")
+
     rows = (
-        ("実録音", "話者本人（8 話者）", spoken.get("real")), ("エンコーダ J", "録音から。基準の声", heard.get("encv")),
-        ("TTS（JVS で学習）", "100 話者のモデル（TTS 編）。これまでの声、各文をその話者の声で", spoken.get("ttsj")),
-        ("TTS（Emilia-YODAS で学習）、男性の声", "全 200 文を、学習した男性話者 1 人の声（低い声）で。その話者の速さ（1 秒に 13.3 音素）", spoken.get("ttse_m")),
-        ("同じ声で、録音と同じ速さ", "1 秒に 10.2 音素（JVS の録音の平均）", spoken.get("ttse_mr")),
-        ("TTS（Emilia-YODAS で学習）、女性の声", "全 200 文を、学習した女性話者 1 人の声（高い声）で。その話者の速さ（1 秒に 11.1 音素）", spoken.get("ttse_f")),
-        ("同じ声で、録音と同じ速さ", "1 秒に 10.2 音素", spoken.get("ttse_fr")),
+        ("実録音", "話者本人。男性 4 人と女性 4 人の各 100 文", both(spoken, "real")),
+        ("エンコーダ J2", "録音から書いた制御列", both(heard, "encv2")),
+        ("TTS: JVS、エンコーダ I、話者ベクトル", "これまでのモデル（公開できない）。各文をその話者の声で", both(spoken, "ttsj")),
+        ("TTS: Emilia-YODAS、J、話者ベクトル", "最初の試み。学習した話者 1 人ずつの声で", (spoken["ja"].get("ttse_mr"), spoken["ja"].get("ttse_fr"))),
+        ("TTS: Common Voice、J、話者ベクトル", "同じ作りで録音を替える", voices("ttsc")),
+        ("TTS: Common Voice、J、つまみ用", "話者ベクトルをやめ、声の割合と速さを入力にする", voices("ttscv")),
+        ("TTS: Common Voice、J2、つまみ用", "制御列を J2 のものに", voices("ttscv2")),
+        ("TTS: Emilia-YODAS、J2、つまみ用", "同じ作りで録音を替える", voices("ttsev2")),
+        ("TTS: 両方、J2、つまみ用", "Common Voice と Emilia-YODAS を合わせて学習", voices("ttsja")),
     )  # fmt: skip
 
-    def cells(m: dict[str, Any]) -> str:
-        phone = f'{m["phoneRate"][0]:.1f}' if "phoneRate" in m else "–"
-        return f'<td class="num">{m["rate2"][0]:.1f}</td><td class="num">{m["rate"][0]:.1f}</td><td class="num">{phone}</td><td class="num">{m["quality"]:.2f}</td><td class="num">{m["natural"]:.2f}</td>'
+    def cells(m: Any) -> str:
+        if not m:
+            return '<td class="num">–</td>' * 3
+        return f'<td class="num">{m["rate2"][0]:.1f}</td><td class="num">{m["rate"][0]:.1f}</td><td class="num">{m["quality"]:.2f}</td>' if "quality" in m else f'<td class="num">{m["rate2"][0]:.1f}</td><td class="num">{m["rate"][0]:.1f}</td><td class="num">–</td>'
 
-    lines = "".join(f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(note)}</span></th>{cells(m)}</tr>' for label, note, m in rows if m)
+    lines = "".join(f'<tr><th scope="row">{esc(label)}<span class="sub">{esc(note)}</span></th>{cells(m)}{cells(f)}</tr>' for label, note, (m, f) in rows if m or f)
+    heads = "".join(f'<th scope="col">{x} large-v3-turbo %</th><th scope="col">small %</th><th scope="col">NISQA 品質</th>' for x in ("低い声（男性）:", "高い声（女性）:"))
     return f"""<div class="scroll"><table>
-<caption>JVS のテスト 200 文（8 話者 × 25 文。どのモデルも学習していない文）。Whisper の誤りは音素の割合 %、音声記号の不一致は録音との比較です。</caption>
-<thead><tr><th scope="col">条件</th><th scope="col">large-v3-turbo %</th><th scope="col">small %</th><th scope="col">音声記号の不一致 %</th><th scope="col">NISQA 品質</th><th scope="col">NISQA 自然さ</th></tr></thead>
+<caption>JVS のテスト文（8 話者 × 25 文。どのモデルも学習していない文）。Whisper の誤りは音素の割合 %。TTS は 200 文すべてを、低い声（125 Hz）と高い声（240 Hz）でそれぞれ読ませたもので、話す速さは録音と同じ 1 秒 10.2 音素に揃えています。話者ベクトルのモデルは、学習した話者のうち男性 1 人と女性 1 人の声です。</caption>
+<thead><tr><th scope="col">条件</th>{heads}</tr></thead>
 <tbody>{lines}</tbody></table></div>"""
 
 
@@ -1614,7 +1632,7 @@ def build_ja(d: Path, ja: Path, jvs: Path, fit: Path, notes: str, en_url: str = 
     last = (5 if retaught else 4) + (1 if fitted else 0)
     released = release_section(d, ja, jvs, clips, last)
     for name, text in (("release_text", RELEASE_TEXT), ("release_voices", RELEASE_VOICES), ("release_dial", RELEASE_DIAL), ("release_listeners", RELEASE_LISTENERS), ("release_encoders", RELEASE_ENCODERS),
-                       ("release_more", RELEASE_MORE.replace("{{more}}", RELEASE_MORE_RESULT)), ("release_tts", RELEASE_TTS if (jvs / "results_ttse.json").exists() else ""), ("release_sounds", RELEASE_SOUNDS), ("tts_table", release_tts_table(jvs))):  # fmt: skip
+                       ("release_more", RELEASE_MORE.replace("{{more}}", RELEASE_MORE_RESULT)), ("release_tts", RELEASE_TTS if (jvs / "results_ttse.json").exists() else ""), ("release_web", RELEASE_WEB), ("release_sounds", RELEASE_SOUNDS), ("tts_table", release_tts_table(jvs))):  # fmt: skip
         released = released.replace("{{" + name + "}}", text)
     body += released
     last += 1 if released else 0
@@ -1895,34 +1913,39 @@ RELEASE_ENCODERS = """<h3>エンコーダを学習し直す</h3>
 <li><b>物差しと入口を公開できるモデルに替えると、はっきり悪くなります。</b>J0 は I′ に比べて、JVS の音声記号の不一致が 28.0% から 32.8%、Whisper large-v3-turbo の誤りが 3.6% から 5.0% です。TSP でも 10.1% から 12.7%、4.1% から 7.0% です。</li>
 <li><b>録音を Emilia-YODAS に替えるのは、損ではなく得でした。</b>J は J0 より、どのテストでも良くなります（JVS で 32.8% から 31.5%、TSP で 12.7% から 10.6%）。JVS の録音を一度も聞いていないのに、JVS のテストでも J0 を上回ります。話者が 86 人から 600 人に増えた効果だと見ています。</li>
 <li><b>差し引きで、J は I′ より日本語で 3.5 ポイント悪い。</b>JVS で 28.0% から 31.5%（Whisper の誤りは 3.6% から 4.9%）、Hi-Fi-CAPTAIN と JSUT で 27.2% から 30.7%（0.5% から 1.2%）。英語は 0.5 ポイント以内です。NISQA の品質は変わりません。</li>
+<li><b>物差しを日本語の HuBERT に替えた J2 で、その損がなくなりました。</b>J2 は、公開できる材料だけで学習して、JVS の音声記号の不一致が 28.1%、Whisper の誤りが 3.6% です（I′ は 28.0% と 3.6%）。Hi-Fi-CAPTAIN と JSUT は 27.5% と 0.5%（27.2% と 0.5%）、TSP は 10.5% と 4.6%（10.1% と 4.1%）で、区間の中で I′ と並びます。公開用のエンコーダは J2 にします。物差しの選び方は下の「物差しをさらに選び直す」のとおりです。</li>
 </ul>"""
-RELEASE_MORE = """<p><b>次に試すこと。</b>損が物差しと入口から来ているので、公開できる範囲で別の組み合わせを、J0 と同じ録音（TSP と JVS）で試しています。{{more}}</p>"""
-RELEASE_MORE_RESULT = "入口を XLS-R にしたもの、物差しを XLS-R の第 12 層にしたもの、物差しを日本語の hubert-base-jtube（重みは MIT）にしたものの 3 つです。JVS の音声記号の不一致は 3 つとも 31.0〜31.1% でした（J0 は 32.8%、I′ は 28.0%）。Whisper large-v3-turbo の誤りは、JVS で順に 4.3%、4.3%、3.3%（J0 は 5.0%、I′ は 3.6%）、TSP で 5.5%、6.1%、5.3%（J0 は 7.0%、I′ は 4.1%）です。日本語の HuBERT を物差しにすると、Whisper の誤りは日本語でこれまでの水準に戻り、英語でも J0 より良くなります。音声記号の不一致は 3 ポイントほど残ります。この物差しと Emilia-YODAS の録音を組み合わせたエンコーダ（J2）を、このページを作った時点で学習しています。hubert-base-jtube の事前学習は YouTube の音声（JTubeSpeech）で、XLS-R と同じく、重みのライセンスで使えると判断しています。"
-RELEASE_TTS = """<h3>公開できる録音だけで学習した、最初の TTS</h3>
-<p>J の制御列を手本に、Emilia-YODAS の日本語だけで TTS を学習しました（TTS 編のページの 100 話者のモデルと同じ作りで、話者ごとにベクトルを 1 つ持ちます）。Emilia-YODAS は、動画の中の話し言葉を自動で書き起こしたものです。読み上げの録音とは 3 つの点で違いました。</p>
-<ul>
-<li><b>話者が偏っています。</b>1 人あたり 12 文以上ある話者 1,500 人のうち、声の高い話者は 180 人でした。学習に使った 783 人のうち、女性と推定されたのは 101 人です。</li>
-<li><b>音素と音の対応付けが難しくなります。</b>これまでの設定（12 エポック）では対応が見つからず、すべての音素が 1 フレームに潰れました。40 エポック学習すると見つかります。</li>
-<li><b>書き起こしが音と合わない録音があります。</b>対応付けの結果から、母音の 1 割以上が 1 フレームに潰れている録音などを外すと、9,600 文のうち 5,356 文（学習用は 4,903 文、8.2 時間）が残りました。</li>
-</ul>
+RELEASE_MORE = """<p><b>物差しをさらに選び直す。</b>J の損は物差しと入口から来ていたので、公開できる範囲で別の組み合わせを、J0 と同じ録音（TSP と JVS）で試しました。{{more}}</p>"""
+RELEASE_MORE_RESULT = "入口を XLS-R にしたもの、物差しを XLS-R の第 12 層にしたもの、物差しを日本語の hubert-base-jtube（重みは MIT）にしたものの 3 つです。JVS の音声記号の不一致は 3 つとも 31.0〜31.1% でした（J0 は 32.8%、I′ は 28.0%）。Whisper large-v3-turbo の誤りは、JVS で順に 4.3%、4.3%、3.3%（J0 は 5.0%、I′ は 3.6%）、TSP で 5.5%、6.1%、5.3%（J0 は 7.0%、I′ は 4.1%）です。日本語の HuBERT を物差しにすると、Whisper の誤りは日本語でこれまでの水準に戻り、英語でも J0 より良くなります。この物差しと Emilia-YODAS の録音を組み合わせたのが、上の表の J2 です。録音を替えた分の得が加わって、音声記号の不一致も I′ と並びました。hubert-base-jtube の事前学習は YouTube の音声（JTubeSpeech）で、XLS-R と同じく、重みのライセンスで使えると判断しています。"
+RELEASE_TTS = """<h3>公開できる録音だけで学習した TTS</h3>
+<p>エンコーダの制御列を手本に、公開できる録音だけで日本語の TTS を学習しました。録音は 2 種類試しました。Emilia-YODAS（動画の中の話し言葉を自動で書き起こしたもの、CC BY 4.0）と、Common Voice（ボランティアが文を読み上げたもの、CC0）です。モデルも 2 種類あります。話者ごとにベクトルを持つこれまでの作りと、話者のベクトルをやめて「高い声の割合」と「話す速さ」の 2 つの数だけを入力にした、つまみ用の作りです。</p>
 {{tts_table}}
-<p>JVS のテスト 200 文（どのモデルも学習していない文）を、学習した話者のうち男性 1 人と女性 1 人の声で読ませました。Whisper large-v3-turbo の誤りは、男性の声で 3.8%、女性の声で 5.6% です。JVS で学習したこれまでのモデルは 2.3%、実録音は 2.5%、エンコーダ J が録音から書いた制御列は 4.9% でした。話し言葉 8 時間からの最初の試みとしては読めていますが、読み上げの録音で学習したモデルには届いていません。女性の声のほうが悪い理由は 2 つ考えられます。高い声そのものの点が低いこと（上の、体格を入れ替える実験）と、学習した女性が少ないことです。どちらがどれだけ効いているかは、まだ分けていません。</p>
-<p><b>話す速さ。</b>試聴では、男性の声の jvs100_094 が早口すぎるとの指摘でした。測ると、この声は全部の文で速く（1 秒に 13.3 音素。JVS の録音は 10.2、女性の声は 11.1）、いちばん長い 094 が最も速くなっていました（14.7）。話し言葉は読み上げより速く、話者ごとの速さは話者のベクトルに入っています。そこで、話す速さを指定できるようにしました（<code>--rate</code>）。録音と同じ 10.2 にすると、Whisper の誤りは男性の声で 3.8% から 3.5%、女性の声で 5.6% から 5.0% になります。下のカードの TTS はこの速さです。</p>
-<p class="small">「音声記号の不一致」は、TTS では文の読み方も間の取り方も録音の話者と違うので、エンコーダの値とは比べられません（JVS で学習したモデルでも 34%）。</p>"""
+<ul>
+<li><b>エンコーダが録音をどれだけ写せるかで、TTS の出来が決まります。</b>エンコーダが書いた制御列を鳴らしたときの Whisper の誤りは、J では Emilia-YODAS の録音で 7.7%、Common Voice の録音で 13.9% でした（録音そのものは 4.0% と 3.2%）。J2 では 5.0% と 7.0% です。Common Voice は録音した部屋もマイクもまちまちで、エンコーダには難しい録音でした。J の制御列で学習した Common Voice の TTS が悪かった（話者を 6 人替えても 6.6〜15.7%）のは、このためです。</li>
+<li><b>話者のベクトルをやめたほうが良く読めます。</b>同じ Common Voice と J の制御列で、話者ベクトルのモデルは 11.7% と 5.7%、つまみ用のモデルは 5.4% と 4.1% でした。1 人あたり十数文しかない話者のベクトルは、その話者の録音の悪さも覚えてしまいます。つまみ用のモデルは、同じ声の話者を全員まとめて学習します。</li>
+<li><b>J2 の制御列で、実録音の水準に近づきました。</b>低い声は Emilia-YODAS で学習したものが 2.4%、高い声は Common Voice で学習したものが 2.8% です（実録音は 2.5%、JVS で学習したこれまでのモデルは 2.3%）。良いコーパスが声で分かれるのは、Emilia-YODAS に女性が少なく（学習した約 800 人のうち、女性と推定されたのは 100 人ほど）、Common Voice は録音の条件が悪いためだと見ています。つまみ用のモデルには話者のベクトルがないので、2 つを合わせて学習できます。合わせたモデルは、このページを作った時点で学習中です。</li>
+</ul>
+<p><b>話す速さ。</b>最初の版の TTS は、jvs100_094 が早口すぎるとの指摘でした。測ると、その声は全部の文で速く（1 秒に 13.3 音素。JVS の録音は 10.2）、いちばん長い 094 が最も速くなっていました。話し言葉は読み上げより速く、話者ごとの速さは話者のベクトルに入っていました。いまは速さを指定でき（<code>--rate</code>）、つまみ用のモデルでは入力の 1 つです。表とカードの TTS は、すべて録音と同じ 10.2 に揃えています。</p>
+<p class="small"><b>前の版からの訂正。</b>前の版では「Emilia-YODAS は、書き起こしと音が合わない録音を 4 割強外した」と書きましたが、外す基準のほうが誤っていました。「1 フレームしかない母音が 1 割を超える録音」を外していたため、「おいしい」のように同じ母音が続く文まで落ちていました（続く 2 つの母音は、片方が 1 フレームになります）。「1 フレームの音素が 4 つ以上続く録音」（文にあって音にない語の跡）に直すと、外れるのは Emilia-YODAS で 27%、Common Voice で 14% です。また、Common Voice の録音は発話の前後に長い無音があり、切り詰めてから使っています。</p>"""
+RELEASE_WEB = """<h3>ブラウザで鳴らす試作</h3>
+<p>V1 の画面の土台として、制御列をブラウザの中で音にする部分を作りました。CHIMERA のエンジンを、私たちの制御列を再生する形で WebAssembly にしたものです（651 KB）。Python で鳴らした音と 1 サンプルも違わず、1 コアで実時間の 5.5〜5.9 倍の速さで動きます。その上に、文を入れて「話す」を押す簡単な画面を付けました。声の高さと明るさは話している途中でも変えられ、体格、話す速さ、抑揚は次に話すときから変わります。サーバが返すのは制御列だけで、音はブラウザの中で作ります。</p>
+<p>ブラウザの外では一通り確かめましたが、実際のブラウザではまだ開いていません。手元で試すには、リポジトリで次の 2 行を実行して http://127.0.0.1:7860/ を開きます。</p>
+<pre><code>PATH="$(brew --prefix rustup)/bin:$PATH" cargo build -p pmvc-wasm --release --target wasm32-unknown-unknown
+uv run python -m pmvc.serve --model out/cvja/models/ttscv2.pt</code></pre>"""
 RELEASE_SOUNDS = """<h3>試聴の結果と、足した音</h3>
 <p>このページの最初の版（基準の声、明るさのつまみ、エンコーダ J、TTS）への試聴の結果は、次のとおりでした。</p>
 <ul>
 <li><b>基準の声は問題ない。</b>V1 の男性の声と女性の声は、この 2 つを出発点にします。</li>
 <li><b>明るさのつまみは良い。</b>細かく言うと、基準から −1 への変化が、+1 への変化より少し小さい。下げ側を調整しました（上の「声のつまみ」）。</li>
 <li><b>エンコーダ J は、I と比べると少し巻き舌に聞こえる。</b>比べないと分からない程度の差。</li>
-<li><b>TTS は、jvs100_094 以外は出発点として良い。</b>jvs100_094 は早口すぎる。話す速さを指定できるようにしました（上の「話す速さ」）。</li>
+<li><b>TTS は、jvs100_094 以外は出発点として良い。</b>jvs100_094 は早口すぎる。話す速さを指定できるようにしました（上の「公開できる録音だけで学習した TTS」）。</li>
 </ul>
 <p><b>巻き舌について。</b>J と I の制御列を、音素の種類ごとに比べました。J は、舌の側面を開く動き（英語の l で使う通り道）が全体に大きく、ラ行の区間で 0.154（I は 0.127）、母音で 0.053（0.046）です。舌先の巻きも、母音で 0.017（0.015）と少し大きくなっています。J0 も J と同じ値なので、録音ではなくモデルの入れ替えで生じた違いです。入口を XLS-R にしたエンコーダでは、ラ行で 0.139、母音で 0.046、巻きは 0.015 で、I に近づきます。J の入口は英語だけで学習した wav2vec 2.0 base なので、日本語の音を英語寄りの舌の形で書いているのかもしれません。ただし、これが巻き舌に聞こえる原因だとは確かめていません。切り分けのために、J の制御列のうち舌の側面と舌先の巻きの 2 つだけを I の値に差し替えた音を作りました。</p>
 <p>下のカードは、これまでと同じ 4 話者・4 文です。聴いてほしい点は 3 つです。</p>
 <ul>
 <li><b>明るさ −1（調整後）</b>は、+1 と同じくらいの変わり方になったか。</li>
-<li><b>巻き舌</b>は、「エンコーダ J」に対して、「J、舌の側面と先の巻きを I に合わせる」「入口を XLS-R にしたエンコーダ」「物差しを日本語の HuBERT にしたエンコーダ」のどれで消えるか（後の 2 つは、録音が TSP と JVS のままの試作です）。</li>
-<li><b>TTS（録音と同じ速さ）</b>は、jvs100_094 も含めて出発点として聴けるか。</li>
+<li><b>巻き舌</b>は、「エンコーダ J」に対して、「J、舌の側面と先の巻きを I に合わせる」「入口を XLS-R にしたエンコーダ」「エンコーダ J2」のどれで消えるか（XLS-R のものは、録音が TSP と JVS のままの試作です。J2 の舌の側面の動きは J と同じ大きさなので、J2 で巻き舌が残るかどうかが、この動きが原因かどうかの手がかりになります）。</li>
+<li><b>TTS（つまみ用モデル）</b>は、jvs100_094 も含めて出発点として聴けるか。前の版の TTS（Emilia-YODAS、J、話者ベクトル）から、エンコーダも、モデルの作りも、話す速さも替わっています。男性の文は Emilia-YODAS で、女性の文は Common Voice で学習したモデルの音です。</li>
 </ul>"""
 SPEAKER_SOUNDS = """<p>下のカードは、第 2〜4 節と同じ 4 話者・4 文です。決まった設定だけを残しました。女性 2 人は、実録音、これまでの鳴らし方、「体格 + 副鼻腔 + 閉じ方を鋭く（半分）」です（鋭さは jvs093 が 0.25、jvs094 が 0.17）。男性 2 人は、実録音、これまでの鳴らし方、「体格 4 値 + 声門 + 構え」です。聞き比べに使った他の音（「体格だけ、副鼻腔を大きく」と、測った値の鋭さ）は、次の節の音の場所を空けるために外しました。</p>"""
 CONTROL_TEXT = """<p>少ない録音で学習できるのは制御列だからなのか、それとも、このモデルの形ならどの潜在表現でもそうなのかを確かめる対照実験です。第 1 節と同じモデル（同じ音素とアクセントの入力、同じ音素の長さ、同じ層）に、制御列の代わりに、ニューラルネットが音に戻す潜在表現を書かせました。</p>

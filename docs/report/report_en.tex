@@ -672,7 +672,8 @@ it, and mHuBERT's weights, some of which sit inside the encoder's, are licensed 
 use (CC BY-NC-SA 4.0). JVS is for research and may not be redistributed; Hi-Fi-CAPTAIN is
 CC BY-NC-SA. This section rebuilds the chain from what may be: TSP (a BSD licence),
 Emilia-YODAS~\cite{emilia} (speech from videos under a Creative Commons licence, CC BY 4.0), and
-two models whose weights are under Apache-2.0, wav2vec 2.0 base and XLS-R~\cite{xlsr}.
+models whose weights are under Apache-2.0 or MIT: wav2vec 2.0 base, XLS-R~\cite{xlsr} and a
+HuBERT trained on Japanese~\cite{jtube}.
 
 \textbf{A pair of voices.} Settings fitted to a speaker need the speaker's recordings, and a
 text-to-speech demo has none. The decided settings were therefore reduced to two voices. The high
@@ -705,8 +706,8 @@ It is the high voice, not the tracks written for women.
 \centering\footnotesize\setlength{\tabcolsep}{2.6pt}
 \caption{Encoders towards a release, on the tests of Table~\ref{tab:japanese}: Whisper
 large-v3-turbo errors (\%) and phone mismatch (\%). All but the first row are played by the pair
-of voices. Each row changes one thing in the row above it; only J is taught with nothing but
-what may be passed on.}
+of voices. Each row changes one thing in the row above it; J and J2 are taught with nothing
+but what may be passed on.}
 \label{tab:release}
 \begin{tabular}{@{}lrrrrrr@{}}
 \toprule
@@ -718,6 +719,7 @@ I, played by the pair & 3.4 & 28.8 & 0.5 & 27.6 & 4.2 & 9.7\\
 I$'$ (taught through the pair) & 3.6 & 28.0 & 0.5 & 27.2 & 4.1 & 10.1\\
 J0 (XLS-R, wav2vec 2.0 base) & 5.0 & 32.8 & 1.6 & 31.6 & 7.0 & 12.7\\
 J (Emilia-YODAS for JVS) & 4.9 & 31.5 & 1.2 & 30.7 & 5.0 & 10.6\\
+J2 (a Japanese HuBERT listens) & 3.6 & 28.1 & 0.5 & 27.5 & 4.6 & 10.5\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -737,18 +739,39 @@ Emilia-YODAS in JVS's place (J: 300 speakers of each language, six clips each, a
 every test improves, JVS's own included, although J never heard a JVS recording; it has 600
 speakers where J0 had 86. On balance J is 3.5 points behind I$'$ in Japanese phone mismatch and
 about one point in Whisper's error, and within half a point in English, at the same NISQA.
+The loss is the listener's, and another listener undoes it. Of three more encoders on J0's
+recordings, the one taught against a HuBERT trained on Japanese alone (hubert-base-jtube~\cite{jtube},
+MIT, layer 8) has J0's phone mismatch less 1.8 points and Whisper's error back at I$'$'s, in
+English as well as in Japanese (3.3\% on JVS, 5.3\% on TSP; XLS-R as the front end, or its
+layer 12 as the listener, gain half as much). With that listener and Emilia-YODAS (J2), an
+encoder taught with nothing but what may be passed on is level with I$'$ on every test.
 
-\textbf{A first text-to-speech model.} Taught with Emilia-YODAS's Japanese alone, on encoder J's
-tracks and the pair of voices, the model of \S\ref{sec:tts} meets three things read speech did
-not have. The corpus is people talking, and what they said was written down by a recogniser. Its
-speakers are mostly men: of the 783 learned from, 101 were placed as women. The aligner, which
-found the alignment of read speech in twelve epochs, leaves every phoneme a single frame until it
-is taught for forty. And where the text has a word the speaker did not say, the alignment shows
-it, as a run of phonemes of one frame each; without such recordings 5,356 of 9,600 remain
-(8.2 hours to learn from). On JVS's test sentences, read in the voice of one of the corpus's men
-and of one of its women, large-v3-turbo gets 3.8\% and 5.6\% of the phonemes wrong, where the
-model taught with JVS has 2.3\%, the recordings 2.5\% and encoder J's tracks of them 4.9\%. This
-is one run on one corpus, not yet heard by the listener.
+\textbf{Text-to-speech.} The model of \S\ref{sec:tts} was taught again with recordings that may
+be passed on, from two corpora and in two shapes. Emilia-YODAS's Japanese is people talking,
+written down by a recogniser, and mostly men (about 100 of 800 speakers were placed as women).
+Common Voice~\cite{commonvoice} is volunteers reading sentences (CC0), as many women as men,
+each in whatever room they had. The model either has a vector for each speaker, as before, or is
+told two numbers of a speaker instead: the share of the high voice and the pace. A voice nobody
+recorded is then a position of a dial. Three things were learnt (errors are Whisper
+large-v3-turbo's, on JVS's test sentences at the recordings' pace). First, a model inherits how
+well the encoder copied its corpus. Rendered from J's tracks, Common Voice's recordings are read
+with 13.9\% of the phonemes wrong and Emilia-YODAS's with 7.7\% (the recordings themselves: 3.2\%
+and 4.0\%), and a model taught with J's tracks of Common Voice gets 6.6 to 15.7\% wrong,
+depending on the speaker it speaks as; from J2's tracks the two corpora are read with 7.0\% and
+5.0\%. Second, the model that is told the voice reads better than the one with speakers' vectors:
+5.4\% in the low voice and 4.1\% in the high one against 11.7\% and 5.7\%, on the same tracks. A
+vector learnt from a dozen clips keeps what was wrong with them. Third, with J2's tracks the
+dial's model comes level with the recordings: 2.4\% in the low voice when taught with
+Emilia-YODAS and 2.8\% in the high voice when taught with Common Voice, where the recordings have
+2.5\% and the model taught with JVS 2.3\%. Each corpus is the better one for the voice it has
+more clean examples of. Two things had to be set right on the way. People talking are a third
+faster than people reading, so the pace is given. And the aligner needs forty epochs with either
+corpus where read studio speech needed twelve. The listener has not heard these models yet.
+
+\textbf{In the browser.} The engine with the track player around it compiles to WebAssembly
+(651\,kB) and renders the same samples as the Python module, at more than five times real time
+on one core. A page can then ask a server for a sentence's control track, some kilobytes of
+numbers, and make the sound itself, with the pitch and the brightness turned while it speaks.
 
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
@@ -859,5 +882,8 @@ alignment to rule them all. \emph{ICASSP}, 2022.
 for speech generation. arXiv:2501.15907, 2025.
 \bibitem{xlsr} A.~Babu et al. XLS-R: Self-supervised cross-lingual speech representation learning
 at scale. Interspeech, 2022.
+\bibitem{jtube} sarulab-speech. hubert-base-jtube: a HuBERT model trained on JTubeSpeech.
+\url{https://huggingface.co/sarulab-speech/hubert-base-jtube}.
+\bibitem{commonvoice} R.~Ardila et al. Common Voice: A massively-multilingual speech corpus. LREC, 2020.
 \end{thebibliography}
 \end{document}
