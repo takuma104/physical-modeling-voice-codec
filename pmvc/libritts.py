@@ -69,8 +69,8 @@ def main() -> None:
             for k, w in enumerate(mine):
                 text = w.with_suffix(".normalized.txt").read_text(encoding="utf-8").strip()
                 jobs.append((w.stem, w, name, text, "valid" if k >= len(mine) - a.valid_clips else "train"))
-    with ProcessPoolExecutor(a.jobs) as pool:
-        tasks = [pool.submit(take, d, uid, w, f"lt_{name}", "en", sex[name], text, split, True) for uid, w, name, text, split in jobs]
+    with ProcessPoolExecutor(a.jobs) as workers:
+        tasks = [workers.submit(take, d, uid, w, f"lt_{name}", "en", sex[name], text, split, True) for uid, w, name, text, split in jobs]
         metas = [t.result() for t in tasks]
     kept = 0
     for meta in metas:
