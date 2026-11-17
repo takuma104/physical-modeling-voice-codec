@@ -208,6 +208,17 @@ async function setLang(to) {
   rest();
 }
 
+// The address says the language the page was switched to, so that it can be passed on as it is.
+function address(to) {
+  const rest = new URLSearchParams(location.search);
+  for (const k of [...Object.keys(LANGS), "lang"]) rest.delete(k);
+  try {
+    history.replaceState(null, "", `?${to}${rest.size ? `&${rest}` : ""}${location.hash}`);
+  } catch {
+    // a page that may not rewrite its address still speaks
+  }
+}
+
 el.speak.addEventListener("click", speak);
 el.stop.addEventListener("click", () => node && node.port.postMessage({ type: "stop" }));
 el.text.addEventListener("keydown", (e) => {
@@ -231,15 +242,22 @@ window.addEventListener("resize", () => { if (!playing) rest(); });
 
 wasm = await (await fetch("pmvc_wasm.wasm")).arrayBuffer();
 body = await Body.load(wasm.slice(0));
-const { langs } = await (await fetch("api/models")).json();
+const { langs, plain } = await (await fetch("api/models")).json();
+// a server that can make the sound itself says where (the Space's plain form)
+if (plain) {
+  $("plain").hidden = false;
+  $("plain").firstElementChild.href = plain;
+}
 el.langs.replaceChildren(...langs.map((l) => {
   const b = document.createElement("button");
   b.type = "button";
   b.dataset.lang = l;
   b.textContent = LANGS[l] || l;
-  b.addEventListener("click", () => setLang(l));
+  b.addEventListener("click", async () => { await setLang(l); address(l); });
   return b;
 }));
 el.langs.hidden = langs.length < 2;
-const first = new URLSearchParams(location.search).get("lang") || ((navigator.language || "").startsWith("ja") ? "ja" : "en");
+// The language the address asks for (?ja, ?en; ?lang=ja too), and otherwise the browser's.
+const asked = new URLSearchParams(location.search);
+const first = langs.find((l) => asked.has(l)) || asked.get("lang") || ((navigator.language || "").startsWith("ja") ? "ja" : "en");
 await setLang(langs.includes(first) ? first : langs[0]);

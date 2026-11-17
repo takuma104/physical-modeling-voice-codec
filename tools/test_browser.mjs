@@ -10,6 +10,10 @@
 // the output, an AnalyserNode is connected too, and its samples say how loud the voice is and
 // at what pitch. Writes screenshots (PNG) into the directory and prints what it found; exits
 // with 1 if the page logged an error, stayed silent, or did not follow a dial.
+//
+// The address may name the language (?ja, ?en): the page has to come up in it. For a page that
+// asks who is calling (a private Hugging Face Space), a token in the environment's BEARER is
+// sent with the requests to the page's own origin, and to no other.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +61,9 @@ try {
       if (m.error) no(new Error(m.error.message)); else ok(m.result);
     } else if (m.method === "Runtime.consoleAPICalled" && ["error", "warning"].includes(m.params.type)) {
       logged.push(`console.${m.params.type}: ${m.params.args.map((a) => a.value ?? a.description).join(" ")}`);
+    } else if (m.method === "Fetch.requestPaused") {
+      const headers = Object.entries({ ...m.params.request.headers, Authorization: `Bearer ${process.env.BEARER}` }).map(([name, value]) => ({ name, value }));
+      send("Fetch.continueRequest", { requestId: m.params.requestId, headers }).catch(() => {});
     } else if (m.method === "Runtime.exceptionThrown") {
       logged.push(`exception: ${m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text}`);
     } else if (m.method === "Log.entryAdded" && m.params.entry.level === "error") {
@@ -127,11 +134,18 @@ try {
       };
     })()`,
   });
+  if (process.env.BEARER) await send("Fetch.enable", { patterns: [{ urlPattern: `${new URL(url).origin}/*` }] });
   await send("Page.navigate", { url });
   await until("document.readyState === 'complete' && !!document.querySelector('#speak') && document.querySelector('#pitch-out').textContent !== ''", 15000, "the page");
+  const named = ["ja", "en"].find((l) => new URL(url).searchParams.has(l)) || new URL(url).searchParams.get("lang");
+  const shownIn = await run("document.documentElement.lang");
+  if (named && shownIn !== named) problems.push(`the address asks for ${named}, and the page is in ${shownIn}`);
   if (lang) {
     await click(`[data-lang="${lang}"]`);
-    await sleep(300);
+    await until(`document.documentElement.lang === ${JSON.stringify(lang)}`, 5000, "the language to change");
+    const address = await run("location.search");
+    if (!new URLSearchParams(address).has(lang)) problems.push(`the page was switched to ${lang}, and its address says ${address}`);
+    console.log("switched:", lang, "| address", address);
   }
   if (text) await run(`(() => { const e = document.getElementById("text"); e.value = ${JSON.stringify(text)}; e.dispatchEvent(new Event("input", {bubbles: true})); })()`);
   await shot("1-loaded");

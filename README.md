@@ -21,6 +21,9 @@ uvx --from huggingface_hub hf download takuma104/pmvc-tts --local-dir models
 uv run python -m pmvc.serve --model models/ja.json models/en.json          # → http://127.0.0.1:7860/
 ```
 
+画面の言語はブラウザの言語で決まります。アドレスに `?ja` か `?en` を付けると、その言語で開きます(`http://127.0.0.1:7860/?en`)。
+The page comes up in the browser's language; `?ja` or `?en` in the address names it.
+
 画面は CHIMERA の Speak 画面に倣って作り直したもので、CHIMERA そのものではありません。声道のシミュレーションは Jameson Hodge さんの [CHIMERA](https://github.com/jamesondh/chimera-vocal-synth)(MIT)を改変せずに使っています。歌わせたり、舌や唇を直接動かしたりするには本家をどうぞ。
 
 ## 構成
@@ -35,7 +38,7 @@ uv run python -m pmvc.serve --model models/ja.json models/en.json          # →
 | `crates/pmvc-voice` | 制御列で CHIMERA を鳴らす中身。`pmvc-engine` と `pmvc-wasm` が共有するので、同じ制御列は Python でもブラウザでも同じサンプルになる |
 | `crates/pmvc-wasm` | ブラウザ用のエンジン(C ABI、import なし。AudioWorklet の中で動く)。断面図を描くための幾何も返す |
 | `web/` | デモの画面(ビルド不要の静的ファイル)。`pmvc.serve` が配る |
-| `space/` | Hugging Face Space 用の Dockerfile など。`tools/space.sh` で組み立てる |
+| `space/` | Hugging Face Space(Gradio SDK、ZeroGPU 上で CPU 推論)用の `app.py` など。`tools/space.sh` で組み立てる |
 | `voices/v1.json` | モデルが学習に使った 2 つの声(低い声・高い声)と、明るさのつまみの定義 |
 | `pmvc/` | 実験スクリプト(Python)。コーデックのエンコーダは `pmvc.encoder`、テキストからの合成は `pmvc.tts`、ニューラルデコーダとの対照は `pmvc.control` と `pmvc.vocoder` |
 | `docs/` | 企画メモと関連論文。`docs/report/` にテクニカルレポートの下書き(英語・日本語) |
@@ -489,13 +492,16 @@ node tools/play_wasm.mjs target/wasm32-unknown-unknown/release/pmvc_wasm.wasm ou
 uv run python -m pmvc.serve --model out/jatts/models/ttsja.pt out/lten/models/ttsen.pt    # → http://127.0.0.1:7860/ (テキスト → 制御列はサーバ、音はブラウザ。モデルは言語ごとに 1 つ)
 node tools/test_page.mjs http://127.0.0.1:7860 target/wasm32-unknown-unknown/release/pmvc_wasm.wasm /tmp/b.f32 1 240 -1          # ページと同じ経路をブラウザなしで
 node tools/test_browser.mjs http://127.0.0.1:7860/ /tmp/shots       # 本物の Chrome(ヘッドレス)でページを開き、話させ、話している途中につまみを回して、出てきた音の高さを測る
+node tools/test_browser.mjs "http://127.0.0.1:7860/?en" /tmp/shots --lang ja    # アドレスの ?ja / ?en で言語が決まること、画面で切り替えるとアドレスも変わること
 #   公開する形のモデル: 重み(safetensors)と、それ以外に要るもの(JSON)。学習に使った話者の名前は入れない
 uv run python -m pmvc.tts export out/jatts/models/ttsja.pt ../pmvc-tts/ja
 uv run python -m pmvc.tts export out/lten/models/ttsen.pt ../pmvc-tts/en
 uv run python -m pmvc.serve --model ../pmvc-tts/ja.json ../pmvc-tts/en.json
-#   Hugging Face Space(Docker): Linux x86_64 の機械でエンジンの wheel を作り、Space のリポジトリの clone に一式を組み立てる
-bash tools/wheel.sh                                                  # → dist/pmvc_engine-…-linux_x86_64.whl
-MODELS=../pmvc-tts bash tools/space.sh ../pmvc-tts-space             # space/ の Dockerfile・app.py・README と、ページ、サーバ、モデル
+#   Hugging Face Space(Gradio SDK。ZeroGPU のハードウェアは Gradio のアプリしか動かせないので、app.py は FastAPI でページを / に出し、
+#   Gradio の素朴な版を /gradio に置く。モデルは CPU で動く): Linux x86_64 の機械でエンジンの wheel を作り、Space のリポジトリの clone に一式を組み立てる
+bash tools/wheel.sh                                                  # → dist/pmvc_engine-…-cp312-cp312-manylinux_2_28_x86_64.whl (Docker の中でビルド)
+MODELS=../pmvc-tts bash tools/space.sh ../pmvc-tts-space             # space/ の app.py・README・requirements.txt と、ページ、サーバ、エンジン、モデル
+PORT=7861 uv run --with gradio==6.30.0 python ../pmvc-tts-space/app.py    # 手元で Space と同じアプリを動かす → http://127.0.0.1:7861/ と /gradio/
 
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html

@@ -71,8 +71,8 @@ class Refused(ValueError):
 class Model:
     """A text-to-speech model and the lock on it: one sentence at a time."""
 
-    def __init__(self, path: Path, male: str, female: str, dial: Path, pace: dict[str, float]) -> None:
-        self.device = pick_device()
+    def __init__(self, path: Path, male: str, female: str, dial: Path, pace: dict[str, float], device: str = "") -> None:
+        self.device = device or pick_device()
         # the dial is the page's and the voice file's, not the model's: a model taught before a
         # hand of the dial was there can be played with it
         self.dial: dict[str, Any] = {k: v for k, v in json.loads(dial.read_text()).items() if k in ("bright", "dull")} if dial.exists() else {}
@@ -95,13 +95,19 @@ class Model:
         airway = {**({} if d.wall_air else {"volumeSource": 0}), **({} if d.closed_area is None else {"closedArea": d.closed_area})}
         return {**(d.family or {}), **self.dial, "airway": airway, "told": self.model.tell is not None, **self.median, "pace": self.pace, "lang": self.lang, "keys": self.voice.keys}
 
-    def speak(self, q: dict[str, Any]) -> dict[str, Any]:
+    def speak(self, q: dict[str, Any], whole: bool = False, device: str = "") -> dict[str, Any]:
+        """The sentence asked for as the page plays it. With `whole`, as the engine's Python
+        module does (`pmvc.encoder.render_track`): the track with the voice's settings in it, for
+        a server that makes the sound itself. With `device`, the model is moved there first."""
         text = str(q.get("text", "")).strip()[:LONGEST]
         if not text:
             raise Refused("empty", "no text")
         share = float(np.clip(float(q.get("share", 0.0)), 0.0, 1.0))
         pitch, rate, spread = (float(q.get(k, 0.0) or 0.0) for k in ("pitch", "rate", "spread"))
         with self.lock, torch.no_grad():
+            if device and device != self.device:
+                self.model.to(device)
+                self.device = device
             if self.model.tell is not None:
                 # a voice for this sentence: a row more in the table, taken out again after
                 who = self.voice.dial(share, pitch, rate, spread)
@@ -117,6 +123,8 @@ class Model:
                     raise Refused("empty", "nothing in the text that the language's front end can read")
                 phones = phrased(self.model, read, self.device, who)
                 frames, lasting = write_track(self.model, self.voice, phones, self.device, None, who, rate)
+                if whole:
+                    return self.voice.track(frames, True, who)
                 talker = self.voice.talkers[who]
                 frames = self.voice.decoder.hold(frames, self.voice.keys, talker.high)
                 return {
@@ -125,6 +133,36 @@ class Model:
                 }  # fmt: skip
             finally:
                 del self.voice.talkers[self.own :]
+
+
+def load(paths: list[Path], male: str, female: str, dial: Path, pace: dict[str, float], device: str = "") -> dict[str, Model]:
+    """A model for each language, the first the one the page begins with."""
+    models: dict[str, Model] = {}
+    for path in paths:
+        m = Model(path, male, female, dial, pace, device)
+        assert m.lang not in models, f"two models for {m.lang}"
+        models[m.lang] = m
+    return models
+
+
+def which(models: dict[str, Model], lang: str) -> Model:
+    if lang and lang not in models:
+        raise ValueError(f"no model for the language {lang!r}")
+    return models[lang or next(iter(models))]
+
+
+def spoken(models: dict[str, Model], asked: Any, whole: bool = False, device: str = "") -> tuple[dict[str, Any], int]:
+    """What is said to a sentence asked for (POST /api/speak), and the status it is said with."""
+    try:
+        return which(models, str(asked.get("lang", ""))).speak(asked, whole, device), 200
+    except Refused as e:
+        return {"error": str(e), "code": e.code}, 400
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        return {"error": str(e)}, 400
+    except Exception as e:  # noqa: BLE001
+        # whatever else goes wrong with a sentence is the server's to log, and the page's to be told of
+        print(f"speak: {type(e).__name__}: {e}", flush=True)
+        return {"error": "the server could not write this sentence", "code": "server"}, 500
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -141,11 +179,6 @@ class Handler(SimpleHTTPRequestHandler):
     def said(self, answer: Any, status: int = 200) -> None:
         self.reply(json.dumps(answer).encode(), "application/json", status)
 
-    def model(self, lang: str) -> Model:
-        if lang and lang not in self.models:
-            raise ValueError(f"no model for the language {lang!r}")
-        return self.models[lang or next(iter(self.models))]
-
     def do_GET(self) -> None:
         url = urlsplit(self.path)
         try:
@@ -154,7 +187,7 @@ class Handler(SimpleHTTPRequestHandler):
             elif url.path == "/api/models":
                 self.said({"langs": list(self.models)})
             elif url.path == "/api/voice":
-                self.said(self.model("".join(parse_qs(url.query).get("lang", [""]))).about())
+                self.said(which(self.models, "".join(parse_qs(url.query).get("lang", [""]))).about())
             else:
                 super().do_GET()
         except ValueError as e:
@@ -166,15 +199,10 @@ class Handler(SimpleHTTPRequestHandler):
             return
         try:
             asked = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 16)))
-            self.said(self.model(str(asked.get("lang", ""))).speak(asked))
-        except Refused as e:
-            self.said({"error": str(e), "code": e.code}, 400)
-        except (ValueError, KeyError, TypeError) as e:
+        except ValueError as e:
             self.said({"error": str(e)}, 400)
-        except Exception as e:  # noqa: BLE001
-            # whatever else goes wrong with a sentence is the server's to log, and the page's to be told of
-            print(f"speak: {type(e).__name__}: {e}", flush=True)
-            self.said({"error": "the server could not write this sentence", "code": "server"}, 500)
+            return
+        self.said(*spoken(self.models, asked))
 
     def end_headers(self) -> None:
         # the page's files change with the server: a browser asks again before it uses one it has
@@ -195,11 +223,7 @@ def main() -> None:
     ap.add_argument("--female", type=str, default="", help="and who in the high one")
     a = ap.parse_args()
     pace = {**PACE, **{k: float(v) for k, v in (x.split("=") for x in filter(None, a.pace.split(",")))}}
-    Handler.models = {}
-    for path in a.model:
-        m = Model(path, a.male, a.female, a.voice, pace)
-        assert m.lang not in Handler.models, f"two models for {m.lang}"
-        Handler.models[m.lang] = m
+    Handler.models = load(a.model, a.male, a.female, a.voice, pace)
     Handler.wasm = a.wasm
     server = ThreadingHTTPServer((a.host, a.port), partial(Handler, directory=str(a.web)))
     told = ", ".join(f"{lang}: {m.model.__class__.__name__} of {path.name}, {'told the voice' if m.model.tell is not None else 'one of its speakers'}" for (lang, m), path in zip(Handler.models.items(), a.model))
