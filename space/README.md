@@ -46,30 +46,30 @@ by hand.
 
 | | |
 |---|---|
-| `app.py` | the application: the page and its control tracks at `/`, a plain form at `/gradio` |
+| `app.py` | the application: the page, its control tracks, and the same call as a Gradio API |
 | `pmvc/` | the server's answers (`pmvc.serve`) and the model (`pmvc.tts`) |
 | `web/` | the page |
 | `pmvc_wasm.wasm` | the CHIMERA engine driven by a control track, for the browser |
-| `engine/` | the same engine as a Python module (it reads English text, and makes the plain form's sound) |
+| `engine/` | the same engine as a Python module (CHIMERA's English front end is in it) |
 | `models/` | the models, as published at <https://huggingface.co/takuma104/pmvc-tts> |
 | `third-party/chimera-vocal-synth/` | CHIMERA's licence, and the CMU Pronouncing Dictionary with its own |
 
-The Space is on ZeroGPU hardware, which runs Gradio applications, and the page is not one. So
-`app.py` is a FastAPI application that serves the page itself and has a Gradio form beside it
-at `/gradio`: the same sentence with the sound made on the server, for a browser that cannot
-run the page, and for programs:
+The Space is on ZeroGPU hardware, which runs Gradio applications only, and the page is not a
+Gradio one. So `app.py` is Gradio's Server mode (`gr.Server`): a FastAPI application that
+serves the page and answers it, with Gradio's API engine beside it. Programs can ask for a
+sentence's control track through that:
 
 ```python
 from gradio_client import Client
 
-client = Client("https://takuma104-pmvc-tts.hf.space/gradio/")
-wav, told = client.predict("ja", "こんにちは。", 125, 10.2, "cpu", api_name="/speak")
-# language, text, pitch (Hz), pace (phonemes a second), where the model runs
+client = Client("takuma104/pmvc-tts")
+track = client.predict(lang="ja", text="こんにちは。", pitch=125.0, rate=10.2, api_name="/speak")
+# track["frames"]: a row for each frame (10 ms) of track["keys"], the 21 channels
 ```
 
 The models are small: the Space's CPU writes a sentence in about a tenth of a second, so that
-is where they run. The form can send a sentence to the GPU instead (`"cuda"`), which uses the
-caller's ZeroGPU quota.
+is where they run. Through the API a sentence can be sent to the GPU instead (`device="cuda"`),
+which is taken from the caller's ZeroGPU quota.
 
 ## Licences
 

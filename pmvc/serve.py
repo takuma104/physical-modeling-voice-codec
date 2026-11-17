@@ -95,10 +95,8 @@ class Model:
         airway = {**({} if d.wall_air else {"volumeSource": 0}), **({} if d.closed_area is None else {"closedArea": d.closed_area})}
         return {**(d.family or {}), **self.dial, "airway": airway, "told": self.model.tell is not None, **self.median, "pace": self.pace, "lang": self.lang, "keys": self.voice.keys}
 
-    def speak(self, q: dict[str, Any], whole: bool = False, device: str = "") -> dict[str, Any]:
-        """The sentence asked for as the page plays it. With `whole`, as the engine's Python
-        module does (`pmvc.encoder.render_track`): the track with the voice's settings in it, for
-        a server that makes the sound itself. With `device`, the model is moved there first."""
+    def speak(self, q: dict[str, Any], device: str = "") -> dict[str, Any]:
+        """The sentence asked for, as the page plays it. With `device`, the model is moved there first."""
         text = str(q.get("text", "")).strip()[:LONGEST]
         if not text:
             raise Refused("empty", "no text")
@@ -123,8 +121,6 @@ class Model:
                     raise Refused("empty", "nothing in the text that the language's front end can read")
                 phones = phrased(self.model, read, self.device, who)
                 frames, lasting = write_track(self.model, self.voice, phones, self.device, None, who, rate)
-                if whole:
-                    return self.voice.track(frames, True, who)
                 talker = self.voice.talkers[who]
                 frames = self.voice.decoder.hold(frames, self.voice.keys, talker.high)
                 return {
@@ -151,10 +147,10 @@ def which(models: dict[str, Model], lang: str) -> Model:
     return models[lang or next(iter(models))]
 
 
-def spoken(models: dict[str, Model], asked: Any, whole: bool = False, device: str = "") -> tuple[dict[str, Any], int]:
+def spoken(models: dict[str, Model], asked: Any, device: str = "") -> tuple[dict[str, Any], int]:
     """What is said to a sentence asked for (POST /api/speak), and the status it is said with."""
     try:
-        return which(models, str(asked.get("lang", ""))).speak(asked, whole, device), 200
+        return which(models, str(asked.get("lang", ""))).speak(asked, device), 200
     except Refused as e:
         return {"error": str(e), "code": e.code}, 400
     except (ValueError, KeyError, TypeError, AttributeError) as e:

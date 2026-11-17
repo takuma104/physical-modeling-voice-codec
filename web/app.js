@@ -242,12 +242,7 @@ window.addEventListener("resize", () => { if (!playing) rest(); });
 
 wasm = await (await fetch("pmvc_wasm.wasm")).arrayBuffer();
 body = await Body.load(wasm.slice(0));
-const { langs, plain } = await (await fetch("api/models")).json();
-// a server that can make the sound itself says where (the Space's plain form)
-if (plain) {
-  $("plain").hidden = false;
-  $("plain").firstElementChild.href = plain;
-}
+const { langs } = await (await fetch("api/models")).json();
 el.langs.replaceChildren(...langs.map((l) => {
   const b = document.createElement("button");
   b.type = "button";

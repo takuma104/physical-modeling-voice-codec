@@ -50,7 +50,6 @@ export const WORDS = {
     "voice-error": "声のエラー",
     credits: '声道の物理モデルは Jameson Hodge さんの <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a>（MIT ライセンス）を<b>改変せずに</b>使っています。この画面は CHIMERA の Speak 画面に倣って作り直したもので、CHIMERA そのものではありません。歌わせたり、舌や唇を直接動かしたり、動物の声を出したりするには、本家の CHIMERA をどうぞ。',
     sources: '学習データ: Emilia-YODAS（CC BY 4.0）、Common Voice（CC0）、LibriTTS-R（CC BY 4.0）。読み: OpenJTalk、CMUdict。 <a href="https://github.com/takuma104/physical-modeling-voice-codec" target="_blank" rel="noopener">コードと技術レポート</a> · <a href="https://huggingface.co/takuma104/pmvc-tts" target="_blank" rel="noopener">モデルの重み（CC BY 4.0）</a>',
-    plain: "音をサーバで作る素朴な版（プログラムからも呼べます）",
   },
   en: {
     tagline: "Text-to-speech that speaks through a physical model of the vocal tract",
@@ -100,7 +99,6 @@ export const WORDS = {
     "voice-error": "The voice failed",
     credits: 'The physical model of the vocal tract is <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a> by Jameson Hodge (MIT licence), used <b>unmodified</b>. This page is remade after CHIMERA\'s Speak screen and is not CHIMERA itself: to make the voice sing, to move the tongue and lips by hand or to hear its animals, go to the original.',
     sources: 'Taught with Emilia-YODAS (CC BY 4.0), Common Voice (CC0) and LibriTTS-R (CC BY 4.0). Text is read by OpenJTalk and CMUdict. <a href="https://github.com/takuma104/physical-modeling-voice-codec" target="_blank" rel="noopener">Code and technical report</a> · <a href="https://huggingface.co/takuma104/pmvc-tts" target="_blank" rel="noopener">Model weights (CC BY 4.0)</a>',
-    plain: "A plain form, with the sound made on the server (programs can call it too)",
   },
 };
 

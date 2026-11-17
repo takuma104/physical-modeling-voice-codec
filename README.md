@@ -497,11 +497,11 @@ node tools/test_browser.mjs "http://127.0.0.1:7860/?en" /tmp/shots --lang ja    
 uv run python -m pmvc.tts export out/jatts/models/ttsja.pt ../pmvc-tts/ja
 uv run python -m pmvc.tts export out/lten/models/ttsen.pt ../pmvc-tts/en
 uv run python -m pmvc.serve --model ../pmvc-tts/ja.json ../pmvc-tts/en.json
-#   Hugging Face Space(Gradio SDK。ZeroGPU のハードウェアは Gradio のアプリしか動かせないので、app.py は FastAPI でページを / に出し、
-#   Gradio の素朴な版を /gradio に置く。モデルは CPU で動く): Linux x86_64 の機械でエンジンの wheel を作り、Space のリポジトリの clone に一式を組み立てる
+#   Hugging Face Space(Gradio SDK。ZeroGPU のハードウェアは Gradio のアプリしか動かせないので、app.py は Gradio の Server モード(gr.Server)で
+#   ページと /api/* をそのまま出す。モデルは CPU で動く): Linux x86_64 の機械でエンジンの wheel を作り、Space のリポジトリの clone に一式を組み立てる
 bash tools/wheel.sh                                                  # → dist/pmvc_engine-…-cp312-cp312-manylinux_2_28_x86_64.whl (Docker の中でビルド)
 MODELS=../pmvc-tts bash tools/space.sh ../pmvc-tts-space             # space/ の app.py・README・requirements.txt と、ページ、サーバ、エンジン、モデル
-PORT=7861 uv run --with gradio==6.30.0 python ../pmvc-tts-space/app.py    # 手元で Space と同じアプリを動かす → http://127.0.0.1:7861/ と /gradio/
+PORT=7861 uv run --with gradio==6.30.0 python ../pmvc-tts-space/app.py    # 手元で Space と同じアプリを動かす → http://127.0.0.1:7861/
 
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
