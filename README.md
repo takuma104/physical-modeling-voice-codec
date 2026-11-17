@@ -9,6 +9,7 @@
 テキストから制御列(21 チャネル × 100 Hz)を書くモデルと、それをブラウザの中で音にする画面です。日本語と英語を話します。
 サーバが返すのは制御列だけで、音は CHIMERA のエンジン(WebAssembly)がブラウザの中で作ります。声の高さと明るさは、話している途中でも変えられます。
 モデルの重みは [Hugging Face](https://huggingface.co/takuma104/pmvc-tts)(CC BY 4.0)にあります。
+インストールせずにブラウザだけで試すには、Hugging Face Space をどうぞ: <https://huggingface.co/spaces/takuma104/pmvc-tts?ja>(English: [`?en`](https://huggingface.co/spaces/takuma104/pmvc-tts?en))。
 
 A text-to-speech demo in Japanese and English: a small network writes a control track (21 channels, 100 frames a second), and the CHIMERA engine, compiled to WebAssembly, turns it into sound in your browser. Needs Rust (with the `wasm32-unknown-unknown` target), [uv](https://docs.astral.sh/uv/) and a browser.
 
