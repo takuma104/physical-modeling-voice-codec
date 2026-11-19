@@ -72,9 +72,14 @@
 調音を介した音声符号化には長い歴史がある。近年のニューラルな研究は、音声を調音の軌跡に符号化し、
 ニューラルボコーダで復号する。SPARC~\cite{sparc}（調音器官の 12 座標と声の高さ、音量を 50\,Hz で。
 デコーダは HiFi-GAN）や ARTI-6~\cite{arti6}（リアルタイム MRI から得た 6 特徴）である。これらの
-デコーダはネットワークのままである。声道の微分可能なシミュレーション~\cite{difftlm} は、発話ごとの
-最適化で音声から声道の形を復元する。VocalTractLab~\cite{vtl} のような調音合成器は、規則か、
-合成による分析で駆動される。
+デコーダはネットワークのままである。物理合成器を録音から動かす研究もある。発話ごとに当てはめる
+ものは、合成器を鳴らしながらの探索~\cite{promon} か、微分可能な合成器の勾配~\cite{sudholt,difftlm}
+による。制御を 1 回の推論で書くネットワークを学習するものは、多くが VocalTractLab~\cite{vtl} を
+対象とし、合成器自身の合成音で教える~\cite{gao,sun}、強化学習で教える~\cite{shibata}、合成器を
+学習したモデルを通して教える~\cite{krug}、のいずれかである。本稿のエンコーダは最後の方法で
+教える。\ref{sec:related} 節で、これらと本稿を比べる。違いは、合成音が実録音に近い水準で聞き取られる
+こと、音声合成モデルがテキストだけから動くこと、制御列をコーデックの潜在表現として扱い、
+ニューラルな潜在表現との対照実験をしたことである。
 
 本稿では、物理合成器 CHIMERA~\cite{chimera} をそのまま使い、残りをその周りに作る。
 \begin{itemize}
@@ -177,7 +182,8 @@ Whisper~\cite{whisper} の small（英語は small.en）と large-v3-turbo を�
 リスナー距離は 0.18 から 0.17 にしか縮まなかった。同じ音になる制御列は何通りもあり、その平均が
 同じ音になるとは限らない。
 \emph{声そのもの。}対策は distal teacher~\cite{distal} である。出力がもたらす結果のモデルを通して
-エンコーダを教える。CHIMERA は微分できないが、合成音はいくらでも正確に作れる。そこで、制御列から
+エンコーダを教える。VocalTractLab では Krug ら~\cite{krug} がこの方法を使っている
+（\ref{sec:related} 節）。CHIMERA は微分できないが、合成音はいくらでも正確に作れる。そこで、制御列から
 「それを鳴らした音がリスナーにどう聞こえるか」への写像を、ネットワーク（双方向 LSTM 3 層、幅 512）に
 学習させる。聞こえ方は wav2vec\,2.0~\cite{wav2vec2}（のちに mHuBERT-147~\cite{mhubert}）のフレーム
 単位の特徴である。エンコーダの誤差は、書いた制御列についてこの\emph{代役}が言う聞こえ方と、
@@ -402,7 +408,10 @@ TTS、テキストだけから & 0.8 & 0.2 & 24.7 & 4.78 & -- & --\\
 ほとんど誤りなく読まれる（0.5\%）。20 文、1 分半でも、large-v3-turbo は音素の 92\% を聞き取る。
 ここまで小さいと、モデルはその言語の音をすべては聞いておらず、発音を誤る。それでも合成音の
 予測品質は 4.16 あり、耳には、言葉を言い損なっている人に聞こえ、ぎりぎり聞き取れる。このうちどこまでが
-潜在表現のおかげかは、\ref{sec:control} 節で調べる。
+潜在表現のおかげかは、\ref{sec:control} 節で調べる。減らしたのは音声合成モデルの学習だけである。
+その文の音素の長さは、話者の全録音で学習した対応付けから得ており、話者の声の高さの中央値と幅、
+話す速さも全録音のものである。エンコーダ I と代役もこれまでと同じものを使う。録音が数分しかない
+話者を扱ったことには、まだならない。
 
 \textbf{代役はここでも効くか。}2,000 文の学習で、代役を通した誤差を外すと、その誤差が下げようと
 するリスナー距離は 0.217 から 0.234 に上がる。しかし Whisper（0.3\% と 0.2\%）と音声記号の不一致
@@ -414,7 +423,8 @@ TTS、テキストだけから & 0.8 & 0.2 & 24.7 & 4.78 & -- & --\\
 1 話者あたり約 100 文、12 分である（9,998 録音、20 時間）。モデルは話者ごとにベクトルを 1 つ持ち、
 すべての音素とフレームに足す。声の高さは、話者ごとの平均と幅を基準に書く。声に伝えるのは、これまでと
 同じく話者の性別と声の高さの中央値である。テストはエンコーダと同じで、8 話者が読む、どの話者の
-学習にも出てこない 25 文である。テキストだけから書くと、large-v3-turbo の音素誤り率は 2.3\% で、
+学習にも出てこない 25 文である。（学習の文に音素の長さを与える対応付けは、この 25 文を含む JVS の
+全録音で学習している。音声合成モデルは、その録音もテキストも見ていない。）テキストだけから書くと、large-v3-turbo の音素誤り率は 2.3\% で、
 実録音（2.5\%）と並び、エンコーダの合成音（3.4\%）より低い。女性でも男性でも同じで、予測品質は
 エンコーダと同じである。1 話者 20 文（各 2 分）では 3.4\%、5 文（各 35 秒）では 4.8\% になる。
 音素の長さを話者のものにすると、ここでは悪くなる（4.4\%）。単一話者ではそうならなかった。原因は
@@ -720,12 +730,12 @@ Common Voice のモデルは、どの話者の声で読ませるかによって 
 公開する日本語のモデルはこれにした。途中で直したことが 2 つある。話し言葉は読み上げより 3 割
 速いので、速さは指定するようにした。試聴では、録音と同じ速さで良いとの評価だった。また、音素の
 対応付けは、スタジオの読み上げでは 12 エポックで学習できたが、どちらのコーパスでも 40 エポックが
-要る。合わせたモデルの試聴はまだである。
+要る。合わせたモデルはその後に試聴し、公開する声として採用した。
 
 \textbf{英語。}同じ作りのモデルを、LibriTTS-R~\cite{librittsr} の clean の 100 時間（使ったのは
 7,534 文、240 人、12.9 時間）で英語用に学習した。読みには CHIMERA 自身の英語フロントエンド
 （CMU の発音辞書と、綴りからの規則）を、エンジンを変えずに呼び出して使う。TSP のテスト 240 文
-での誤りは、低い声で 1.9\%、高い声で 3.1\% で、実録音は 1.6\% である。
+での単語誤り率は、低い声で 1.9\%、高い声で 3.1\% で、実録音は 1.6\% である。
 
 \textbf{公開するもの。}モデルは、重みと、その横の記述として公開する。記述には録音の話者の名前を
 入れない。声を入力にしたモデルが話すのに要るのは、男性と女性の中央値（声の高さ、話す速さ、
@@ -739,6 +749,107 @@ Python のモジュールと同じサンプルを、1 コアで実時間の 5 �
 横に管の断面積と、制御列の全 21 チャネルを並べる。ヘッドレスの Chrome でこのページを動かす
 テストでは、高さのつまみを 120\,Hz にして話させると、オーディオスレッドから出てくる音の高さの
 中央値は 143\,Hz で、文の途中でつまみを 240\,Hz に回すと 235\,Hz になる。
+
+\section{先行研究との比較}\label{sec:related}
+\begin{table*}[t]
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{録音から声道合成器の制御を 1 回の推論で書くネットワーク。合成音を音声認識にかけた結果は
+各研究の報告どおりで、かっこ内は実録音の値（あるもののみ）。合成器も、言語も、音声認識も、テストの
+文も違うので、行どうしを比べることはできない。}
+\label{tab:related}
+\begin{tabular}{@{}p{25mm}p{27mm}p{50mm}p{27mm}p{31mm}@{}}
+\toprule
+& 音を作るもの & ネットワークの教え方 & テキストから & 合成音の音声認識\\
+\midrule
+Gao ら~\cite{gao} & VocalTractLab & 合成器の合成音を手本にする。のちに録音も加える。滑らかさと
+音響の正則化 & -- & 認識率 74\%（ドイツ語）、53\%（英語）、52\%（中国語）\\
+\addlinespace
+Sun ら~\cite{sun} & VocalTractLab & 録音に対する自分の答えを合成して手本にすることを繰り返す &
+-- & なし（STOI 0.82）\\
+\addlinespace
+Georges ら~\cite{georges} & 1 話者の調音で学習したネットワークと LPCNet & 同時に学習する
+順モデルを通して & -- & なし（聴取者は子音の 58〜62\% を聞き取る）\\
+\addlinespace
+Krug ら~\cite{krug} & VocalTractLab & 乱数で作った 150 時間の擬似音声で教え、次に順モデルを
+通して録音で教える & 音素に録音の長さを与えて 28\%、25\%（規則: 25\%） & 単語誤り率 56\%、52\%
+（4\%、3\%）。ドイツ語、男性と女性\\
+\addlinespace
+Lavechin と Hueber~\cite{lavechin} & 1 話者の調音で学習したネットワークと HiFi-GAN & 合成器を
+通る勾配で、wav2vec\,2.0 の特徴の上で & -- & 単語誤り率 15\%（最良の層）。フランス語\\
+\addlinespace
+本稿 & CHIMERA & 規則合成の合成音で教え、次に、リスナーの特徴を予測する代役を通して録音で教える &
+テキストだけから 2.3\%（2.5\%）日本語、1.9〜3.1\%（1.6\%）英語 & 単語誤り率 3.2\%（1.6\%）英語、
+音素誤り率 0.4〜3.4\%（0.2〜2.5\%）日本語\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{調音の潜在表現とニューラルデコーダ。}SPARC~\cite{sparc} と ARTI-6~\cite{arti6} は、話者で
+計測されるような調音の軌跡に音声を符号化し、ボコーダで復号する。Krug ら~\cite{tt2} は
+VocalTractLab の合成した軌跡をニューラル合成器の潜在表現に使い、Bandekar ら~\cite{asftts} は、
+予測した軌跡でニューラルなフィルタを条件づける音声合成を作った。いずれも音を作るのはネットワーク
+である。教わっていない潜在表現をネットワークがどう鳴らすかが、本稿の出発点だった。
+\ref{sec:control} 節の対照実験には、これらを入れていない。調音の潜在表現とニューラルデコーダの
+組が、メルスペクトログラムのように崩れるのか、シミュレータのように崩れるのかは、分かっていない。
+
+\textbf{録音からシミュレータを動かす。}物理合成器からは勾配が得られない。その代わりに何を使うかで
+研究が分かれる。\emph{発話ごとの当てはめ。}Prom-on ら~\cite{promon} は、VocalTractLab~\cite{vtl} の
+調音の目標値を、手で決めた境界の間の区間ごとに乱数で動かし、合成音のケプストラムが録音に近づいた
+変更だけを残す。対象は数個の単語と母音の連続で、彼らはこの課題を distal learning と呼んでいる。
+声道の微分可能なモデルなら、勾配降下で当てはめられる~\cite{sudholt,difftlm}。\ref{sec:encoder} 節の
+探索はこの種類で、これらと同じく 1 文に分単位の計算がかかる。\emph{逆向きのネットワーク。}制御列を
+1 回の推論で書くネットワークの教え方は 4 通りある。1 つ目は、合成器の合成音を手本にするもの
+（Gao ら~\cite{gao}）。本稿のエンコーダ A がこれで、手本を作った規則合成の水準にとどまった。
+2 つ目は、録音に対するネットワーク自身の答えを合成して手本にすることを繰り返すもの（Sun と
+Wu~\cite{emjem}、VocalTractLab では Sun ら~\cite{sun}）。3 つ目は強化学習~\cite{shibata}。4 つ目が、
+合成器のすることを学習したネットワークを通して教えるもので、本来の意味での distal
+teacher~\cite{distal} である。Georges ら~\cite{georges,georges24} は、それ自体がネットワークである
+合成器の周りで、逆モデルと順モデルを同時に学習する。Krug ら~\cite{krug} は、VocalTractLab の
+逆モデルを、乱数で作った 150 時間の擬似音声で教え、そのあと、制御列をスペクトログラムの
+自己符号化器の符号に写す順モデルを通して、録音で教える。（Sering ら~\cite{paule} は、VocalTractLab の
+そういうモデルを別の形で使う。勾配降下で、単語ごとに制御列を計画する。）\ref{sec:encoder} 節に
+最も近いのは Krug らの研究である。その合成音の単語誤り率は男性で 56\%、女性で 52\% で、原因も述べられて
+いる。逆モデルが滑らかでない制御列で順モデルの抜け道を突くのを止めるものがなく、それを
+シミュレータが雑音にしてしまう。
+
+\textbf{同じところ、違うところ。}\ref{sec:encoder} 節のエンコーダの教え方は Krug らと同じである。
+まずシミュレータの合成音で教え、次に、シミュレータの代役のネットワークを通して録音で教える。
+違いは 3 つある。\emph{代役が予測するもの。}スペクトルやその符号ではなく、自己教師あり音声モデルの
+聞こえ方で、フレームごとに比べる。Lavechin と Hueber~\cite{lavechin} は、これを勾配の通る
+ネットワークの合成器で行った。wav2vec\,2.0 の特徴の上で真似ると、ケプストラムの上で真似るより、
+計測した調音に近い軌跡が得られ、中間の層が最も良い（単語誤り率は第 7 層で 15\%、最下層では
+40〜53\%）。彼らはその理由を、中間の層が音素を保ち、話者を落とすことに求めている。本稿のリスナーは
+12 層のうちの第 9 層と第 8 層であり、何を学ぶかはリスナーが決めるという \ref{sec:encoder} 節の結果は、これと合う。
+van Niekerk ら~\cite{beyond} も、VocalTractLab での音節の学習について同じことを論じている。
+音そのものではなく、話者によらない聞こえ方に向けて学習する。\emph{代役の抜け道を突かせない
+もの。}参照の制御列への弱い引き戻しと、エンコーダの制御列をシミュレータ自身が鳴らした結果で重みを
+選ぶことである。エンコーダの調音器官の動きは規則合成より遅い（\ref{sec:encoder} 節）。2 つのうち
+どちらが効いているかは確かめていない。\emph{結果。}改造していないシミュレータの合成音が、実録音に
+近い水準で音声認識に聞き取られる（表~\ref{tab:related}）。この表は比較ではない。本稿の手順を
+VocalTractLab で試しておらず、ほかの手順を CHIMERA で試してもいない。それぞれの研究が、それぞれの
+物差しでどこにいたかを示すだけである。
+
+\textbf{テキストから。}VocalTractLab は規則でテキストを読む。Krug ら~\cite{vtltts} は、ドイツ語の
+15 文でこれをほかのシステムと比べた。聞き取りやすさは大学のシステムと同程度で、商用のものには
+及ばない。自然さは、50 人の聴取者の評価で 5 点中 1.5 点、実録音は 4.8 点である。\cite{krug} では、
+録音の長さを与えた音素からネットワークが制御列を書き、規則と同程度に聞き取られる。
+\ref{sec:tts} 節のモデルは音素の長さも自分で決め、100 話者で学習し、実録音と同じだけ聞き取られる。
+\ref{sec:release} 節は英語でも同じことをする。
+
+\textbf{コーデックとして。}シミュレータの制御列をコーデックの潜在表現として扱った研究を、著者らは
+知らない。つまり、制御列にノイズを加え、量子化し、間引くこと（\ref{sec:perturb} 節）、また、同じ
+音声合成モデルを制御列とニューラルな潜在表現の両方で学習して、デコーダが何に効くかを確かめること
+（\ref{sec:control} 節）である。
+
+\textbf{ほかの研究がしていて、本稿がしていないこと。}\emph{制御列を計測した調音と比べる。}
+Prom-on ら~\cite{promon}、Sun ら~\cite{sun}、Lavechin と Hueber~\cite{lavechin} は、得られた軌跡を、
+話者の電磁アーティキュログラフィの計測と比べている（後の 2 つでは相関 0.34 と 0.51）。本稿は
+比べておらず、主張するのは制御列が正しく聞こえることだけである。同じ音になる制御列は何通りもあり
+（\ref{sec:encoder} 節）、本稿の制御列が話者の調音と同じだと言えるものは何もない。
+\emph{聴取者に聞く。}\cite{vtltts} は 50 人、\cite{georges} は 20 人に聞いている。本稿は 1 人である。
+\cite{vtltts} は、NISQA が予測する自然さと聴取者の評価との相関が 0.28 しかなく、調音合成などを高く
+付けすぎることも報告している。本稿の予測品質（\ref{sec:tts} 節、\ref{sec:control} 節）は、予測
+モデルが、想定していない種類の声に付けた点数である。
 
 \section{考察}\label{sec:discussion}
 \textbf{効いたこと。}\emph{声を通して教える。}制御列を真似ると、同じことの言い方の平均を取って
@@ -764,7 +875,7 @@ Python のモジュールと同じサンプルを、1 コアで実時間の 5 �
 破裂音の音は話者より鋭く、音声合成モデルの合成音ではさらに多い（1 秒に 0.61 回で発話より
 15.4\,dB 小さい。エンコーダは 0.54 回と 16.3\,dB、実録音は 0.27 回と 25.8\,dB）。日本語の「え」の
 音色はまだ外れている。点数は ASR と 1 つの品質予測モデルによるもので、各モデルの学習は 1 回ずつ、
-試聴は 1 人である。対照実験で調整したのは、メルスペクトログラムのデコーダだけである。EnCodec と Mimi の
+試聴は 1 人である。制御列を、計測した調音と比べてもいない（\ref{sec:related} 節）。対照実験で調整したのは、メルスペクトログラムのデコーダだけである。EnCodec と Mimi の
 デコーダはそのまま使い、回帰の代わりに潜在表現の生成モデルを使うことは試していない。また、
 NISQA の自然さのモデルは、シミュレータの声をニューラルデコーダの合成音より低く付ける
 （\ref{sec:control} 節）。
@@ -849,5 +960,43 @@ at scale. Interspeech, 2022.
 \url{https://huggingface.co/sarulab-speech/hubert-base-jtube}.
 \bibitem{commonvoice} R.~Ardila et al. Common Voice: A massively-multilingual speech corpus. LREC, 2020.
 \bibitem{librittsr} Y.~Koizumi et al. LibriTTS-R: A restored multi-speaker text-to-speech corpus. Interspeech, 2023.
+\bibitem{promon} S.~Prom-on, P.~Birkholz, Y.~Xu. Training an articulatory synthesizer with
+continuous acoustic data. \emph{Interspeech}, 2013.
+\bibitem{sudholt} D.~Südholt, M.~Cámara, Z.~Xu, J.~D.~Reiss. Vocal tract area estimation by
+gradient descent. \emph{DAFx}, 2023.
+\bibitem{gao} Y.~Gao, P.~Birkholz, Y.~Li. Articulatory copy synthesis based on the speech
+synthesizer VocalTractLab and convolutional recurrent neural networks. \emph{IEEE/ACM TASLP}
+32, 2024.
+\bibitem{emjem} Y.~Sun, X.~Wu. Embodied self-supervised learning by coordinated sampling and
+training. arXiv:2006.13350, 2020.
+\bibitem{sun} Y.~Sun, Q.~Huang, X.~Wu. Unsupervised inference of physiologically meaningful
+articulatory trajectories with VocalTractLab. \emph{Interspeech}, 2022.
+\bibitem{shibata} H.~Shibata, M.~Zhang, T.~Shinozaki. Unsupervised acoustic-to-articulatory
+inversion neural network learning based on deterministic policy gradient. \emph{IEEE SLT},
+2021.
+\bibitem{paule} K.~Sering, P.~Schmidt-Barbo, S.~Otte, M.~V.~Butz, H.~Baayen. Recurrent
+gradient-based motor inference for speech resynthesis with a vocal tract simulator.
+\emph{International Seminar on Speech Production}, 2020.
+\bibitem{georges} M.-A.~Georges, J.~Diard, L.~Girin, J.-L.~Schwartz, T.~Hueber. Repeat after
+me: Self-supervised learning of acoustic-to-articulatory mapping by vocal imitation.
+\emph{ICASSP}, 2022.
+\bibitem{georges24} M.-A.~Georges, M.~Lavechin, J.-L.~Schwartz, T.~Hueber. Decode, move and
+speak! Self-supervised learning of speech units, gestures, and sound relationships using vocal
+imitation. \emph{Computational Linguistics} 50(4), 2024.
+\bibitem{krug} P.~K.~Krug, P.~Birkholz, B.~Gerazov, D.~R.~van Niekerk, A.~Xu, Y.~Xu.
+Self-supervised solution to the control problem of articulatory synthesis. \emph{Interspeech},
+2023.
+\bibitem{lavechin} M.~Lavechin, T.~Hueber. From perception to production: How acoustic
+invariance facilitates articulatory learning in a self-supervised vocal imitation model.
+\emph{EMNLP}, 2025.
+\bibitem{vtltts} P.~K.~Krug, S.~Stone, P.~Birkholz. Intelligibility and naturalness of
+articulatory synthesis with VocalTractLab compared to established speech synthesis
+technologies. \emph{ISCA Speech Synthesis Workshop}, 2021.
+\bibitem{tt2} P.~K.~Krug, C.~Wagner, P.~Birkholz, T.~Stich. Precisely controllable neural
+speech synthesis. \emph{ICASSP}, 2025.
+\bibitem{asftts} J.~Bandekar, S.~Watanabe, P.~K.~Ghosh. Articulatory source-filter TTS:
+Physically grounded control through vocal tract kinematics. arXiv:2610.00735, 2026.
+\bibitem{beyond} D.~R.~van Niekerk et al. Simulating vocal learning of spoken language: Beyond
+imitation. \emph{Speech Communication} 147, 2023.
 \end{thebibliography}
 \end{document}

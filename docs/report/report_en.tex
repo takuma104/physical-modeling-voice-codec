@@ -74,9 +74,15 @@ Speech coding through articulation has a long history, and recent neural work en
 articulatory trajectories and decodes them with a neural vocoder: SPARC~\cite{sparc} (12
 articulator coordinates, pitch and loudness at 50\,Hz, HiFi-GAN decoder) and
 ARTI-6~\cite{arti6} (six features from real-time MRI). There the decoder is still a network.
-Differentiable simulation of the tract~\cite{difftlm} recovers a tract shape from audio by
-optimizing each utterance. Articulatory synthesizers such as VocalTractLab~\cite{vtl} are driven
-by rules or by analysis-by-synthesis.
+Physical synthesizers have been driven from recordings too. Some work fits each utterance, by
+search through the synthesizer~\cite{promon} or by the gradient of a differentiable
+one~\cite{sudholt,difftlm}. Other work teaches a network to write the controls in one pass,
+most of it for VocalTractLab~\cite{vtl}: with the synthesizer's own
+renders~\cite{gao,sun}, by reinforcement~\cite{shibata}, or through a learned model of the
+synthesizer~\cite{krug}. Our encoder is taught in the last way.
+\S\ref{sec:related} sets this report against that work: its renders are read nearly as well as
+the recordings, its text-to-speech model works from text alone, and it treats the control track
+as a codec's latent, with a control against neural ones.
 
 We take a physical synthesizer as it is, CHIMERA~\cite{chimera}, and build the rest around it:
 \begin{itemize}
@@ -185,7 +191,8 @@ adjusts a track until a listener model finds the render close to the recording c
 errors from 34.6\% to 13.3\%, at one to two minutes per sentence. An encoder taught to copy such tracks (B) stalls: its
 listener distance went from 0.18 to 0.17 when the tracks to copy grew from 170 to 1,012. Many
 tracks make the same sound, and their average need not. \emph{The voice itself.} The remedy is
-the distal teacher~\cite{distal}: teach the encoder through a model of what its output does.
+the distal teacher~\cite{distal}: teach the encoder through a model of what its output does,
+as Krug et al.~\cite{krug} do for VocalTractLab (\S\ref{sec:related}).
 CHIMERA is not differentiable, but its renders are free and exact, so a network (three
 bidirectional LSTM layers, width 512) learns to map a track to what a listener would hear of its
 render: the frame-level features of wav2vec\,2.0~\cite{wav2vec2}, later of
@@ -426,7 +433,11 @@ minutes of speech, is still read almost without error (0.5\%), and with 20 sente
 and a half, large-v3-turbo still gets 92\% of the phonemes. A model that small has not heard
 every sound of the language, and it mispronounces; but its renders keep a predicted quality of
 4.16, and to the ear they are a person slurring words, barely but still intelligible. How
-much of this is the latent's doing is the question of \S\ref{sec:control}.
+much of this is the latent's doing is the question of \S\ref{sec:control}. Only the
+text-to-speech model is taught with less. The durations of its sentences come from the
+alignment fitted on all of the speaker's recordings, the speaker's median pitch, pitch range
+and pace are those of all of them, and encoder I and the stand-in are as before: this is not
+yet a speaker of whom there are only minutes.
 
 \textbf{Does the stand-in matter here?} At 2,000 sentences, dropping the stand-in loss raises the
 listener distance it aims at from 0.217 to 0.234, but Whisper (0.3\% against 0.2\%) and the phone
@@ -439,7 +450,9 @@ was essential for the encoder is inherited by the text-to-speech model.
 has a vector for each speaker, added to every phoneme and every frame, and writes each speaker's
 pitch against that speaker's own mean and spread; the voice is told the speaker's sex and median
 pitch, as before. The test is the encoder's: eight speakers reading 25 sentences that nobody
-reads in training. From text alone large-v3-turbo gets 2.3\% of the phonemes wrong, as for the
+reads in training. (The alignment that gives the training sentences their durations was fitted
+on all of JVS's recordings, these among them; the text-to-speech model met neither them nor
+their text.) From text alone large-v3-turbo gets 2.3\% of the phonemes wrong, as for the
 recordings (2.5\%) and fewer than for the encoder's renders (3.4\%), for women and men alike, at
 the encoder's predicted quality. With 20 sentences per speaker (two minutes each) it is 3.4\%,
 and with five (35 seconds each) 4.8\%. Borrowing the speakers' durations makes it worse here
@@ -771,12 +784,13 @@ each voice, well ahead of the worse (3.6\% and 4.8\%), and the only one whose bo
 between the two voices. It is the release's Japanese model. Two things had to be set right on
 the way. People talking are a third faster than people reading, so the pace is given, and the
 listener found the recordings' pace right. And the aligner needs forty epochs with either corpus
-where read studio speech needed twelve. The combined model has not been heard yet.
+where read studio speech needed twelve. The listener has since heard the combined model and
+taken it as the release's.
 
 \textbf{English.} The same model was taught for English with the clean hundred hours of
 LibriTTS-R~\cite{librittsr} (7,534 sentences of 240 readers, 12.9 hours). Its text is read by
 CHIMERA's own English front end, the CMU dictionary with letter-to-sound rules, which is called
-as the engine has it. On the 240 test sentences of TSP the model gets 1.9\% of the phonemes
+as the engine has it. On the 240 test sentences of TSP the model gets 1.9\% of the words
 wrong in the low voice and 3.1\% in the high one, where the recordings have 1.6\%.
 
 \textbf{What is published.} A model is published as its weights and a description beside them
@@ -794,6 +808,120 @@ geometry the engine computes its tube from, beside the tube's areas and all 21 c
 track. A test drives it in a headless Chrome: with the pitch dial at 120\,Hz the sound that
 comes out of the audio thread has a median pitch of 143\,Hz, and of 235\,Hz after the dial is
 turned to 240\,Hz in the middle of the sentence.
+
+\section{Related work}\label{sec:related}
+\begin{table*}[t]
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{Networks that write the controls of a vocal-tract synthesizer from a recording in one
+pass. What a speech recognizer makes of the renders is as each work reports it, with the
+recordings' figure in parentheses where there is one. Synthesizers, languages, recognizers and
+test sets differ: no two rows can be compared.}
+\label{tab:related}
+\begin{tabular}{@{}p{25mm}p{27mm}p{50mm}p{27mm}p{31mm}@{}}
+\toprule
+& The sound is made by & The network is taught & From text & The renders, to a recognizer\\
+\midrule
+Gao et al.~\cite{gao} & VocalTractLab & with the synthesizer's renders as examples, later with
+recordings too; a smoothness and an acoustic regularizer & -- & recognition rates 74\% (German), 53\% (English), 52\% (Mandarin)\\
+\addlinespace
+Sun et al.~\cite{sun} & VocalTractLab & with renders of its own answers to the recordings, made
+again and again & -- & none (STOI 0.82)\\
+\addlinespace
+Georges et al.~\cite{georges} & a network taught with one speaker's articulation, and LPCNet &
+through a forward model learned at the same time & -- & none (listeners get 58--62\% of the
+consonants)\\
+\addlinespace
+Krug et al.~\cite{krug} & VocalTractLab & with 150\,h of random pseudo-speech, then with
+recordings through a forward model & phonemes with the recordings' durations: 28\%, 25\%
+(rules: 25\%) & 56\%, 52\% of the words wrong (4\%, 3\%); German, men and women\\
+\addlinespace
+Lavechin and Hueber~\cite{lavechin} & a network taught with one speaker's articulation, and
+HiFi-GAN & by the gradient through the synthesizer, in wav2vec\,2.0's features & -- & 15\% of
+the words wrong with the best layer; French\\
+\addlinespace
+This report & CHIMERA & with renders of rule-made tracks, then with recordings through a
+stand-in that predicts a listener's features & text alone: 2.3\% (2.5\%), Japanese;
+1.9--3.1\% (1.6\%), English & 3.2\% of the words wrong (1.6\%), English; 0.4--3.4\% of the
+phonemes (0.2--2.5\%), Japanese\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{Articulatory latents, neural decoders.} SPARC~\cite{sparc} and ARTI-6~\cite{arti6}
+encode speech into trajectories of the kind that are measured on speakers and decode them with
+a vocoder. Krug et al.~\cite{tt2} use VocalTractLab's synthetic trajectories as the latent of a
+neural synthesizer, and Bandekar et al.~\cite{asftts} build text-to-speech on predicted
+trajectories that condition a neural filter. In all of these a network makes the sound, and
+what a network does with a latent it was not taught is where this report started. We have not
+put one of them into the control of \S\ref{sec:control}: whether an articulatory latent with a
+neural decoder fails like the spectrogram or like the simulator is open.
+
+\textbf{A simulator driven from recordings.} A physical synthesizer gives no gradient, and the
+work differs in what takes its place. \emph{Fitting each utterance.} Prom-on et
+al.~\cite{promon} adjust VocalTractLab's~\cite{vtl} articulatory targets segment by segment,
+between boundaries set by hand, keeping the random changes that bring the render's cepstrum
+closer to the recording's, for a few words and vowel sequences; they call the task distal
+learning. A differentiable model of the tract can be fitted by gradient
+descent~\cite{sudholt,difftlm}. The search of \S\ref{sec:encoder} is of this kind, and like
+these it takes minutes of computing for a sentence. \emph{An inverse network.} A network that
+writes the track in one pass has been taught in four ways. With the synthesizer's renders as
+examples: Gao et al.~\cite{gao}; our encoder A is this, and it stayed where the rules that made
+its examples are. With renders of the network's own answers to recordings, made again and again:
+Sun and Wu~\cite{emjem} and, for VocalTractLab, Sun et al.~\cite{sun}. By
+reinforcement~\cite{shibata}. And through a network that learns what the synthesizer does, the
+distal teacher~\cite{distal} proper: Georges et al.~\cite{georges,georges24} teach an inverse
+and a forward model together, around a synthesizer that is itself a network, and Krug et
+al.~\cite{krug} teach an inverse model for VocalTractLab with 150 hours of randomly made
+pseudo-speech and then with recordings, through a forward model that maps tracks to the codes
+of a spectrogram autoencoder. (Sering et al.~\cite{paule} use such a model of VocalTractLab
+in another way, to plan the track of each word by gradient descent.) Krug et al.'s is the work
+nearest to \S\ref{sec:encoder}. A recognizer gets 56\% and 52\% of the words wrong in their
+renders of men and women, and they name a cause: nothing stops the inverse model from
+exploiting the forward model with tracks that are not smooth, which the simulator turns into
+noise.
+
+\textbf{What is the same here, and what is not.} The encoder of \S\ref{sec:encoder} is taught
+as Krug et al.'s is: with the simulator's renders first, then with recordings through a network
+that stands in for the simulator. Three things differ. \emph{What the stand-in predicts.} Not a
+spectrum or a code for one, but what a self-supervised speech model hears, compared frame by
+frame. Lavechin and Hueber~\cite{lavechin} did this with a synthesizer that is a network and
+lets the gradient through: imitation in wav2vec\,2.0's features gives tracks nearer to measured
+ones than imitation in cepstra, and the layers in the middle do best (15\% of the words wrong
+with layer 7, 40--53\% with the lowest), which they put down to those layers keeping the
+phonemes and dropping the speaker. Our listeners are layers 9 and 8 of twelve, and that the
+listener decides what is learned (\S\ref{sec:encoder}) agrees with them. Van Niekerk et al.~\cite{beyond} argue
+likewise for syllables learned with VocalTractLab: towards a percept that abstracts from the
+speaker, not towards the sound. \emph{What stands against exploiting the stand-in.} A weak pull
+towards a reference track, and the choice of the weights by what the simulator itself makes of
+the encoder's tracks. The encoder's articulators move more slowly than the rules'
+(\S\ref{sec:encoder}); which of the two does that we have not tested. \emph{The outcome.}
+Renders of an unmodified simulator that a recognizer reads nearly as well as the recordings
+(Table~\ref{tab:related}). The table is not a comparison: we have not run our recipe on
+VocalTractLab, nor another's on CHIMERA. It says where each work stood by its own measure.
+
+\textbf{From text.} VocalTractLab speaks from text by rules. Krug et al.~\cite{vtltts}
+compared it with other systems on fifteen German sentences: it is understood about as well as
+the systems of universities and less well than commercial ones, and fifty listeners rate its
+naturalness 1.5 of 5 where recordings get 4.8. In~\cite{krug} a network writes the tracks from
+phonemes that are given the recordings' durations, and is read as well as the rules. The model
+of \S\ref{sec:tts} decides the durations too, is taught with a hundred speakers, and is read as
+the recordings are; \S\ref{sec:release} does the same for English.
+
+\textbf{As a codec.} We know of no work that treats a simulator's control track as the latent
+of a codec: that adds noise to it, quantizes it and decimates it (\S\ref{sec:perturb}), or that
+teaches one text-to-speech model on it and on neural latents to see what the decoder
+contributes (\S\ref{sec:control}).
+
+\textbf{What others did and we did not.} \emph{Compare the tracks with measured articulation.}
+Prom-on et al.~\cite{promon}, Sun et al.~\cite{sun} and Lavechin and Hueber~\cite{lavechin}
+set their tracks against electromagnetic articulography of the speakers (correlations of 0.34
+and 0.51 in the latter two). We did not, and claim only that our tracks sound right: many
+tracks make one sound (\S\ref{sec:encoder}), and nothing here says that ours are the
+speaker's. \emph{Ask listeners.} \cite{vtltts} had fifty and \cite{georges} twenty; this report
+has one. \cite{vtltts} also found that the naturalness NISQA predicts followed its listeners
+with a correlation of 0.28 and put the articulatory systems, among others, too high. Our predicted qualities
+(\S\ref{sec:tts}, \S\ref{sec:control}) are a predictor's word on a kind of voice it was not
+made for.
 
 \section{Discussion}\label{sec:discussion}
 \textbf{What mattered.} \emph{Teach through the voice.} Copying tracks averages over ways to
@@ -821,7 +949,8 @@ recordings' between 1.6 and 5.5\,kHz, sound less real to the listener than the m
 of stops are sharper than a speaker's, more so in the text-to-speech model's renders (0.61 per
 second, 15.4\,dB under the speech, against the encoder's 0.54 and 16.3\,dB and the recordings' 0.27
 and 25.8\,dB). The mid-vowel timbre of Japanese /e/ is still off. Scores come from ASR and one
-quality predictor, with one training run per model, and the listening is one person's. In the
+quality predictor, with one training run per model, and the listening is one person's; the
+tracks were not set against measured articulation (\S\ref{sec:related}). In the
 control only the spectrogram's decoder was tuned: EnCodec's and Mimi's were used as they are,
 and a generative model of the latent in place of regression was not tried. NISQA's model of
 naturalness rates the simulator's voice below the neural decoders' renders
@@ -908,5 +1037,43 @@ at scale. Interspeech, 2022.
 \url{https://huggingface.co/sarulab-speech/hubert-base-jtube}.
 \bibitem{commonvoice} R.~Ardila et al. Common Voice: A massively-multilingual speech corpus. LREC, 2020.
 \bibitem{librittsr} Y.~Koizumi et al. LibriTTS-R: A restored multi-speaker text-to-speech corpus. Interspeech, 2023.
+\bibitem{promon} S.~Prom-on, P.~Birkholz, Y.~Xu. Training an articulatory synthesizer with
+continuous acoustic data. \emph{Interspeech}, 2013.
+\bibitem{sudholt} D.~Südholt, M.~Cámara, Z.~Xu, J.~D.~Reiss. Vocal tract area estimation by
+gradient descent. \emph{DAFx}, 2023.
+\bibitem{gao} Y.~Gao, P.~Birkholz, Y.~Li. Articulatory copy synthesis based on the speech
+synthesizer VocalTractLab and convolutional recurrent neural networks. \emph{IEEE/ACM TASLP}
+32, 2024.
+\bibitem{emjem} Y.~Sun, X.~Wu. Embodied self-supervised learning by coordinated sampling and
+training. arXiv:2006.13350, 2020.
+\bibitem{sun} Y.~Sun, Q.~Huang, X.~Wu. Unsupervised inference of physiologically meaningful
+articulatory trajectories with VocalTractLab. \emph{Interspeech}, 2022.
+\bibitem{shibata} H.~Shibata, M.~Zhang, T.~Shinozaki. Unsupervised acoustic-to-articulatory
+inversion neural network learning based on deterministic policy gradient. \emph{IEEE SLT},
+2021.
+\bibitem{paule} K.~Sering, P.~Schmidt-Barbo, S.~Otte, M.~V.~Butz, H.~Baayen. Recurrent
+gradient-based motor inference for speech resynthesis with a vocal tract simulator.
+\emph{International Seminar on Speech Production}, 2020.
+\bibitem{georges} M.-A.~Georges, J.~Diard, L.~Girin, J.-L.~Schwartz, T.~Hueber. Repeat after
+me: Self-supervised learning of acoustic-to-articulatory mapping by vocal imitation.
+\emph{ICASSP}, 2022.
+\bibitem{georges24} M.-A.~Georges, M.~Lavechin, J.-L.~Schwartz, T.~Hueber. Decode, move and
+speak! Self-supervised learning of speech units, gestures, and sound relationships using vocal
+imitation. \emph{Computational Linguistics} 50(4), 2024.
+\bibitem{krug} P.~K.~Krug, P.~Birkholz, B.~Gerazov, D.~R.~van Niekerk, A.~Xu, Y.~Xu.
+Self-supervised solution to the control problem of articulatory synthesis. \emph{Interspeech},
+2023.
+\bibitem{lavechin} M.~Lavechin, T.~Hueber. From perception to production: How acoustic
+invariance facilitates articulatory learning in a self-supervised vocal imitation model.
+\emph{EMNLP}, 2025.
+\bibitem{vtltts} P.~K.~Krug, S.~Stone, P.~Birkholz. Intelligibility and naturalness of
+articulatory synthesis with VocalTractLab compared to established speech synthesis
+technologies. \emph{ISCA Speech Synthesis Workshop}, 2021.
+\bibitem{tt2} P.~K.~Krug, C.~Wagner, P.~Birkholz, T.~Stich. Precisely controllable neural
+speech synthesis. \emph{ICASSP}, 2025.
+\bibitem{asftts} J.~Bandekar, S.~Watanabe, P.~K.~Ghosh. Articulatory source-filter TTS:
+Physically grounded control through vocal tract kinematics. arXiv:2610.00735, 2026.
+\bibitem{beyond} D.~R.~van Niekerk et al. Simulating vocal learning of spoken language: Beyond
+imitation. \emph{Speech Communication} 147, 2023.
 \end{thebibliography}
 \end{document}
