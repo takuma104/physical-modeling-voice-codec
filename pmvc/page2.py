@@ -12,7 +12,8 @@ above the glottis held narrower (the one setting that moves the hole the voice h
 3-4.5 kHz); under each clip, what NISQA's two models and UTMOSv2 make of it. The tables are read from what `pmvc.gap` and `pmvc.bench`
 wrote in <dir>: gap_<variant>.json, gap_low_<variant>.json, bench_v1.json, and for the test of
 how near the voice comes to a recording's envelope when asked, bench_static.json,
-bench_reach.json and the searches' reach_*.json (each left out if it is not there). JVS's terms allow only some of its audio on a page: the page holds ten clips made
+bench_reach.json and the searches' reach_*.json, and `pmvc.tract`'s tract_<variant>.json for
+the chart of the engine's resonances (each left out if it is not there). JVS's terms allow only some of its audio on a page: the page holds ten clips made
 of its recordings. `--notes` is an HTML fragment shown at the top. Writes <pages>/<out>.
 """
 
@@ -242,6 +243,102 @@ def reach_tables(d: Path) -> str:
     return out
 
 
+VIZ_STYLE = """<style>
+/* the charts' data colours: three hues that are told apart with any colour vision, stepped for each theme */
+.viz { --series-1: #257de0; --series-2: #f47230; --series-3: #00b894; display: block; width: 100%; min-width: 640px; height: auto; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .viz { --series-1: #338ced; --series-2: #e76624; --series-3: #00a888; } }
+:root[data-theme="dark"] .viz { --series-1: #338ced; --series-2: #e76624; --series-3: #00a888; }
+.viz text { font-family: var(--font-body); font-size: 11px; fill: var(--muted); }
+.viz .title { font-size: 12px; font-weight: 500; fill: var(--ink); }
+.viz .grid { stroke: var(--line); stroke-width: 1; }
+.viz .zero { stroke: var(--muted); stroke-width: 1; }
+.viz .lack { fill: var(--ink); opacity: 0.06; }
+.viz .hit { fill: transparent; }
+.viz .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+</style>"""
+
+
+def tract_chart(sex: str, freqs: list[float], lines: list[tuple[str, list[float]]], gap: list[float]) -> str:
+    """One sex's chart: the engine's transfer function over the vowels (a line a setting, on
+    one scale), and under it, on the same frequency axis, what the renders' envelopes lack of
+    the recordings' in 250 Hz bands (columns)."""
+    left, width, top_a, h_a, top_b, h_b = 48.0, 700.0, 46.0, 150.0, 244.0, 130.0
+    span_a, span_b, top_hz = 30.0, 16.0, 8000.0
+
+    def x(hz: float) -> float:
+        return left + hz / top_hz * width
+
+    def ya(db: float) -> float:
+        return top_a + (span_a - db) / (2 * span_a) * h_a
+
+    def yb(db: float) -> float:
+        return top_b + (span_b - db) / (2 * span_b) * h_b
+
+    f = np.array(freqs)
+    ref = float(np.array(lines[0][1])[(f >= 500) & (f < 1000)].mean())
+    out = [f'<svg class="viz" viewBox="0 0 760 404" role="img" aria-label="{"女性" if sex == "F" else "男性"}: エンジンの伝達関数と、録音との包絡の差">']
+    out.append(f'<defs><clipPath id="clip-{sex}"><rect x="{left}" y="{top_a}" width="{width}" height="{h_a}"/></clipPath></defs>')
+    # where the renders lack 6 dB or more, through both panels
+    centres = [125.0 + 250.0 * i for i in range(len(gap))]
+    for c, g in zip(centres, gap):
+        if g >= 6.0 and c < top_hz:
+            out.append(f'<rect class="lack" x="{x(c - 125):.1f}" y="{top_a}" width="{x(250) - x(0):.1f}" height="{top_b + h_b - top_a}"/>')
+    out.append(f'<text class="title" x="{left}" y="14">{"女性" if sex == "F" else "男性"}: エンジンの伝達関数（母音の平均。0.5〜1 kHz の高さを 0 dB）</text>')
+    for k, (label, _) in enumerate(lines):
+        out.append(f'<line x1="{left + 190 * k}" y1="30" x2="{left + 190 * k + 22}" y2="30" class="line" style="stroke: var(--series-{k + 1})"/><text x="{left + 190 * k + 28}" y="34">{esc(label)}</text>')
+    for db in (-20, 0, 20):
+        out.append(f'<line class="{"zero" if db == 0 else "grid"}" x1="{left}" y1="{ya(db):.1f}" x2="{left + width}" y2="{ya(db):.1f}"/><text x="{left - 6}" y="{ya(db) + 4:.1f}" text-anchor="end">{f"{db:+d}" if db else "0"}</text>')
+    for k, (_, level) in enumerate(lines):
+        pts = " ".join(f"{x(hz):.1f},{ya(v - ref):.1f}" for hz, v in zip(freqs, level))
+        out.append(f'<polyline class="line" clip-path="url(#clip-{sex})" style="stroke: var(--series-{k + 1})" points="{pts}"/>')
+    out.append(f'<text class="title" x="{left}" y="{top_b - 12}">録音 − 合成音: 母音の包絡の差（dB。正は合成音の不足、網掛けは 6 dB 以上）</text>')
+    for db in (-10, 0, 10):
+        out.append(f'<line class="{"zero" if db == 0 else "grid"}" x1="{left}" y1="{yb(db):.1f}" x2="{left + width}" y2="{yb(db):.1f}"/><text x="{left - 6}" y="{yb(db) + 4:.1f}" text-anchor="end">{f"{db:+d}" if db else "0"}</text>')
+    w, r = 14.0, 4.0
+    for c, g in zip(centres, gap):
+        if c >= top_hz:
+            continue
+        x0, y0, y1 = x(c) - w / 2, yb(0.0), yb(float(np.clip(g, -span_b, span_b)))
+        q = min(r, abs(y1 - y0))
+        e = q if g >= 0 else -q  # the rounded end is the far one from the baseline
+        out.append(
+            f'<path style="fill: var(--series-3)" d="M{x0:.1f},{y0:.1f} L{x0:.1f},{y1 + e:.1f} Q{x0:.1f},{y1:.1f} {x0 + q:.1f},{y1:.1f} L{x0 + w - q:.1f},{y1:.1f} Q{x0 + w:.1f},{y1:.1f} {x0 + w:.1f},{y1 + e:.1f} L{x0 + w:.1f},{y0:.1f} Z">'
+            f"<title>{(c - 125) / 1000:g}〜{(c + 125) / 1000:g} kHz: {g:+.1f} dB</title></path>"
+        )
+        said = "、".join(f"{label} {float(np.array(level)[(f >= c - 125) & (f < c + 125)].mean()) - ref:+.0f} dB" for label, level in lines)
+        out.append(f'<rect class="hit" x="{x(c - 125):.1f}" y="{top_a}" width="{x(250) - x(0):.1f}" height="{h_a}"><title>{(c - 125) / 1000:g}〜{(c + 125) / 1000:g} kHz: {esc(said)}</title></rect>')
+    for khz in range(0, 9):
+        out.append(f'<text x="{x(1000.0 * khz) + (6 if khz == 8 else 0):.1f}" y="{top_b + h_b + 16}" text-anchor="{"end" if khz == 8 else "middle"}">{khz}{" kHz" if khz == 8 else ""}</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+def tract_section(d: Path, variant: str) -> str:
+    """What the common curve is made of: the engine's resonances against the bands the renders lack."""
+    first, bench = d / f"tract_{variant}.json", d / "bench_v1.json"
+    if not (first.exists() and bench.exists()):
+        return ""
+    t0 = json.loads(first.read_text())
+    narrow = d / f"tract_{variant}_epilarynx1.json"
+    t1 = json.loads(narrow.read_text()) if narrow.exists() else None
+    shapes = json.loads(bench.read_text())["variants"][variant].get("shape", {})
+    charts = ""
+    for sex in SEXES:
+        if sex not in t0["sexes"] or sex not in shapes:
+            continue
+        lines = [(f"V1（狭め {'0' if sex == 'F' else '0.78'}）", t0["sexes"][sex]["mean"])]
+        if t1 and sex in t1["sexes"]:
+            lines.append(("狭め 1.0", t1["sexes"][sex]["mean"]))
+        charts += f'<figure><div class="scroll">{tract_chart(sex, t0["freqs"], lines, shapes[sex]["commonCurve"])}</div></figure>'
+    peaks = "、".join(f"{'女性' if s == 'F' else '男性'} {' / '.join(f'{p / 1000:g}' for p in t0['sexes'][s]['peaks'] if 2000 <= p <= 6500)} kHz" for s in SEXES if s in t0["sexes"])
+    return f"""<section aria-labelledby="h-tract"><h2 id="h-tract">4. 不足している帯域と、エンジンの共鳴の位置</h2>
+<p>合成音の包絡は、声源のスペクトルに声道の共鳴が掛かったものです。エンジンには気道の周波数領域のモデル（シミュレーションと同じ要素を線形にしたもの）があり、ある瞬間の声道の形だけの効果（伝達関数）を、声源抜きで計算できます。V1 の制御列を鳴らしながら、母音の中央のフレームでこれを読み、平均しました（<code>pmvc.tract</code>、{t0["clips"]} 文）。</p>
+{VIZ_STYLE}{charts}
+<p class="small">上の線がエンジンの伝達関数、下の棒が録音と合成音の包絡の差（第 2 節の表の「共通」のカーブを 250 Hz ごとに）。縦の網掛けは、合成音が 6 dB 以上不足している帯域です。棒や線の上にカーソルを置くと値が出ます。伝達関数の鋭い切れ込み（男性 4.2 kHz、女性 4.8 kHz）は、梨状窩の零点です。</p>
+<p>合成音が不足している帯域は、エンジンの 3 番めの共鳴と、その上の共鳴のあいだの谷にあたります（2〜6.5 kHz の山の位置: {peaks}）。録音では、この谷のあたりに 3 番めと 4 番めのフォルマントが寄っています。エンジンの上の共鳴は高すぎる位置にあり、喉頭の上の管を最大まで狭めると少し下がって強くなりますが（橙の線）、谷は埋まりきりません。5 kHz より上で合成音が過剰なのは、伝達関数がそこで高いままだからです。次の作業（計画の Phase 2-1）は、この上の共鳴を下げられるように喉頭の上の管の長さと形を設定にすることです。形の変更は、この図で先に確かめてから音にします。</p>
+</section>"""
+
+
 def build(d: Path, variant: str, notes: str) -> str:
     clips: dict[str, str] = {}
     body = f"""<section aria-labelledby="h-swap"><h2 id="h-swap">1. 合成音は録音の何を欠いているか</h2>
@@ -262,6 +359,7 @@ def build(d: Path, variant: str, notes: str) -> str:
 {REACH_TEXT}
 {reach}
 </section>"""
+    body += tract_section(d, variant)
     return shell(TITLE, LEDE, notes, body, CREDITS, clips)
 
 

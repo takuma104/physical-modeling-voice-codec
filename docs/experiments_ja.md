@@ -491,6 +491,10 @@ IDS=$(for k in 091 099 098 088 080; do for s in ${S8//,/ }; do printf "%s_%s," $
 uv run python -m pmvc.copysynth out/jvs --ids $IDS --base encit --out reach_t --nll-weight 0 --shape-weight 0.3 --iters 50 \
   --listener utter-project/mHuBERT-147 --layer 8 --scale out/transplant/warp --also epilarynx=0.15
 uv run python -m pmvc.bench out/jvs --variants encit,reach_t,reach_s --enrol out/jvsall --name bench_reach --per 5
+#   声道の共鳴はどこにあるか(計画の Phase 2-1 の物差し): エンジン自身の周波数領域のモデルで、母音のフレームの伝達関数を読む。
+#   --set で制御列のチャネルを全フレームで固定できる(鳴らす前に、設定が共鳴をどう動かすかを見る)
+uv run python -m pmvc.tract out/jvs --variant encv2
+uv run python -m pmvc.tract out/jvs --variant encv2 --set epilarynx=1.0
 #   試聴ページの 4 枚目(listening_v2.html): 入れ替えた音と、録音条件を足した音
 uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```

@@ -495,6 +495,11 @@ IDS=$(for k in 091 099 098 088 080; do for s in ${S8//,/ }; do printf "%s_%s," $
 uv run python -m pmvc.copysynth out/jvs --ids $IDS --base encit --out reach_t --nll-weight 0 --shape-weight 0.3 --iters 50 \
   --listener utter-project/mHuBERT-147 --layer 8 --scale out/transplant/warp --also epilarynx=0.15
 uv run python -m pmvc.bench out/jvs --variants encit,reach_t,reach_s --enrol out/jvsall --name bench_reach --per 5
+#   Where the tract's resonances are (the yardstick of the plan's phase 2-1): the transfer function in the vowels' frames, by the
+#   engine's own frequency-domain model. --set holds channels of the tracks at a value in every frame (what a setting does to the
+#   resonances, before anything is rendered)
+uv run python -m pmvc.tract out/jvs --variant encv2
+uv run python -m pmvc.tract out/jvs --variant encv2 --set epilarynx=1.0
 #   The fourth listening page (listening_v2.html): the hybrids, and renders through the recording condition
 uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```

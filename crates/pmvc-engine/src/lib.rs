@@ -7,7 +7,7 @@
 //! track up to a frame once and try many continuations from there. What it does is
 //! `pmvc_voice::Player`'s, which the browser's player (`pmvc-wasm`) has too.
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
 use pmvc_voice::{FS, Player};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -114,6 +114,13 @@ impl Voice {
     #[getter]
     fn probe(&self) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
         self.p.probe()
+    }
+
+    /// The tract's transfer function as it stands at this sample: the level (dB, against an
+    /// arbitrary reference) of the radiated sound for a unit of flow at the glottis, at each of
+    /// `freqs` (Hz), by the engine's frequency-domain model of its airway.
+    fn transfer<'py>(&self, py: Python<'py>, freqs: PyReadonlyArray1<f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self.p.transfer(freqs.as_slice()?).into_pyarray(py))
     }
 
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.

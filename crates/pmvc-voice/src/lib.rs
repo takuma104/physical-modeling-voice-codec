@@ -7,6 +7,7 @@
 //! and flows, articulator positions and velocities, glottal phase), so a search can render a
 //! track up to a frame once and try many continuations from there.
 
+use chimera::airway::frequency::transfer_function;
 use chimera::anatomy::human::{ArticKey, BodyMix, HumanBody, HumanVocalTract, NEUTRAL};
 use chimera::control::articulators::ARTIC_SPECS;
 use chimera::control::score::{ControlKey, Gesture, Targets};
@@ -307,6 +308,17 @@ impl Player {
             a.net.radiated_flow(a.rad_lips),
             a.net.radiated_flow(a.rad_nose),
         )
+    }
+
+    /// The tract's transfer function as it stands at this sample, by the engine's own
+    /// frequency-domain model of its airway (the simulation's lumped elements, linearised; the
+    /// glottis an ideal source of flow, which leaves the windpipe out): the level (dB, against an
+    /// arbitrary reference) of the sound radiated from lips, nose and walls for a unit of flow at
+    /// the glottis, at each of `freqs` (Hz). What the tract's shape alone does to a voice, with
+    /// no source in it: where its resonances and its dips are.
+    pub fn transfer(&self, freqs: &[f64]) -> Vec<f64> {
+        let a = &self.v.airway;
+        transfer_function(&a.net.linear_elements(), a.pharynx.first_node(), freqs, &[a.glottis_port]).pressure_db
     }
 
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
