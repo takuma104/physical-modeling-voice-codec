@@ -5,7 +5,7 @@ export const WORDS = {
   ja: {
     tagline: "声道の物理モデルで話す音声合成",
     lineage: 'ニューラルネットが書くのは、舌・あご・唇・声帯の動かし方（21 本の制御列）だけです。音は、あなたのブラウザの中で動く声道の物理シミュレーション <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a> が出します。録音の切り貼りも、ニューラルボコーダも使っていません。',
-    "link-model": "モデル（Hugging Face）",
+    "link-model": "モデル",
     "link-report": "テクニカルレポート",
     "report-url": "https://github.com/takuma104/physical-modeling-voice-codec/blob/main/docs/report/physical_modeling_voice_codec_report_ja.pdf",
     "link-code": "GitHub",
@@ -58,9 +58,9 @@ export const WORDS = {
     sources: '学習データ: Emilia-YODAS（CC BY 4.0）、Common Voice（CC0）、LibriTTS-R（CC BY 4.0）。読み: OpenJTalk、CMUdict。 <a href="https://github.com/takuma104/physical-modeling-voice-codec" target="_blank" rel="noopener">コードと技術レポート</a> · <a href="https://huggingface.co/takuma104/pmvc-tts" target="_blank" rel="noopener">モデルの重み（CC BY 4.0）</a>',
   },
   en: {
-    tagline: "Text-to-speech that speaks through a physical model of the vocal tract",
+    tagline: "Text-to-speech through a physical model of the vocal tract",
     lineage: 'The neural network writes only how to move the tongue, jaw, lips and vocal folds: a control track of 21 channels. The sound is made in your browser by <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a>, a physical simulation of the airway. No recordings are spliced and there is no neural vocoder.',
-    "link-model": "Model (Hugging Face)",
+    "link-model": "Model",
     "link-report": "Technical report",
     "report-url": "https://github.com/takuma104/physical-modeling-voice-codec/blob/main/docs/report/physical_modeling_voice_codec_report_en.pdf",
     "link-code": "GitHub",
