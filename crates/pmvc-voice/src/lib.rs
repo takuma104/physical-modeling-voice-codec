@@ -1,4 +1,5 @@
-//! The CHIMERA voice (third-party/chimera-vocal-synth, unmodified) driven by a control track:
+//! The CHIMERA voice (third-party/chimera-vocal-synth: from V2 on a fork of it, whose changes are
+//! settings that default to the engine's own) driven by a control track:
 //! what `pmvc_engine` (the Python module) and `pmvc-wasm` (the browser's player) share.
 //!
 //! A [`Player`] follows a control track the way `pmvc-synth drive` does (one gesture per frame,
@@ -208,6 +209,41 @@ impl Player {
         Ok(())
     }
 
+    /// The tube above the glottis (ventricle, ventricular folds, vestibule), set directly: a JSON
+    /// object with any of `length` (times the length the body gives it: 2.4 cm × scale ×
+    /// pharynx), and `ventricle`, `tube`, `wide`, `narrow` (cm², for an adult man's body: the
+    /// areas of the ventricle, of the tube as it leaves the ventricular folds, and of its top
+    /// with the epilarynx channel at 0 and at 1). The engine's own are 1, 1.3, 1.2, 1.9 and
+    /// 0.35. The tube's resonance is the voice's fourth formant; a longer tube brings it down.
+    /// Only the acoustic length changes: the tract is drawn as before.
+    pub fn set_larynx(&mut self, patch: &str) -> Said<()> {
+        let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
+        let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
+        let t = &mut self.v.airway.tract.laryngeal_tube;
+        for (k, x) in obj {
+            let x = x.as_f64().ok_or_else(|| bad(format!("{k}: a number is needed")))?;
+            if !(x > 0.0) {
+                return Err(bad(format!("{k}: a positive number is needed")));
+            }
+            match k.as_str() {
+                "length" if !(0.5..=2.5).contains(&x) => return Err(bad("length: between 0.5 and 2.5 times the body's")),
+                "length" => t.length = x,
+                "ventricle" => t.ventricle = x,
+                "tube" => t.tube = x,
+                "wide" => t.wide = x,
+                "narrow" => t.narrow = x,
+                _ => return Err(bad(format!("unknown larynx parameter {k:?}"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// The tube above the glottis as it is now (a JSON object, as `set_larynx` takes it).
+    pub fn larynx(&self) -> String {
+        let t = self.v.airway.tract.laryngeal_tube;
+        serde_json::json!({"length": t.length, "ventricle": t.ventricle, "tube": t.tube, "wide": t.wide, "narrow": t.narrow}).to_string()
+    }
+
     /// The nose's shape, set directly: a JSON object with any of `profile` (the nasal tube's area
     /// from the velum to the nostrils, as [place, cm²] pairs with the place from 0 to 1, joined by
     /// straight lines), `length` (cm), `sinus` (cm², the opening of the maxillary sinus into the
@@ -334,7 +370,7 @@ impl Player {
 
     /// A voice for a control track, from the track without its frames (JSON): `body`, `source`,
     /// `keys`, `rate`, and where it has them `speed`, `noise` (what the three noise gains are
-    /// multiplied by), `glottis`, `airway` and `nose`. As `pmvc.calibrate.make_voice` makes one.
+    /// multiplied by), `glottis`, `airway`, `nose` and `larynx`. As `pmvc.calibrate.make_voice` makes one.
     pub fn of_track(header: &str) -> Said<Self> {
         let t: serde_json::Value = serde_json::from_str(header).map_err(bad)?;
         let part = |name: &str| t.get(name).filter(|x| x.as_object().is_some_and(|o| !o.is_empty())).map(|x| x.to_string());
@@ -360,6 +396,9 @@ impl Player {
         }
         if let Some(x) = part("nose") {
             p.set_nose(&x)?;
+        }
+        if let Some(x) = part("larynx") {
+            p.set_larynx(&x)?;
         }
         Ok(p)
     }

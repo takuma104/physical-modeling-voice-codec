@@ -1,4 +1,5 @@
-//! `pmvc_engine`: the CHIMERA voice (third-party/chimera-vocal-synth, unmodified) for Python.
+//! `pmvc_engine`: the CHIMERA voice (third-party/chimera-vocal-synth: from V2 on a fork, whose
+//! changes are settings that default to the engine's own) for Python.
 //!
 //! A [`Voice`] follows a control track the way `pmvc-synth drive` does (one gesture per frame,
 //! active over a Hann window, the articulators' lag compensated) and renders samples on demand.
@@ -114,6 +115,18 @@ impl Voice {
     #[getter]
     fn probe(&self) -> (f64, f64, f64, f64, f64, f64, f64, f64, f64) {
         self.p.probe()
+    }
+
+    /// The tube above the glottis set directly, as JSON: any of `length`, `ventricle`, `tube`,
+    /// `wide` and `narrow` (see `pmvc_voice::Player::set_larynx`).
+    fn set_larynx(&mut self, patch: &str) -> PyResult<()> {
+        self.p.set_larynx(patch).map_err(bad)
+    }
+
+    /// The tube above the glottis as it is now (a JSON object).
+    #[getter]
+    fn larynx(&self) -> String {
+        self.p.larynx()
     }
 
     /// The tract's transfer function as it stands at this sample: the level (dB, against an
