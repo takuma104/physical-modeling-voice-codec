@@ -7,14 +7,15 @@ the tract alone does at any moment: `pmvc_engine.Voice.transfer`. Here a variant
 played, and in the middle of every vowel (the frames `pmvc.bands` takes) the transfer function
 from the glottis to the radiated sound is read off, with no source in it.
 
-usage: python -m pmvc.tract [dir] [--variant encv2] [--set epilarynx=1.0,...] [--per 4]
-                            [--name tract_<variant>]
+usage: python -m pmvc.tract [dir] [--variant encv2] [--set epilarynx=1.0,...] [--larynx length=1.3,...]
+                            [--per 4] [--name tract_<variant>]
 
 Writes <dir>/<name>.json: `freqs` (Hz), and for the women and for the men the mean level (dB,
 against an arbitrary reference) over their vowel frames (`mean`), over each vowel's, and the
 peaks and dips of the mean. `--set` holds channels of the tracks at a value in every frame (the
 tube above the glottis narrower, say), to see what a setting does to the resonances before
-anything is rendered. Needs <dir>/aligned.json (`pmvc.align write`).
+anything is rendered; `--larynx` gives the tracks' voice another tube above the glottis (the
+fork's setting: `pmvc_voice::Player::set_larynx`). Needs <dir>/aligned.json (`pmvc.align write`).
 
 On V1's renders this shows what the common curve is made of: the renders lack 7-15 dB where
 the recordings have their third and fourth formants close together (men 2.5-3.4 kHz, women
@@ -47,9 +48,11 @@ STRIDE: int = 2
 SAMPLES: int = 48000 // FRAME_RATE
 
 
-def read(track: dict[str, Any], held: dict[str, float], kind: NDArray[np.str_], phones: list[str]) -> tuple[Array, list[str]]:
+def read(track: dict[str, Any], held: dict[str, float], kind: NDArray[np.str_], phones: list[str], larynx: dict[str, float] | None = None) -> tuple[Array, list[str]]:
     """The transfer function in the middle of the track's vowels (rows) and each row's vowel.
     `kind` and `phones` are on the recording's clock, which the track runs LEAD behind."""
+    if larynx:
+        track = {**track, "larynx": {**track.get("larynx", {}), **larynx}}
     frames = np.array(track["frames"], dtype=np.float64)
     for key, x in held.items():
         frames[:, track["keys"].index(key)] = x
@@ -77,6 +80,7 @@ def main() -> None:
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "jvs")
     ap.add_argument("--variant", type=str, default="encv2")
     ap.add_argument("--set", type=str, default="", help="channels held at a value in every frame: epilarynx=1.0,...")
+    ap.add_argument("--larynx", type=str, default="", help="the tube above the glottis: length=1.3,narrow=0.3,...")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--per", type=int, default=4, help="recordings of each speaker")
     ap.add_argument("--name", type=str, default="")
@@ -84,6 +88,7 @@ def main() -> None:
     a = ap.parse_args()
     d: Path = a.dir
     held = {w.split("=")[0]: float(w.split("=")[1]) for w in a.set.split(",")} if a.set else {}
+    larynx = {w.split("=")[0]: float(w.split("=")[1]) for w in a.larynx.split(",")} if a.larynx else {}
     aligned: dict[str, Any] = json.loads((d / "aligned.json").read_text())
     metas = [json.loads((d / "meta" / f"{i}.json").read_text()) for i in ids_in(d, a.split)]
     count: dict[str, int] = {}
@@ -99,11 +104,11 @@ def main() -> None:
         for p, n in zip(aligned[m["id"]]["p"], aligned[m["id"]]["frames"]):
             phones += [p] * n
         track = json.loads((d / a.variant / f"{m['id']}.tracks.json").read_text())
-        return read(track, held, kinds(aligned[m["id"]]["p"], aligned[m["id"]]["frames"]), phones[round(LEAD * FRAME_RATE) :])
+        return read(track, held, kinds(aligned[m["id"]]["p"], aligned[m["id"]]["frames"]), phones[round(LEAD * FRAME_RATE) :], larynx)
 
     with ThreadPoolExecutor(a.jobs) as pool:
         done = list(pool.map(one, kept))
-    out: dict[str, Any] = {"variant": a.variant, "set": held, "clips": len(kept), "freqs": FREQS.tolist(), "sexes": {}}
+    out: dict[str, Any] = {"variant": a.variant, "set": held, "larynx": larynx, "clips": len(kept), "freqs": FREQS.tolist(), "sexes": {}}
     for sex in ("F", "M"):
         mine = [(rows, vowels) for (rows, vowels), m in zip(done, kept) if m["sex"] == sex and len(rows)]
         if not mine:
@@ -117,7 +122,7 @@ def main() -> None:
             "vowels": {v: np.round(rows[said == v].mean(axis=0), 2).tolist() for v in VOWELS if (said == v).sum() >= 20},
         }  # fmt: skip
         print(f"{sex}: {len(rows)} vowel frames; the mean has its peaks at {peaks} Hz and its dips at {dips} Hz")
-    name = a.name or f"tract_{a.variant}" + "".join(f"_{k}{x:g}" for k, x in held.items())
+    name = a.name or f"tract_{a.variant}" + "".join(f"_{k}{x:g}" for k, x in (*held.items(), *larynx.items()))
     (d / f"{name}.json").write_text(json.dumps(out))
 
 
