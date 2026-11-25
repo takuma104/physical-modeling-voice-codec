@@ -90,14 +90,16 @@ function through(p, per = 6) {
   return out;
 }
 
-// The midsagittal section, facing right, as a textbook draws it: flesh, and the air's way
-// through it. The walls, the tongue, the soft palate, the teeth and the lips are the engine's
-// (what it computes its tube from). The nose is drawn as the report's figure draws it
-// (docs/report/make_figures.py): the throat's back wall goes on up into the nose's roof, and
-// the nose's floor is the soft palate and the bone of the hard one, so that the way into the
-// nose is seen to open and shut behind the soft palate. The skin of the face is only a frame,
-// hung on the lips. `live`: {voicing (0 to 1), sound (a phoneme, or "")}.
-export function drawTract(canvas, f, live) {
+// The midsagittal section, facing right, drawn as a duct and not as a body: the air is what has
+// a colour, what is cut through is the card's own, and what moves (the tongue, the soft palate,
+// the lips) has one step of the paper's on it. The walls, the tongue, the soft palate, the teeth
+// and the lips are the engine's (what it computes its tube from). The nose is drawn as the
+// report's figure draws it (docs/report/make_figures.py): the throat's back wall goes on up into
+// the nose's roof, and the nose's floor is the soft palate and the bone of the hard one, so that
+// the way into the nose is seen to open and shut behind the soft palate. The skin of the face is
+// only a frame, hung on the lips, and faint. `live`: {voicing (0 to 1), sound (a phoneme, or "")}.
+// `names`: the parts' names to write on it ({nose, velum, tongue, lips, folds}), or nothing.
+export function drawTract(canvas, f, live, names) {
   const { g, w, h } = fit(canvas);
   g.clearRect(0, 0, w, h);
   if (!f) return;
@@ -110,7 +112,12 @@ export function drawTract(canvas, f, live) {
     pts.forEach((p, i) => to(p, i === 0));
     if (close) g.closePath();
   };
-  const ink = css("--ink");
+  const line = (colour, width) => {
+    g.strokeStyle = colour;
+    g.lineWidth = width;
+    g.stroke();
+  };
+  const wall = css("--wall"), faint = css("--faint");
   const k = f.tongueRadius / 2.25;   // the body's size beside the adult male's, for the face
   const gl = f.glottis;
   const far = { left: BOX.x0 - 1, bottom: BOX.y0 - 1, top: BOX.y1 + 1 };
@@ -138,6 +145,7 @@ export function drawTract(canvas, f, live) {
   const roof = f.nasalCavity.filter((p) => p.x > 2.9 * size);
   const ceiling = through([last, ...BACK.map(([x, y]) => ({ x: x * size, y: y * size })).filter((p) => p.y > last.y + 0.2 * size), ...roof]);
   const back = [{ x: gl.x - 0.62 * k, y: far.bottom }, { x: gl.x - 0.62 * k, y: gl.y }, ...throat, ...ceiling.slice(1)];
+  const floor = [{ x: gl.x + 0.68 * k, y: far.bottom }, { x: gl.x + 0.68 * k, y: gl.y }, ...f.inner];
 
   // the air: below the folds, above them between the two walls, and in the nose
   g.fillStyle = css("--air");
@@ -146,85 +154,110 @@ export function drawTract(canvas, f, live) {
   g.fill();
   path([...ceiling, ...[...bone].reverse(), ...f.velum.slice(0, half + 1)], true);
   g.fill();
-  // the soft palate; shut, its tip is pressed into the back wall, and the flesh drawn next covers what went in
-  g.strokeStyle = ink;
-  g.lineWidth = 2;
+  // the soft palate; shut, its tip is pressed into the back wall, and what is drawn next covers what went in
   path(f.velum, true);
   g.fillStyle = css("--tongue");
   g.fill();
-  g.stroke();
+  line(wall, 1.5);
 
-  // the flesh behind the throat and over the nose, and in front of the nose down to the upper lip
+  // what is cut through: behind the throat and over the nose, and in front of the nose down to the
+  // upper lip; then below and in front of the way, the floor of the mouth, the chin and the neck
   const up = f.upperLip[f.upperLip.length - 1], low = f.lowerLip[f.lowerLip.length - 1];
   const face = () => {
     g.quadraticCurveTo(X(up.x + 0.15 * k), Y(up.y + 0.45 * k), X(up.x + 0.95 * k), Y(up.y + 0.5 * k));
     g.quadraticCurveTo(X(up.x + 2.35 * k), Y(up.y + 0.75 * k), X(up.x + 2.0 * k), Y(up.y + 1.55 * k));
     g.quadraticCurveTo(X(up.x + 1.5 * k), Y(up.y + 2.6 * k), X(up.x + 1.15 * k), Y(far.top));
   };
+  const chin = () => {
+    g.quadraticCurveTo(X(low.x - 0.25 * k), Y(low.y - 0.55 * k), X(low.x + 0.35 * k), Y(low.y - 1.0 * k));
+    g.quadraticCurveTo(X(low.x + 0.75 * k), Y(low.y - 2.1 * k), X(low.x - 0.55 * k), Y(low.y - 2.35 * k));
+    g.quadraticCurveTo(X(low.x - 3.0 * k), Y(low.y - 2.6 * k), X(2.9 * k), Y(Math.min(low.y - 3.6 * k, 1.9 * k)));
+    g.quadraticCurveTo(X(2.45 * k), Y(0.9 * k), X(2.4 * k), Y(far.bottom));
+  };
+  g.fillStyle = css("--flesh");
   path([...back, bone[bone.length - 1], ...outer.slice(front), up]);
   face();
   to({ x: far.left, y: far.top });
   to({ x: far.left, y: far.bottom });
   g.closePath();
-  g.fillStyle = css("--flesh");
   g.fill();
-  g.lineWidth = 1.5;
-  path([up]);
-  face();
-  g.stroke();
-  // the flesh below and in front of the way: the floor of the mouth, the chin and the neck
-  g.beginPath();
-  to({ x: gl.x + 0.68 * k, y: far.bottom }, true);
-  to({ x: gl.x + 0.68 * k, y: gl.y });
-  f.inner.forEach((p) => to(p));
-  to(low);
-  g.quadraticCurveTo(X(low.x - 0.25 * k), Y(low.y - 0.55 * k), X(low.x + 0.35 * k), Y(low.y - 1.0 * k));
-  g.quadraticCurveTo(X(low.x + 0.75 * k), Y(low.y - 2.1 * k), X(low.x - 0.55 * k), Y(low.y - 2.35 * k));
-  g.quadraticCurveTo(X(low.x - 3.0 * k), Y(low.y - 2.6 * k), X(2.9 * k), Y(Math.min(low.y - 3.6 * k, 1.9 * k)));
-  g.quadraticCurveTo(X(2.45 * k), Y(0.9 * k), X(2.4 * k), Y(far.bottom));
+  path([...floor, low]);
+  chin();
   g.closePath();
   g.fill();
-  g.stroke();
+  // the skin of the face and of the neck
+  path([up]);
+  face();
+  line(faint, 1.25);
+  path([low]);
+  chin();
+  line(faint, 1.25);
 
-  // the tongue
+  // the tongue; its colour lets go towards the straight side that closes its outline, which is no edge of anything
+  const root = f.tongue[0], blade = f.tongue[f.tongue.length - 1];
+  const mid = { x: (root.x + blade.x) / 2, y: (root.y + blade.y) / 2 };
+  const across = { x: root.y - blade.y, y: blade.x - root.x };
+  const inward = ((f.tongueCenter.x - mid.x) * across.x + (f.tongueCenter.y - mid.y) * across.y < 0 ? -1 : 1) * f.tongueRadius / Math.hypot(across.x, across.y);
+  const shade = g.createLinearGradient(X(mid.x), Y(mid.y), X(mid.x + across.x * inward), Y(mid.y + across.y * inward));
+  shade.addColorStop(0, css("--flesh"));
+  shade.addColorStop(1, css("--tongue"));
   path(f.tongue, true);
-  g.fillStyle = css("--tongue");
+  g.fillStyle = shade;
   g.fill();
   // the walls of the way: the throat's back and the nose's roof, the roof of the mouth, the floor
-  g.strokeStyle = ink;
-  g.lineWidth = 2;
-  path(back);
-  g.stroke();
-  path(outer.slice(front));
-  g.stroke();
-  path(f.inner);
-  g.stroke();
-  path(f.epiglottis);
-  g.stroke();
+  for (const side of [back, outer.slice(front), floor, f.epiglottis]) {
+    path(side);
+    line(wall, 1.5);
+  }
   // the bone of the hard palate, the teeth and the lips
-  g.lineWidth = 1.25;
   for (const white of [[...hard, ...[...bone].reverse()], f.upperTeeth.slice(1, 4), f.lowerTeeth]) {
     path(white, true);
     g.fillStyle = css("--tooth");
     g.fill();
-    g.stroke();
+    line(css("--hard"), 1);
   }
-  g.lineWidth = 1.5;
   for (const lip of [f.upperLip, f.lowerLip]) {
     path(lip, true);
     g.fillStyle = css("--lip");
     g.fill();
-    g.stroke();
+    line(wall, 1.25);
   }
   // the vocal folds: two wedges across the way, bright when they vibrate
   const voicing = Math.max(0, Math.min(1, live?.voicing ?? 0));
   g.fillStyle = voicing > 0.3 ? css("--mark") : css("--soft");
   for (const side of [-1, 1]) {
-    const wall = gl.x + (side < 0 ? -0.62 : 0.68) * k;
-    path([{ x: wall, y: gl.y - 0.16 * k }, { x: gl.x + side * 0.06 * k, y: gl.y + 0.1 * k }, { x: wall, y: gl.y + 0.36 * k }], true);
+    const edge = gl.x + (side < 0 ? -0.62 : 0.68) * k;
+    path([{ x: edge, y: gl.y - 0.16 * k }, { x: gl.x + side * 0.06 * k, y: gl.y + 0.1 * k }, { x: edge, y: gl.y + 0.36 * k }], true);
     g.fill();
   }
   g.restore();
+  // the parts' names, for who has not seen such a section before
+  if (names) {
+    const px = Math.max(10.5, s * 0.34);
+    g.font = `${px}px ${css("--sans")}`;
+    g.textBaseline = "middle";
+    // a name at a place (cm), its lines one under another; with `from`, a line to it from its part
+    // (to its side, or from below when the name is set on its middle)
+    const name = (text, x, y, align = "center", from = null) => {
+      const lines = text.split("\n");
+      if (from) {
+        g.beginPath();
+        g.moveTo(X(from.x), Y(from.y));
+        if (align === "center") g.lineTo(X(x), Y(y) + lines.length * px * 0.6 + 2); else g.lineTo(X(x) + (align === "right" ? 4 : -4), Y(y));
+        line(faint, 1);
+      }
+      g.textAlign = align;
+      g.fillStyle = css("--soft");
+      lines.forEach((t, i) => g.fillText(t, X(x), Y(y) + (i - (lines.length - 1) / 2) * px * 1.2));
+    };
+    const along = Math.floor(half / 2), above = f.velum[along], below = f.velum[f.velum.length - 1 - along];
+    // the nose's is over its roof: inside, a long name does not fit a small body
+    name(names.nose, 1.3 * size, 11.32 * size + 0.36, "center", { x: 1.3 * size, y: 10.8 * size });
+    name(names.tongue, f.tongueCenter.x + 0.2 * k, f.tongueCenter.y - 0.3 * k);
+    name(names.velum, -1.5 * size, 9.0 * size, "right", { x: (above.x + below.x) / 2, y: (above.y + below.y) / 2 });
+    name(names.folds, gl.x - 1.15 * k, gl.y + 0.1 * k, "right", { x: gl.x - 0.62 * k, y: gl.y + 0.1 * k });
+    name(names.lips, low.x + 1.7 * k, low.y + 0.45 * k, "left", f.lowerLip[Math.floor(f.lowerLip.length * 0.7)]);
+  }
   // the sound being made, in front of the mouth
   if (live?.sound) {
     g.fillStyle = css("--mark");
@@ -252,7 +285,7 @@ export function drawTube(canvas, f, words) {
   g.closePath();
   g.fillStyle = css("--air");
   g.fill();
-  g.strokeStyle = css("--ink");
+  g.strokeStyle = css("--wall");
   g.lineWidth = 1.5;
   g.lineJoin = "round";
   g.stroke();

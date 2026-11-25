@@ -7,7 +7,7 @@ import { Body, Score, drawTract, drawTube } from "./draw.js";
 import { CHANNELS, EXAMPLES, LANGS, WORDS } from "./words.js";
 
 const $ = (id) => document.getElementById(id);
-const el = { text: $("text"), speak: $("speak"), stop: $("stop"), status: $("status"), phones: $("phones"), examples: $("examples"), langs: $("langs"), tract: $("tract"), tube: $("tube"), follow: $("follow") };
+const el = { text: $("text"), speak: $("speak"), stop: $("stop"), status: $("status"), phones: $("phones"), examples: $("examples"), langs: $("langs"), tract: $("tract"), tube: $("tube"), follow: $("follow"), names: $("names") };
 const dial = Object.fromEntries(["pitch", "bright", "share", "rate", "spread"].map((k) => [k, $(k)]));
 const shown = Object.fromEntries(Object.keys(dial).map((k) => [k, $(`${k}-out`)]));
 const read = Object.fromEntries(["sound", "voice", "jaw", "lips", "velum"].map((k) => [k, $(`r-${k}`)]));
@@ -27,6 +27,7 @@ let playing = false;
 let heard = { frame: 0, time: 0, voicing: 0 };   // the audio thread's last word of where it is
 let serial = 0;
 let now = -1;         // the phoneme marked in the transcription
+let named = false;    // whether the parts' names are written on the section
 
 const bytes = (x) => new TextEncoder().encode(JSON.stringify(x));
 const put = (e, text) => { if (e.textContent !== text) e.textContent = text; };
@@ -143,7 +144,7 @@ function rest() {
   if (!body || !about) return;
   body.of({ body: partOf(about, "body", Number(dial.share.value)), keys: about.keys });
   const f = body.frame(new Float64Array(about.keys.length).fill(NaN));
-  drawTract(el.tract, f, null);
+  drawTract(el.tract, f, null, named ? words.parts : null);
   drawTube(el.tube, f, words);
   score.draw(track, rows(), -1);
   readouts(f, null, "", 0);
@@ -164,7 +165,7 @@ function tick() {
   while (p + 1 < track.starts.length && track.starts[p + 1] <= pos) p++;
   const name = track.phones[p][0];
   const sound = QUIET.includes(name) ? "" : name;
-  drawTract(el.tract, f, { voicing: heard.voicing, sound });
+  drawTract(el.tract, f, { voicing: heard.voicing, sound }, named ? words.parts : null);
   drawTube(el.tube, f, words);
   score.draw(track, rows(), pos);
   readouts(f, row, sound, heard.voicing);
@@ -236,6 +237,11 @@ for (const k of Object.keys(dial)) {
 el.follow.addEventListener("change", () => {
   if (el.follow.checked) dial.share.value = shareFor(Number(dial.pitch.value));
   show();
+  if (!playing) rest();
+});
+el.names.addEventListener("click", () => {
+  named = !named;
+  el.names.setAttribute("aria-pressed", String(named));
   if (!playing) rest();
 });
 window.addEventListener("resize", () => { if (!playing) rest(); });

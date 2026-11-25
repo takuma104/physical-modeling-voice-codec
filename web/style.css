@@ -1,5 +1,7 @@
 /* A light page, on purpose: CHIMERA's own is a dark vector display, and this is not CHIMERA.
-   Paper, ink and one green; the one orange is whatever is sounding now. */
+   Paper, ink and one green; the one orange is whatever is sounding now.
+   The section is drawn as a duct and not as a body: the air is what has a colour, what is cut
+   through is the card's own, and what moves in it has one step of the paper's. */
 :root {
   --paper: #f6f4ee;
   --card: #fffefb;
@@ -11,10 +13,13 @@
   --accent-ink: #ffffff;
   --mark: #c2410c;
   --air: #cfe8e3;
-  --tongue: #eaa893;
-  --flesh: #f7e3d8;
-  --lip: #dc8873;
-  --tooth: #ffffff;
+  --flesh: #fffefb;
+  --tongue: #ebe7dc;
+  --lip: #ebe7dc;
+  --tooth: #fffefb;
+  --wall: #4c5760;
+  --hard: #9aa0a6;
+  --faint: #c9c3b5;
   --sans: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
@@ -55,6 +60,8 @@ a { color: var(--accent); text-underline-offset: 2px; }
 .bar.inner { margin-top: 0.9rem; }
 h2 { margin: 0; font-size: 0.8rem; letter-spacing: 0.12em; text-transform: uppercase; }
 .sub { color: var(--soft); font-size: 0.8rem; }
+.toggle { margin-left: auto; padding: 0.05rem 0.7rem; border-radius: 999px; font-size: 0.78rem; color: var(--soft); white-space: nowrap; }
+.toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
 canvas { display: block; width: 100%; }
 .tract { aspect-ratio: 124 / 128; max-height: 60vh; }
