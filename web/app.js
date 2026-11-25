@@ -181,6 +181,8 @@ function say() {
     if (typeof w !== "string") continue;
     if (w.includes("<")) e.innerHTML = w; else e.textContent = w;
   }
+  // a link that goes to another place in another language (the report in the page's)
+  for (const e of document.querySelectorAll("[data-href]")) e.href = words[e.dataset.href];
   el.examples.setAttribute("aria-label", words.examples);
   el.examples.replaceChildren(...EXAMPLES[lang].map((text) => {
     const b = document.createElement("button");
