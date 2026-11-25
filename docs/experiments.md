@@ -470,6 +470,20 @@ uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-t
 
 # 15. The technical report (PDFs in English and Japanese). Needs tectonic
 bash docs/report/build.sh
+
+# 16. (V2) Yardsticks for work on the voice itself. Uses third-party/UTMOSv2 (git submodule update --init)
+#   Parts swapped between a recording and its render (the spectral envelope and the rest, bands, voiced and unvoiced stretches and
+#   silences), to see what a render lacks. Two speaker-verification models (100 speakers enrolled: the training recordings in
+#   out/jvsall) and NISQA's two models judge the hybrids
+uv run python -m pmvc.gap out/jvs --variant encv2 --enrol out/jvsall --out /tmp/gap --name gap_encv2
+uv run python -m pmvc.gap out/jvs --variant encv2 --out /tmp/gap_low --name gap_low_encv2 --per 13 --bands 0-250,250-500,500-1000 --gates --no-speaker
+#   The scoreboard: recordings and renders are brought to 24 kHz and to one speech level before any judge hears them. Naturalness and
+#   quality are given for the clip as it is and through a fixed recording condition (pmvc.room: a high-pass, a short tail, a noise
+#   floor). --opinions also asks SQUIM and UTMOSv2
+uv run python -m pmvc.bench out/jvs --variants encv2,encit --enrol out/jvsall --judged results_rel --opinions --name bench_v1
+uv run python -m pmvc.bench out/transplant --variants encv2 --judged results_rel --opinions --name bench_v1      # English (TSP): no speaker identification and no envelope terms
+#   The fourth listening page (listening_v2.html): the hybrids, and renders through the recording condition
+uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```
 
 The encoders are trained and evaluated on separate speakers. In TSP a woman and a man with the same letter read the same sentence list, so with FK, MK, FL and ML held out for the test and FJ and MJ for validation, those speakers' sentences are not in the training either.

@@ -10,6 +10,8 @@ natural it has become. No vocoder is involved: a hybrid is one clip's own short-
 with a gain on it, or the two clips' spectra joined at band edges.
 
 usage: python -m pmvc.gap [dir] --variant encv2 --enrol out/jvsall --out DIR [--name gap] [--per 25]
+                          [--bands 0-250,250-500,500-1000] [--gates] [--only NAME,...]
+                          [--no-speaker] [--no-nisqa]
 
 Hybrids (S is the render, R the recording; all at 24 kHz, the recordings' rate):
   R, S                 the two as they are (S cut to the recording's clock)
@@ -22,6 +24,12 @@ Hybrids (S is the render, R the recording; all at 24 kHz, the recordings' rate):
   S+envR:fine          the render with the detail of the recording's envelope, and its own broad shape
   S|R:<band>           the render, with the recording itself in one band
   R|S:<band>           the recording, with the render itself in one band
+  S|R:<band>@<stretch> the render, with the recording itself in one band, in the voiced stretches
+                       of the speech only, in the unvoiced ones, or in the silences (`--gates`;
+                       the recording's pitch track and `pmvc.align`'s pauses say which is which),
+                       and in the unvoiced stretches' edges or their insides only
+  R|S:<band>@<stretch> the other way round
+`--bands` names other bands than BANDS (Hz, `lo-hi`).
 Judges: two speaker-verification models (`pmvc.whose`; each hybrid against the speakers that
 the recordings in `--enrol`'s training split stand for, the clip's own speaker among them) and
 NISQA's two models (`pmvc.natural`). Writes the clips to <out>/<hybrid>/ and the table to
@@ -40,8 +48,8 @@ import soundfile as sf
 from numpy.typing import NDArray
 from scipy.signal import istft, stft
 
-from .audio import load
-from .encoder import LEAD, ids_in, pick_device
+from .audio import FRAME_RATE, load
+from .encoder import LEAD, ids_in, pick_device, split_in
 from .paths import ROOT
 
 Array = NDArray[np.float64]
@@ -62,6 +70,8 @@ LIMIT: float = 30.0
 BANDS: dict[str, tuple[float, float]] = {"0-1k": (0.0, 1000.0), "1-2.5k": (1000.0, 2500.0), "2.5-5k": (2500.0, 5000.0), "5-12k": (5000.0, 12000.0)}
 # half the width of a band's edge (Hz)
 EDGE: float = 100.0
+# an unvoiced frame this near a voiced one (seconds) is at the edge of its stretch
+EDGE_NEAR: float = 0.03
 VERIFIERS: dict[str, str] = {"wavlm": "microsoft/wavlm-base-plus-sv", "unispeech": "microsoft/unispeech-sat-base-plus-sv"}
 
 
@@ -118,8 +128,46 @@ def lag(x: Array, y: Array, most: float = 0.03) -> int:
     return (int(np.argmax(scores)) - reach) * k
 
 
-def hybrids(x: Array, y: Array, pitch: float) -> dict[str, Array]:
-    """Every hybrid of a recording `x` and its render `y` (same clock, same length)."""
+def pair(d: Path, variant: str, uid: str) -> tuple[Array, Array, int]:
+    """A recording and a variant's render of it, at SR, on the recording's clock and at its
+    level (so that a band of one sits in the other as loud as its own), and the samples the
+    render ran behind."""
+    x = load(d / "real" / f"{uid}.wav", SR)[0]
+    y = load(d / variant / f"{uid}.wav", SR)[0][round(LEAD * SR) :]
+    y = np.pad(y, (0, max(0, len(x) - len(y))))[: len(x)]
+    late = lag(x, y)
+    return x, np.roll(y, -late) * np.sqrt((x**2).mean() / max((y**2).mean(), 1e-12)), late
+
+
+def stretches(d: Path, uid: str, n: int, aligned: dict[str, Any]) -> dict[str, Array]:
+    """For each of a clip's `n` spectrum frames, how far it is (0 to 1, with edges of 10 ms)
+    inside a voiced stretch of the recording's speech, an unvoiced one, or a silence (the
+    aligner's `sil` and `pau`); and of the unvoiced stretches, their `edge` (the frames within
+    EDGE_NEAR seconds of a voiced one: where voicing starts and stops, a stop is released)
+    and their `inside` (the rest)."""
+    phones: list[str] = []
+    for p, k in zip(aligned[uid]["p"], aligned[uid]["frames"]):
+        phones += [p] * k
+    phones = phones[round(LEAD * FRAME_RATE) :]  # the alignment is on the voice's clock
+    f0 = np.load(d / "pitch" / f"{uid}.npy")
+    j = np.minimum((np.arange(n) * HOP / SR * FRAME_RATE).round().astype(int), min(len(phones), len(f0)) - 1)
+    silent = np.array([phones[i] in ("sil", "pau") for i in j])
+    voiced = (f0[j] > 0) & ~silent
+    unvoiced = ~voiced & ~silent
+    k = round(EDGE_NEAR * SR / HOP)
+    near = np.convolve(voiced.astype(float), np.ones(2 * k + 1), "same") > 0
+    kinds = {"voiced": voiced, "unvoiced": unvoiced, "silence": silent, "edge": unvoiced & near, "inside": unvoiced & ~near}
+    return {k: np.convolve(v.astype(float), np.ones(5) / 5, "same")[:, None] for k, v in kinds.items()}
+
+
+def bands_of(spec: str) -> dict[str, tuple[float, float]]:
+    """`0-250,250-500` as bands by those names."""
+    return {b: (float(b.split("-")[0]), float(b.split("-")[1])) for b in spec.split(",")}
+
+
+def hybrids(x: Array, y: Array, pitch: float, bands: dict[str, tuple[float, float]] = BANDS, gates: dict[str, Array] | None = None) -> dict[str, Array]:
+    """Every hybrid of a recording `x` and its render `y` (same clock, same length). With
+    `gates` (`stretches`), also each band swapped within one kind of stretch only."""
     n = len(x)
     sx, sy = spectrum(x), spectrum(y)
     cut = round(min(CUT_MAX, CUT_SHARE / pitch) * SR)
@@ -129,11 +177,15 @@ def hybrids(x: Array, y: Array, pitch: float) -> dict[str, Array]:
     out: dict[str, Array] = {"R": x, "S": y}
     out["S+envR"] = signal(sy * np.exp(diff), n)
     out["R+envS"] = signal(sx * np.exp(-diff), n)
-    for name, (lo, hi) in BANDS.items():
+    for name, (lo, hi) in bands.items():
         m = band_mask(lo, hi)
         out[f"S+envR:{name}"] = signal(sy * np.exp(diff * m), n)
         out[f"S|R:{name}"] = signal(sy * (1 - m) + sx * m, n)
         out[f"R|S:{name}"] = signal(sx * (1 - m) + sy * m, n)
+        for kind, w in (gates or {}).items():
+            w = np.pad(w, ((0, max(0, len(sx) - len(w))), (0, 0)))[: len(sx)]
+            out[f"S|R:{name}@{kind}"] = signal(sy * (1 - m * w) + sx * (m * w), n)
+            out[f"R|S:{name}@{kind}"] = signal(sx * (1 - m * w) + sy * (m * w), n)
     # one curve for the clip: the frames' mean, over the frames where both have sound
     level_x, level_y = np.abs(sx).sum(axis=1), np.abs(sy).sum(axis=1)
     both = (level_x > 0.03 * level_x.max()) & (level_y > 0.03 * level_y.max())
@@ -161,6 +213,28 @@ def identify(vectors: NDArray[np.float32], who: list[str], means: dict[str, NDAr
     return {**over(rows), "sexes": {x: over([r for r in rows if r[0] == x]) for x in sorted({r[0] for r in rows})}}
 
 
+def enrolled(d: Path, verifier: Any, short: str, jobs: int) -> tuple[dict[str, NDArray[np.float32]], dict[str, str]]:
+    """The speakers that the training recordings in `d` stand for: each one's mean vector by
+    this verifier (kept in <d>/enrolled_<short>.npz, with the recordings' names, and made
+    again when those change), and each one's sex."""
+    metas = [json.loads(p.read_text()) for p in sorted((d / "meta").glob("*.json"))]
+    metas = [m for m in metas if split_in(d, m["id"]) == "train" and (d / "real" / f"{m['id']}.wav").exists()]
+    sex = {m["speaker"]: m["sex"] for m in metas}
+    cache, ids = d / f"enrolled_{short}.npz", np.array([m["id"] for m in metas])
+    if cache.exists():
+        kept = np.load(cache)
+        if np.array_equal(kept["ids"], ids):
+            return {s: v for s, v in zip(kept["speakers"], kept["means"])}, sex
+    with ThreadPoolExecutor(jobs) as pool:
+        heard = list(pool.map(lambda m: load(d / "real" / f"{m['id']}.wav", 16000)[0], metas))
+    by: dict[str, list[NDArray[np.float32]]] = {}
+    for m, x in zip(metas, heard):
+        by.setdefault(m["speaker"], []).append(verifier.vector(x))
+    means = {s: np.mean(v, axis=0) for s, v in by.items()}
+    np.savez(cache, ids=ids, speakers=np.array(list(means)), means=np.stack(list(means.values())))
+    return means, sex
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("dir", type=Path, nargs="?", default=ROOT / "out" / "jvs")
@@ -171,12 +245,16 @@ def main() -> None:
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--per", type=int, default=25, help="recordings of each speaker")
     ap.add_argument("--only", type=str, default="", help="hybrids to make and judge (comma-separated; all if empty)")
+    ap.add_argument("--bands", type=bands_of, default=BANDS, help="bands to swap, as lo-hi in Hz, comma-separated")
+    ap.add_argument("--gates", action="store_true", help="also swap each band within voiced stretches, unvoiced ones and silences only")
+    ap.add_argument("--no-speaker", action="store_true")
     ap.add_argument("--no-nisqa", action="store_true")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
     a = ap.parse_args()
     d: Path = a.dir
     metas = [json.loads((d / "meta" / f"{i}.json").read_text()) for i in ids_in(d, a.split)]
-    metas = [m for m in metas if all((d / v / f"{m['id']}.wav").exists() for v in ("real", a.variant))]
+    aligned: dict[str, Any] = json.loads((d / "aligned.json").read_text()) if a.gates else {}
+    metas = [m for m in metas if all((d / v / f"{m['id']}.wav").exists() for v in ("real", a.variant)) and (not a.gates or m["id"] in aligned)]
     count: dict[str, int] = {}
     kept = []
     for m in metas:
@@ -188,17 +266,16 @@ def main() -> None:
         pitches.setdefault(m["speaker"], []).append(m["f0Median"])
     only = set(a.only.split(",")) if a.only else None
 
+    def path_of(k: str, uid: str) -> Path:
+        return a.out / k.replace(":", "_").replace("|", "_in_").replace("@", "_at_") / f"{uid}.wav"
+
     def make(m: dict[str, Any]) -> tuple[list[str], int]:
-        x = load(d / "real" / f"{m['id']}.wav", SR)[0]
-        y = load(d / a.variant / f"{m['id']}.wav", SR)[0][round(LEAD * SR) :]
-        y = np.pad(y, (0, max(0, len(x) - len(y))))[: len(x)]
-        late = lag(x, y)
-        # at the recording's level, so that a band of one sits in the other as loud as its own
-        y = np.roll(y, -late) * np.sqrt((x**2).mean() / max((y**2).mean(), 1e-12))
-        made = hybrids(x, y, float(np.median(pitches[m["speaker"]])))
+        x, y, late = pair(d, a.variant, m["id"])
+        gates = stretches(d, m["id"], len(x) // HOP + 16, aligned) if a.gates else None
+        made = hybrids(x, y, float(np.median(pitches[m["speaker"]])), a.bands, gates)
         names = [k for k in made if only is None or k in only]
         for k in names:
-            p = a.out / k.replace(":", "_").replace("|", "_in_") / f"{m['id']}.wav"
+            p = path_of(k, m["id"])
             p.parent.mkdir(parents=True, exist_ok=True)
             peak = float(np.abs(made[k]).max())
             sf.write(str(p), made[k] * min(1.0, 0.98 / max(peak, 1e-9)), SR, subtype="PCM_16")
@@ -209,23 +286,17 @@ def main() -> None:
     names = done[0][0]
     lags = np.array([late for _, late in done]) / SR * 1000
     print(f"{len(kept)} recordings of {len(pitches)} speakers; the render runs {np.median(lags):+.1f} ms behind (5th to 95th percentile {np.percentile(lags, 5):+.1f} to {np.percentile(lags, 95):+.1f})")
-    path = {k: [a.out / k.replace(":", "_").replace("|", "_in_") / f"{m['id']}.wav" for m in kept] for k in names}
+    path = {k: [path_of(k, m["id"]) for m in kept] for k in names}
 
-    from .whose import Verifier
-
-    enrol = [json.loads(p.read_text()) for p in sorted((a.enrol / "meta").glob("*.json"))]
-    enrol = [m for m in enrol if m["split"] == "train" and (a.enrol / "real" / f"{m['id']}.wav").exists()]
-    sex = {m["speaker"]: m["sex"] for m in enrol}
-    out: dict[str, Any] = {"variant": a.variant, "clips": len(kept), "enrolled": len(sex), "lagMs": float(np.median(lags)), "hybrids": {k: {} for k in names}}
+    out: dict[str, Any] = {"variant": a.variant, "clips": len(kept), "lagMs": float(np.median(lags)), "hybrids": {k: {} for k in names}}
     who = [m["speaker"] for m in kept]
-    for short, model in VERIFIERS.items():
+    for short, model in {} if a.no_speaker else VERIFIERS.items():
+        from .whose import Verifier
+
         verifier = Verifier(pick_device(), model)
+        means, sex = enrolled(a.enrol, verifier, short, a.jobs)
+        out["enrolled"] = len(means)
         with ThreadPoolExecutor(a.jobs) as pool:
-            heard = list(pool.map(lambda m: load(a.enrol / "real" / f"{m['id']}.wav", 16000)[0], enrol))
-            by: dict[str, list[NDArray[np.float32]]] = {}
-            for m, x in zip(enrol, heard):
-                by.setdefault(m["speaker"], []).append(verifier.vector(x))
-            means = {s: np.mean(v, axis=0) for s, v in by.items()}
             for k in names:
                 clips = pool.map(lambda p: load(p, 16000)[0], path[k])
                 out["hybrids"][k][short] = identify(np.stack([verifier.vector(x) for x in clips]), who, means, sex)
@@ -241,12 +312,12 @@ def main() -> None:
                     **{x: float(np.mean([r[measure] for r, m in zip(rows, kept) if m["sex"] == x])) for x in ("F", "M")},
                 }
     (d / f"{a.name}.json").write_text(json.dumps(out, indent=1))
-    print(f"{'':16s} {'WavLM own/other/top1 (F, M top1)':38s} {'UniSpeech-SAT':38s} quality F/M   natural F/M")
+    print(f"{'':24s}" + ("" if a.no_speaker else f"{'WavLM own/other/top1 (F, M top1)':38s} {'UniSpeech-SAT':38s} ") + ("" if a.no_nisqa else "quality F/M   natural F/M"))
     for k in names:
         h = out["hybrids"][k]
-        cells = [f"{h[v]['own']:.3f} {h[v]['other']:.3f} {100 * h[v]['top1']:5.1f} ({100 * h[v]['sexes']['F']['top1']:5.1f}, {100 * h[v]['sexes']['M']['top1']:5.1f})  " for v in VERIFIERS]
+        cells = [] if a.no_speaker else [f"{h[v]['own']:.3f} {h[v]['other']:.3f} {100 * h[v]['top1']:5.1f} ({100 * h[v]['sexes']['F']['top1']:5.1f}, {100 * h[v]['sexes']['M']['top1']:5.1f})".ljust(38) for v in VERIFIERS]
         nisqa = "" if a.no_nisqa else f"{h['quality']['F']:.2f} {h['quality']['M']:.2f}    {h['natural']['F']:.2f} {h['natural']['M']:.2f}"
-        print(f"{k:16s} {cells[0]:38s} {cells[1]:38s} {nisqa}")
+        print(f"{k:24s}" + " ".join(cells) + (" " if cells else "") + nisqa)
 
 
 if __name__ == "__main__":

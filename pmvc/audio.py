@@ -27,6 +27,20 @@ def load(path: Path, sr: int | None = None) -> tuple[Array, int]:
     return x, rate
 
 
+def speech_level(x: Array, sr: int) -> float:
+    """The level of a clip's speech (rms): over its 10 ms frames within 20 dB of the loudest,
+    so that pauses and the silence around the speech do not count."""
+    frame = sr // 100
+    rms = np.sqrt((x[: len(x) // frame * frame].reshape(-1, frame) ** 2).mean(axis=1))
+    active = rms[rms > rms.max() * 0.1]
+    return float(np.sqrt((active**2).mean())) if len(active) else 0.0
+
+
+def at_level(x: Array, sr: int, db: float = -26.0) -> Array:
+    """`x` with its speech at `db` dB re full scale (-26: the level listening tests play at)."""
+    return x * 10.0 ** (db / 20.0) / max(speech_level(x, sr), 1e-9)
+
+
 def pitch_track(x: Array, sr: int, sex: str) -> Array:
     """f0 (Hz) at `i / FRAME_RATE` seconds, 0 where unvoiced (Praat's autocorrelation method)."""
     # Praat is needed where recordings are heard, not where a model only speaks (`pmvc.serve`)

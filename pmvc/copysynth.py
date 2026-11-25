@@ -10,6 +10,7 @@ a few hundred milliseconds and splicing that into the render.
 
 usage: python -m pmvc.copysynth [dir] [--ids ... | --n 40 | --all] [--iters 40] [--proposals 96]
                                 [--base warp] [--out copy] [--calibrated] [--nll-weight 0.1]
+                                [--shape-weight 0] [--listener MODEL --layer N] [--also KEY=STEP,...]
                                 [--scale DIR] [--shard K/N] [--resume] [--jobs N]
 
 The objective is the listener's feature distance to the recording over its speech, plus
@@ -33,6 +34,17 @@ and one sequential render per iteration), so a corpus is best split over process
 takes every recording with a starting track, speaker after speaker in turn, `--shard K/N`
 every N-th of them from the K-th, and `--resume` leaves alone the ones already written.
 
+`--shape-weight` adds a third term: how far the render's spectral envelope is from the
+recording's, as the mean distance between their log mel spectra (40 bands to 8 kHz), frame
+against frame over the speech, with the level the two differ by over the utterance taken out,
+in units of 10 dB. The listener's features leave the speaker out by design, so a search on
+them alone asks for the words and not for the voice; with this term it also asks the voice to
+resonate as the speaker's does, sound by sound, which is what a speaker-verification model goes
+by (`pmvc.gap`). It is the test of how near the engine can come to a recording's envelope when
+asked. `--listener` and `--layer` name another model for the first term (one that writes no
+characters has no second: `--nll-weight 0`). `--also` lets the search move channels that the
+rule's tracks hold still, each by steps of the size given (`epilarynx=0.15`).
+
 The steps a search takes are sized by how far each channel moves in <dir>/warp's tracks. For
 recordings from elsewhere (`pmvc.recordings`), which have no such tracks, `--scale` names a
 directory that does; and with `--nll-weight 0` nothing here reads the sentence's text.
@@ -50,7 +62,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-from .audio import FRAME_RATE, Array
+from .audio import FRAME_RATE, Array, log_mel
 from .calibrate import NLL_WEIGHT, Item, load_items, make_voice
 from .listener import Listener, distance
 from .paths import ROOT
@@ -82,8 +94,8 @@ class Proposal:
 
 
 class Search:
-    def __init__(self, item: Item, settings: dict[str, float] | None, listener: Listener, sigma: Array, seed: int, jobs: int, nll_weight: float = NLL_WEIGHT) -> None:
-        self.item, self.listener, self.jobs, self.nll_weight = item, listener, jobs, nll_weight
+    def __init__(self, item: Item, settings: dict[str, float] | None, listener: Listener, sigma: Array, seed: int, jobs: int, nll_weight: float = NLL_WEIGHT, shape_weight: float = 0.0) -> None:
+        self.item, self.listener, self.jobs, self.nll_weight, self.shape_weight = item, listener, jobs, nll_weight, shape_weight
         self.x = item.frames.copy()
         self.n = len(self.x)
         self.keys: list[str] = item.track["keys"]
@@ -114,17 +126,30 @@ class Search:
             self.audio[f * HOP : f * HOP + n] = v.render(n)
         self.audio16 = resample_poly(self.audio, 1, 3).astype(np.float32)
 
-    def objectives(self, clips: list[Array]) -> list[tuple[float, float, float]]:
-        """The objective, feature distance and CTC loss of whole-utterance renders (16 kHz)."""
+    def shape(self, clip: Array) -> float:
+        """How far a render's envelope (16 kHz, on the recording's clock) is from the
+        recording's over its speech, in units of 10 dB."""
+        assert self.item.mel is not None
+        a, b = 2 * self.item.span[0], 2 * self.item.span[1]
+        mine = log_mel(clip.astype(np.float64))
+        n = min(len(mine), len(self.item.mel), b)
+        diff = self.item.mel[a:n] - mine[a:n]
+        return float(np.abs(diff - diff.mean()).mean()) * 2.0 / np.log(10.0)
+
+    def objectives(self, clips: list[Array]) -> list[tuple[float, float, float, float]]:
+        """The objective, feature distance, CTC loss and envelope distance of whole-utterance renders (16 kHz)."""
         it = self.item
         a, b = it.span
-        out: list[tuple[float, float, float]] = []
+        out: list[tuple[float, float, float, float]] = []
         for i in range(0, len(clips), 48):
-            heard = self.listener.hear(np.stack([c[it.shift // 3 :] for c in clips[i : i + 48]]))
-            for feats, logp in zip(heard.feats, heard.logp):
+            part = [c[it.shift // 3 :] for c in clips[i : i + 48]]
+            heard = self.listener.hear(np.stack(part))
+            with ThreadPoolExecutor(self.jobs) as pool:
+                shapes = list(pool.map(self.shape, part)) if self.shape_weight else [0.0] * len(part)
+            for feats, logp, shape in zip(heard.feats, heard.logp, shapes):
                 dist = float(distance(it.feats[a:b], feats[a:b]).mean())
-                nll = self.listener.nll(logp, it.chars)
-                out.append((dist + self.nll_weight * nll, dist, nll))
+                nll = self.listener.nll(logp, it.chars) if self.nll_weight else 0.0
+                out.append((dist + self.nll_weight * nll + self.shape_weight * shape, dist, nll, shape))
         return out
 
     def propose(self, centre: int) -> Proposal:
@@ -180,7 +205,7 @@ class Search:
         ps = [self.propose(int(c)) for c in centres]
         with ThreadPoolExecutor(self.jobs) as pool:
             list(pool.map(self.trial, ps))
-        for p, (value, _, _) in zip(ps, self.objectives([p.heard for p in ps])):
+        for p, (value, _, _, _) in zip(ps, self.objectives([p.heard for p in ps])):
             p.gain = self.value[0] - value
         better = sorted((p for p in ps if p.gain > MIN_GAIN), key=lambda p: -p.gain)
         taken: list[Proposal] = []
@@ -206,25 +231,25 @@ class Search:
 
 
 def copy(item: Item, settings: dict[str, float] | None, listener: Listener, sigma: Array, a: argparse.Namespace, d: Path) -> dict[str, Any]:
-    s = Search(item, settings, listener, sigma, seed=0, jobs=a.jobs, nll_weight=a.nll_weight)
+    s = Search(item, settings, listener, sigma, seed=0, jobs=a.jobs, nll_weight=a.nll_weight, shape_weight=a.shape_weight)
     start = s.value
     if settings:
         sf.write(str(d / f"{a.out}-start" / f"{item.uid}.wav"), s.audio, 48000, subtype="PCM_16")
     log: list[dict[str, float]] = []
     for it in range(a.iters):
         better, kept = s.step(a.proposals)
-        log.append({"iter": it, "objective": s.value[0], "distance": s.value[1], "nll": s.value[2], "better": better, "kept": kept, "scale": s.scale})
+        log.append({"iter": it, "objective": s.value[0], "distance": s.value[1], "nll": s.value[2], "shape": s.value[3], "better": better, "kept": kept, "scale": s.scale})
     end = s.value
     stem = d / a.out / item.uid
     sf.write(f"{stem}.wav", s.audio, 48000, subtype="PCM_16")
     track = {**item.track, "frames": np.round(s.x, 5).tolist(), "settings": settings}
-    row = {"id": item.uid, "objective": [start[0], end[0]], "distance": [start[1], end[1]], "nll": [start[2], end[2]], "kept": int(sum(r["kept"] for r in log))}
+    row = {"id": item.uid, "objective": [start[0], end[0]], "distance": [start[1], end[1]], "nll": [start[2], end[2]], "shape": [start[3], end[3]], "kept": int(sum(r["kept"] for r in log))}
     Path(f"{stem}.log.json").write_text(json.dumps({**row, "iterations": log}))
     # the track last and at once: it is what says the recording is done
     tmp = Path(f"{stem}.tracks.json.tmp")
     tmp.write_text(json.dumps(track))
     tmp.replace(f"{stem}.tracks.json")
-    print(f"{item.uid}: objective {start[0]:.3f} → {end[0]:.3f}  distance {start[1]:.3f} → {end[1]:.3f}  CTC loss {start[2]:.2f} → {end[2]:.2f}  ({row['kept']} changes)", flush=True)
+    print(f"{item.uid}: objective {start[0]:.3f} → {end[0]:.3f}  distance {start[1]:.3f} → {end[1]:.3f}  CTC loss {start[2]:.2f} → {end[2]:.2f}  envelope {10 * start[3]:.1f} → {10 * end[3]:.1f} dB  ({row['kept']} changes)", flush=True)
     return row
 
 
@@ -262,6 +287,10 @@ def main() -> None:
     ap.add_argument("--out", type=str, default="copy")
     ap.add_argument("--calibrated", action="store_true", help="run the voice under pmvc.calibrate's settings")
     ap.add_argument("--nll-weight", type=float, default=NLL_WEIGHT)
+    ap.add_argument("--shape-weight", type=float, default=0.0, help="what a unit (10 dB) of envelope distance to the recording costs")
+    ap.add_argument("--listener", type=str, default="", help="another model than pmvc.listener's for the feature distance")
+    ap.add_argument("--layer", type=int, default=8)
+    ap.add_argument("--also", type=str, default="", help="channels the rule holds still that the search may move, with their step: epilarynx=0.15,...")
     ap.add_argument("--scale", type=Path, default=None, help="tracks whose spread sets the step sizes, if not <dir>/warp")
     ap.add_argument("--all", action="store_true", help="every recording with a starting track")
     ap.add_argument("--shard", type=str, default="0/1", help="K/N: every N-th recording from the K-th")
@@ -281,11 +310,14 @@ def main() -> None:
         ids = [i for i in ids if not (d / a.out / f"{i}.tracks.json").exists()]
     for name in (a.out, f"{a.out}-start") if a.calibrated else (a.out,):
         (d / name).mkdir(exist_ok=True)
-    listener = Listener()
+    listener = Listener(model=a.listener, layer=a.layer) if a.listener else Listener()
     # how far each channel moves within an utterance of speech by rule (`pmvc.warp`'s tracks,
     # whatever the search starts from)
     sample = sorted((a.scale or d / ("warp" if (d / "warp").exists() else a.base)).glob("*.tracks.json"))[::5]
-    sigma = Scale([json.loads(p.read_text()) for p in sample]).std
+    scale = Scale([json.loads(p.read_text()) for p in sample])
+    sigma = scale.std
+    for word in a.also.split(",") if a.also else ():
+        sigma[scale.keys.index(word.split("=")[0])] = float(word.split("=")[1])
     for uid in ids:
         (item,) = load_items(d, [uid], listener, a.base)
         settings = json.loads((d / f"calibration-{uid[0]}.json").read_text())["settings"] if a.calibrated else None

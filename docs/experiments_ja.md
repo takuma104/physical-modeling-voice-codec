@@ -470,6 +470,18 @@ uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-t
 
 # 15. テクニカルレポート(英語と日本語の PDF)。tectonic が必要
 bash docs/report/build.sh
+
+# 16. (V2) 声そのものを良くするための物差し。third-party/UTMOSv2 を使う(git submodule update --init)
+#   録音と合成音の成分(スペクトル包絡とそれ以外、帯域、有声・無声・無音の区間)を入れ替えて、合成音に何が足りないかを見る。
+#   話者照合の 2 モデル(100 話者を登録: out/jvsall の学習用の録音)と NISQA の 2 モデルが採点する
+uv run python -m pmvc.gap out/jvs --variant encv2 --enrol out/jvsall --out /tmp/gap --name gap_encv2
+uv run python -m pmvc.gap out/jvs --variant encv2 --out /tmp/gap_low --name gap_low_encv2 --per 13 --bands 0-250,250-500,500-1000 --gates --no-speaker
+#   採点表: 録音も合成音も 24 kHz と同じ発話レベルに揃えてから採点する。自然さと品質は、乾いたままと、決まった録音条件
+#   (pmvc.room: ハイパス、短い残響、ノイズフロア)を通したあとの 2 通り。--opinions で SQUIM と UTMOSv2 も
+uv run python -m pmvc.bench out/jvs --variants encv2,encit --enrol out/jvsall --judged results_rel --opinions --name bench_v1
+uv run python -m pmvc.bench out/transplant --variants encv2 --judged results_rel --opinions --name bench_v1      # 英語(TSP)。話者の照合と包絡の項は出ない
+#   試聴ページの 4 枚目(listening_v2.html): 入れ替えた音と、録音条件を足した音
+uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。

@@ -201,7 +201,7 @@ wasm の速度（実時間の 3 倍以上）を確認。デモへの反映は試
 2. エンジンの改造は GitHub のフォーク（`takuma104/chimera-vocal-synth`）に置く（Phase 2 の最初に作成）。
 3. 判定用に torchaudio と UTMOSv2 を追加する。
 4. V2 用の試聴ページを新設する（4 枚目）。
-5. Phase 3〜4 の学習に galleria を使う（開始前に空きを確認）。galleria2 も使ってよいか教えてください。
+5. Phase 3〜4 の学習に galleria と galleria2 を使う（開始前に空きを確認。2026-11-26 に両方とも使用可と確認済み）。
 6. 出力段（部屋とノイズフロア）は採点の条件として使い、デモに入れるかは試聴後に決める。
 7. 承認後、本書を `docs/plans/v2_engine_plan.md` に置く。
 

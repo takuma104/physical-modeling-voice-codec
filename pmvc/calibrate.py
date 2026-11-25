@@ -58,7 +58,7 @@ import pmvc_engine
 import torch
 from scipy.optimize import minimize
 
-from .audio import Array, load
+from .audio import Array, load, log_mel
 from .clicks import measure
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
 from .paths import ROOT
@@ -110,6 +110,8 @@ class Item:
     span: tuple[int, int]
     feats: torch.Tensor
     chars: list[int]
+    # the recording's log mel spectrogram (`pmvc.audio.log_mel`), for a search that also follows its envelope
+    mel: Array | None = None
 
 
 def settings(theta: Array) -> dict[str, float]:
@@ -164,7 +166,7 @@ def load_items(d: Path, ids: list[str], listener: Listener, variant: str = "warp
         span = (int(meta["span"][0] * FEATURE_RATE), int(meta["span"][1] * FEATURE_RATE))
         items.append(
             Item(uid, meta["text"], track, np.array(track["frames"]), round(track.get("shift", meta["shift"]) * 48000), span,
-                 listener.hear(real).feats[0], listener.chars(meta["text"]))
+                 listener.hear(real).feats[0], listener.chars(meta["text"]), log_mel(real.astype(np.float64)))
         )  # fmt: skip
     return items
 
