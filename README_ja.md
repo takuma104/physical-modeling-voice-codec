@@ -7,7 +7,7 @@
 
 - **デモ**(インストール不要): <https://huggingface.co/spaces/takuma104/pmvc-tts?ja>(English: [`?en`](https://huggingface.co/spaces/takuma104/pmvc-tts?en))
 - **モデルの重み**(CC BY 4.0): <https://huggingface.co/takuma104/pmvc-tts>
-- **テクニカルレポート**(下書き): [日本語](docs/report/physical_modeling_voice_codec_report_ja.pdf) · [English](docs/report/physical_modeling_voice_codec_report_en.pdf)
+- **テクニカルレポート**: [日本語](docs/report/physical_modeling_voice_codec_report_ja.pdf) · [English](docs/report/physical_modeling_voice_codec_report_en.pdf)
 - **実験の手順**: [docs/experiments_ja.md](docs/experiments_ja.md)
 
 最初の企画メモと先行研究の調査は [docs/plans/idea.md](docs/plans/idea.md) にあります。先行研究との比較は、レポートの 9 節にまとめています。

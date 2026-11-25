@@ -468,7 +468,7 @@ PORT=7861 uv run --with gradio==6.30.0 python ../pmvc-tts-space/app.py    # 手�
 # 14. 試聴ページ(音声埋め込みの HTML 3 枚: 英語編 listening.html、日本語編 listening_ja.html、TTS 編 listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
-# 15. テクニカルレポート(下書き。英語と日本語の PDF)。tectonic が必要
+# 15. テクニカルレポート(英語と日本語の PDF)。tectonic が必要
 bash docs/report/build.sh
 ```
 

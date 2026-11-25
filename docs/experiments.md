@@ -468,7 +468,7 @@ PORT=7861 uv run --with gradio==6.30.0 python ../pmvc-tts-space/app.py    # runs
 # 14. The listening pages (three HTML pages with the audio inside: English in listening.html, Japanese in listening_ja.html, TTS in listening_tts.html)
 uv run python -m pmvc.page --notes notes.html --notes-ja notes_ja.html --notes-tts notes_tts.html
 
-# 15. The technical report (a draft; PDFs in English and Japanese). Needs tectonic
+# 15. The technical report (PDFs in English and Japanese). Needs tectonic
 bash docs/report/build.sh
 ```
 

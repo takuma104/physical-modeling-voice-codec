@@ -7,7 +7,7 @@ The latent is a set of control parameters for articulation and the voice source,
 
 - **Demo** (nothing to install): <https://huggingface.co/spaces/takuma104/pmvc-tts?en> (日本語: [`?ja`](https://huggingface.co/spaces/takuma104/pmvc-tts?ja))
 - **Model weights** (CC BY 4.0): <https://huggingface.co/takuma104/pmvc-tts>
-- **Technical report** (draft): [English](docs/report/physical_modeling_voice_codec_report_en.pdf) · [日本語](docs/report/physical_modeling_voice_codec_report_ja.pdf)
+- **Technical report**: [English](docs/report/physical_modeling_voice_codec_report_en.pdf) · [日本語](docs/report/physical_modeling_voice_codec_report_ja.pdf)
 - **Running the experiments**: [docs/experiments.md](docs/experiments.md)
 
 The first idea memo and its survey of earlier work are in [docs/plans/idea.md](docs/plans/idea.md) (in Japanese). Section 9 of the report sets this work against prior work.
