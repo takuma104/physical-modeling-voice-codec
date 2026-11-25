@@ -4,11 +4,11 @@
 
 Numbers: `pmvc.judge`'s and `pmvc.natural`'s summaries on the 100 test sentences of
 Hi-Fi-CAPTAIN's Japanese man. For the first figure, the text-to-speech models taught with fewer
-recordings (README, step 9): out/ja/results_tts.json (variants tts, tts2000, tts200, tts50,
-tts20, and enci and real for the two reference lines). For the second, the control (step 11):
-out/ja/results_ctl.json (the track: tts20n, tts50n, tts200n, tts2000n, tts; the neural
-decoders' latents: ctl<latent><n>; the spectrogram with its vocoder tuned: ctlmel<n>vp; each
-decoder's best: enci, copy_<latent>).
+recordings (docs/experiments.md, step 9): out/ja/results_tts.json (variants tts, tts2000,
+tts200, tts50, tts20, and enci and real for the two reference lines). For the second, the
+control (step 11): out/ja/results_ctl.json (the track: tts20n, tts50n, tts200n, tts2000n, tts;
+the neural decoders' latents: ctl<latent><n>; the spectrogram with its vocoder tuned:
+ctlmel<n>vp; each decoder's best: enci, copy_<latent>).
 
 The drawing of the vocal tract is CHIMERA's own: `pmvc_engine.outline` gives the midsagittal
 outlines its airway's areas are computed from, for the male body in one posture.

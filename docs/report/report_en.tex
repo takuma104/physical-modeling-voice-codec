@@ -3,6 +3,7 @@
 \usepackage[margin=17mm,columnsep=6mm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{tikz}
@@ -161,26 +162,90 @@ reported in \S\ref{sec:control}.
 \node[box, below=7mm of enc] (tts) {TTS model};
 \node[box, left=3.5mm of tts] (txt) {phonemes,\\accent};
 \node[box, below=7mm of sim] (std) {stand-in};
-\node[box, above=7mm of trk] (lis) {listener features};
+\node[box, above=7mm of trk] (lis) {listener\\features};
+\node[phys, left=4.5mm of lis] (ssl) {listener (frozen):\\wav2vec\,2.0 /\\mHuBERT-147};
 \draw[arr] (rec) -- (enc); \draw[arr] (enc) -- (trk); \draw[arr] (trk) -- (sim);
 \draw[arr] (txt) -- (tts); \draw[arr] (tts) -| (trk);
 \draw[learn] (trk.south east) -- (std.north west);
 \draw[learn] (std.east) -- ++(2mm,0) |- (lis.east);
-\draw[learn] (rec.north) |- (lis.west);
+\draw[learn] (rec.north) |- (ssl.west);
+\draw[learn] (ssl) -- (lis);
 \node[right=2.5mm of sim, font=\scriptsize, inner sep=1pt] (out) {sound};
 \draw[arr] (sim) -- (out);
 \end{tikzpicture}
-\caption{The codec. Solid: inference. Dashed: training. The stand-in predicts what a listener
-model would hear of the track's render, so that the distance to what it hears in the recording
-can be differentiated back into the encoder or the text-to-speech (TTS) model.}
+\caption{The codec. Solid: inference. Dashed: training. Grey: not trained. The listener is a
+self-supervised speech model used as it is (for the release, a HuBERT trained on Japanese,
+\S\ref{sec:release}). The stand-in predicts what the listener would hear of the track's render,
+so that the distance to what it hears in the recording can be differentiated back into the
+encoder or the text-to-speech (TTS) model. The encoder's front end is a model of the same kind
+(Table~\ref{tab:models}).}
 \label{fig:system}
 \end{figure}
+
+\begin{table*}[t]
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{The networks trained in this work: the white boxes of Fig.~\ref{fig:system}, and what
+they need beside them. Weights are in millions, and a BiLSTM's width is that of each direction.
+Models used as they come (the listeners, the judges, the vocoder and the codecs of
+\S\ref{sec:control}) are not listed.}
+\label{tab:models}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{56mm}>{\raggedright\arraybackslash}p{74mm}>{\raggedright\arraybackslash}p{17mm}@{}}
+\toprule
+Network & Reads $\rightarrow$ writes & Layers & Weights (M)\\
+\midrule
+Encoder (\S\ref{sec:encoder})
+& a recording at 16\,kHz, and three features a frame (voiced or not, pitch against the
+speaker's median, level) $\rightarrow$ 16 channels at 100\,Hz
+& front end: wav2vec\,2.0 base or mHuBERT-147 (7 convolutions and 12 transformer layers,
+width 768; 94.4M), its 13 layers' outputs in a learned mix, its top six layers tuned in every
+encoder but A $\rightarrow$ linear to 256, each 20\,ms frame twice $\rightarrow$ 2 BiLSTM (256)
+$\rightarrow$ linear to 16
+& 97.2 (45.4 trained)\\
+\addlinespace[2pt]
+Stand-in (\S\ref{sec:encoder})
+& a control track (21 channels at 100\,Hz, the pitch in octaves) and the body that plays it (one
+or two numbers) $\rightarrow$ the listener's features of the render (768 numbers at 50\,Hz, of
+unit length)
+& linear to 512, ReLU $\rightarrow$ 3 BiLSTM (512) $\rightarrow$ two frames joined into one
+$\rightarrow$ linear to 768
+& 18.4\\
+\addlinespace[2pt]
+Aligner (\S\ref{sec:tts})
+& phonemes and a mel spectrogram (80 bands) $\rightarrow$ a score for every frame and phoneme;
+the durations are the best monotonic path
+& phonemes: embedding (256), convolutions of kernel 3 (512) and 1 (80); frames: convolutions of
+kernel 3 (160), 1 (80) and 1 (80); the score is minus the squared distance between the
+two~\cite{ota}
+& 0.5\\
+\addlinespace[2pt]
+Text-to-speech model (\S\ref{sec:tts}, \S\ref{sec:release})
+& phonemes, each with its place in the accent phrase (five tokens), and the speaker (a vector,
+or two numbers of the voice) $\rightarrow$ each phoneme's duration, and at 100\,Hz the 16
+channels and the pitch (the release's models also write the epilarynx, which its two voices
+hold differently)
+& 4 blocks over the phonemes $\rightarrow$ duration predictor (2 convolutions of kernel 3,
+linear) $\rightarrow$ each phoneme's state for as many frames as it lasts, with where the frame is
+in it $\rightarrow$ 6 blocks over the frames $\rightarrow$ linear. A block: self-attention (4
+heads, rotary positions), then convolutions of kernel 5 (1,024) and 1, each after a layer norm;
+width 256. Pauses: two layers on the states either side of a phrase's border (0.1M)
+& 18.9 to 19.0\\
+\addlinespace[2pt]
+The control's models (\S\ref{sec:control})
+& as the text-to-speech model $\rightarrow$ durations, the pitch, and a mel spectrogram (100
+bands), EnCodec's latent (128 numbers) or Mimi's (512)
+& the text-to-speech model with FastSpeech\,2's pitch predictor (2 convolutions of kernel 3,
+linear; the pitch is embedded and added to the frames)
+& 19.4 to 19.5\\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \textbf{The network.} The encoder hears the recording through a self-supervised speech model (a
 learned mix of its layers; in the later encoders the top six are tuned) and through three plain
 features per frame: whether a pitch tracker~\cite{praat} calls the frame voiced, its pitch relative to the
 speaker's median, and its level. Two bidirectional LSTM layers (width 256) write the 16 moving
-channels at 100\,Hz. Pitch is not learned: the pitch channel is the tracker's contour. Encoding a
+channels at 100\,Hz (Table~\ref{tab:models} lists the layers and sizes of every network trained
+here). Pitch is not learned: the pitch channel is the tracker's contour. Encoding a
 3\,s sentence takes about 0.08\,s.
 
 \textbf{Three things to learn from} (Fig.~\ref{fig:system}, Table~\ref{tab:english}).
@@ -381,7 +446,7 @@ phrase's start and end) and whether the sentence asks. The model has the shape o
 FastSpeech\,2~\cite{fastspeech2}: four self-attention blocks over the phonemes, a predictor of
 each phoneme's duration, and six blocks over the frames that write the track: the 16 channels
 and the pitch, which the encoder took from a tracker and which is written here too (width 256,
-18.8M weights). Durations for training come from an alignment learned from the recordings and
+18.8M weights; Table~\ref{tab:models}). Durations for training come from an alignment learned from the recordings and
 their phonemes alone~\cite{ota}, with no external aligner.
 
 \textbf{Data and losses.} The targets are encoder I's tracks for 18,655 sentences (24 hours) of
@@ -975,7 +1040,7 @@ We thank Jameson Hodge for CHIMERA, and the authors of the TSP speech database, 
 Hi-Fi-CAPTAIN, wav2vec\,2.0, mHuBERT-147, Whisper, NISQA and Open JTalk.
 
 \begin{thebibliography}{99}\footnotesize
-\setlength{\itemsep}{0pt}
+\setlength{\itemsep}{0pt}\setlength{\parskip}{1.5pt plus 1pt}
 \bibitem{encodec} A.~Défossez, J.~Copet, G.~Synnaeve, Y.~Adi. High fidelity neural audio
 compression. \emph{TMLR}, 2023.
 \bibitem{moshi} A.~Défossez et al. Moshi: a speech-text foundation model for real-time dialogue.

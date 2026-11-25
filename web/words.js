@@ -5,6 +5,8 @@ export const WORDS = {
   ja: {
     tagline: "声道の物理モデルで話す音声合成",
     lineage: 'ニューラルネットが書くのは、舌・あご・唇・声帯の動かし方（21 本の制御列）だけです。音は、あなたのブラウザの中で動く声道の物理シミュレーション <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a> が出します。録音の切り貼りも、ニューラルボコーダも使っていません。',
+    "link-model": "モデル（Hugging Face）",
+    "link-code": "GitHub",
     tract: "声道",
     "tract-sub": "断面図・ライブ",
     tube: "管の太さ",
@@ -54,6 +56,8 @@ export const WORDS = {
   en: {
     tagline: "Text-to-speech that speaks through a physical model of the vocal tract",
     lineage: 'The neural network writes only how to move the tongue, jaw, lips and vocal folds: a control track of 21 channels. The sound is made in your browser by <a href="https://github.com/jamesondh/chimera-vocal-synth" target="_blank" rel="noopener">CHIMERA</a>, a physical simulation of the airway. No recordings are spliced and there is no neural vocoder.',
+    "link-model": "Model (Hugging Face)",
+    "link-code": "GitHub",
     tract: "Vocal tract",
     "tract-sub": "midsagittal, live",
     tube: "Tube",

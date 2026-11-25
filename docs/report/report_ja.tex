@@ -3,6 +3,7 @@
 \usepackage[margin=17mm,columnsep=6mm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{tikz}
@@ -152,25 +153,84 @@ Whisper~\cite{whisper} の small（英語は small.en）と large-v3-turbo を�
 \node[box, below=7mm of enc] (tts) {TTS モデル};
 \node[box, left=3.5mm of tts] (txt) {音素、\\アクセント};
 \node[box, below=7mm of sim] (std) {声の代役};
-\node[box, above=7mm of trk] (lis) {リスナーの特徴};
+\node[box, above=7mm of trk] (lis) {リスナー\\の特徴};
+\node[phys, left=4.5mm of lis] (ssl) {リスナー（固定）:\\wav2vec\,2.0 /\\mHuBERT-147};
 \draw[arr] (rec) -- (enc); \draw[arr] (enc) -- (trk); \draw[arr] (trk) -- (sim);
 \draw[arr] (txt) -- (tts); \draw[arr] (tts) -| (trk);
 \draw[learn] (trk.south east) -- (std.north west);
 \draw[learn] (std.east) -- ++(2mm,0) |- (lis.east);
-\draw[learn] (rec.north) |- (lis.west);
+\draw[learn] (rec.north) |- (ssl.west);
+\draw[learn] (ssl) -- (lis);
 \node[right=2.5mm of sim, font=\scriptsize, inner sep=1pt] (out) {音};
 \draw[arr] (sim) -- (out);
 \end{tikzpicture}
-\caption{コーデック。実線は推論、破線は学習。声の代役は、制御列を鳴らした音がリスナーのモデルに
-どう聞こえるかを予測する。これにより、録音の聞こえ方との距離を、エンコーダや音声合成（TTS）
-モデルまで微分で戻せる。}
+\caption{コーデック。実線は推論、破線は学習。灰色は学習しない部分。リスナーは、重みを変えずに使う
+自己教師あり学習の音声モデルである（公開用では日本語で学習された HuBERT。\ref{sec:release} 節）。
+声の代役は、制御列を鳴らした音がリスナーにどう聞こえるかを予測する。これにより、録音の聞こえ方との
+距離を、エンコーダや音声合成（TTS）モデルまで微分で戻せる。エンコーダの入口も同じ種類のモデル
+である（表~\ref{tab:models}）。}
 \label{fig:system}
 \end{figure}
+
+\begin{table*}[t]
+\centering\footnotesize\setlength{\tabcolsep}{4pt}
+\caption{本稿で学習したネットワーク（図~\ref{fig:system} の白い箱と、その学習に必要なもの）。
+パラメータ数の単位は百万。双方向 LSTM の幅は片方向あたり。そのまま使ったモデル（リスナー、判定役、
+\ref{sec:control} 節のボコーダとコーデック）は載せていない。}
+\label{tab:models}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{20mm}>{\raggedright\arraybackslash}p{56mm}>{\raggedright\arraybackslash}p{74mm}>{\raggedright\arraybackslash}p{17mm}@{}}
+\toprule
+ネットワーク & 入力 $\rightarrow$ 出力 & 層の構成 & パラメータ数（百万）\\
+\midrule
+エンコーダ（\ref{sec:encoder} 節）
+& 16\,kHz の録音と、フレームごとの 3 つの特徴（有声かどうか、話者の中央値に対する声の高さ、音量）
+$\rightarrow$ 16 チャネル、100\,Hz
+& 入口: wav2vec\,2.0 base または mHuBERT-147（畳み込み 7 層と Transformer 12 層、幅 768、
+9,440 万）。その 13 層の出力を学習した重みで混ぜる。上位 6 層は A 以外のエンコーダで学習する
+$\rightarrow$ 線形層で 256 に、20\,ms のフレームを 2 回ずつ $\rightarrow$ 双方向 LSTM 2 層（256）
+$\rightarrow$ 線形層で 16 に
+& 97.2（学習するのは 45.4）\\
+\addlinespace[2pt]
+声の代役（\ref{sec:encoder} 節）
+& 制御列（21 チャネル、100\,Hz。声の高さはオクターブ）と、それを鳴らす体（1 つか 2 つの数）
+$\rightarrow$ その合成音のリスナーの特徴（768 次元、50\,Hz、長さ 1 に正規化）
+& 線形層で 512 に、ReLU $\rightarrow$ 双方向 LSTM 3 層（512）$\rightarrow$ 2 フレームを 1 つに
+つなぐ $\rightarrow$ 線形層で 768 に
+& 18.4\\
+\addlinespace[2pt]
+対応付け（\ref{sec:tts} 節）
+& 音素列とメルスペクトログラム（80 帯域）$\rightarrow$ フレームと音素の組ごとの点数。音素の長さは、
+単調な経路のうち最も良いもの
+& 音素: 埋め込み（256）、カーネル 3 の畳み込み（512）、カーネル 1（80）。フレーム: カーネル 3 の
+畳み込み（160）、カーネル 1（80）、カーネル 1（80）。点数は両者の距離の 2 乗の符号を反転したもの~\cite{ota}
+& 0.5\\
+\addlinespace[2pt]
+音声合成モデル（\ref{sec:tts} 節、\ref{sec:release} 節）
+& 音素（アクセント句の中の位置を含む 5 つのトークン）と話者（ベクトル、または声を表す 2 つの数）
+$\rightarrow$ 各音素の長さと、100\,Hz の 16 チャネルと声の高さ（公開用のモデルは、2 つの声で値の違う
+喉頭の上の狭めも書く）
+& 音素の列にブロック 4 つ $\rightarrow$ 長さの予測器（カーネル 3 の畳み込み 2 層、線形層）
+$\rightarrow$ 各音素の状態をその長さのフレーム数だけ並べ、音素の中の位置を加える $\rightarrow$
+フレームの列にブロック 6 つ $\rightarrow$ 線形層。ブロック: 自己注意（4 ヘッド、回転位置埋め込み）、
+続いてカーネル 5 の畳み込み（1,024）とカーネル 1。どちらも層正規化のあと。幅 256。ポーズの判定:
+句の境界の両側の状態に 2 層（10 万）
+& 18.9〜19.0\\
+\addlinespace[2pt]
+対照実験のモデル（\ref{sec:control} 節）
+& 音声合成モデルと同じ $\rightarrow$ 音素の長さ、声の高さと、メルスペクトログラム（100 帯域）、
+EnCodec の潜在表現（128 次元）、Mimi の潜在表現（512 次元）のいずれか
+& 音声合成モデルに FastSpeech\,2 のピッチ予測器を足したもの（カーネル 3 の畳み込み 2 層、線形層。
+声の高さは埋め込んでフレームに足す）
+& 19.4〜19.5\\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \textbf{ネットワーク。}エンコーダは、自己教師あり学習の音声モデル（各層の学習された混合。後半の
 エンコーダでは上位 6 層も学習する）を通して録音を聞く。加えて、フレームごとの素朴な特徴を 3 つ
 受け取る。ピッチ抽出器~\cite{praat} がそのフレームを有声としたか、話者の中央値に対する声の高さ、
-音量である。双方向 LSTM 2 層（幅 256）が、動く 16 チャネルを 100\,Hz で書く。声の高さは学習しない。
+音量である。双方向 LSTM 2 層（幅 256）が、動く 16 チャネルを 100\,Hz で書く（本稿で学習した
+ネットワークの層の構成と大きさは、表~\ref{tab:models} にまとめた）。声の高さは学習しない。
 高さのチャネルは抽出器の曲線そのものである。3 秒の文の符号化は約 0.08 秒である。
 
 \textbf{学習の手がかりは 3 つある}（図~\ref{fig:system}、表~\ref{tab:english}）。
@@ -360,7 +420,7 @@ CHIMERA は、動く壁が押しのけた空気を声道に流す。そのため
 モデルは FastSpeech\,2~\cite{fastspeech2} と同じ形である。音素の列に自己注意のブロックを 4 つ、
 音素ごとの長さの予測器、そしてフレームの列にブロックを 6 つ置き、制御列を書く。書くのは 16 チャネルと
 声の高さである（エンコーダでは抽出器から取っていた高さも、ここでは書く。幅 256、1,880 万
-パラメータ）。学習用の音素の長さは、録音と音素列だけから学習したアライメント~\cite{ota} で決める。
+パラメータ。表~\ref{tab:models}）。学習用の音素の長さは、録音と音素列だけから学習したアライメント~\cite{ota} で決める。
 外部のアライナは使わない。
 
 \textbf{データと誤差。}手本は、Hi-Fi-CAPTAIN の日本語男性話者の 18,655 文（24 時間）にエンコーダ I が
@@ -898,7 +958,7 @@ CHIMERA を公開している Jameson Hodge 氏、および TSP speech database�
 wav2vec\,2.0、mHuBERT-147、Whisper、NISQA、Open JTalk の作者の方々に感謝する。
 
 \begin{thebibliography}{99}\footnotesize
-\setlength{\itemsep}{0pt}
+\setlength{\itemsep}{0pt}\setlength{\parskip}{1.5pt plus 1pt}
 \bibitem{encodec} A.~Défossez, J.~Copet, G.~Synnaeve, Y.~Adi. High fidelity neural audio
 compression. \emph{TMLR}, 2023.
 \bibitem{moshi} A.~Défossez et al. Moshi: a speech-text foundation model for real-time dialogue.

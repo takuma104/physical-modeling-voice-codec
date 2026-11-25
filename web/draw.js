@@ -62,11 +62,41 @@ export class Body {
 
 // The part of the head that is drawn (cm, the glottis near the bottom): the same for every body, so that a smaller one looks smaller.
 const BOX = { x0: -2.9, x1: 9.5, y0: -0.75, y1: 12.05 };
+// The back wall of the throat where it goes on up behind the soft palate and turns forward into
+// the nose's roof (cm in the adult male; CHIMERA's fixed landmarks, `HumanVocalTract::new`).
+// The engine's outer wall leaves it for the soft palate's tip, where its airway's sections end.
+const BACK = [[-1.38, 7.5], [-1.33, 8.9], [-1.05, 10.1], [-0.45, 10.9], [0.4, 11.3], [1.6, 11.32]];
+// how thick the bone of the hard palate is drawn, and how high the hard palate's back end stands (cm in the adult male)
+const BONE = 0.36, PALATE_END = 9.75;
+
+// A smooth line through points: a cubic through each, by how far along the points it is.
+function through(p, per = 6) {
+  const t = [0];
+  for (let i = 1; i < p.length; i++) t.push(t[i - 1] + Math.hypot(p[i].x - p[i - 1].x, p[i].y - p[i - 1].y));
+  const slope = (i, c) => {
+    const a = Math.max(0, i - 1), b = Math.min(p.length - 1, i + 1);
+    return (p[b][c] - p[a][c]) / Math.max(1e-9, t[b] - t[a]);
+  };
+  const out = [];
+  for (let i = 0; i + 1 < p.length; i++) {
+    const h = t[i + 1] - t[i];
+    for (let j = 0; j < per; j++) {
+      const u = j / per, u2 = u * u, u3 = u2 * u;
+      const at = (c) => (2 * u3 - 3 * u2 + 1) * p[i][c] + (u3 - 2 * u2 + u) * h * slope(i, c) + (-2 * u3 + 3 * u2) * p[i + 1][c] + (u3 - u2) * h * slope(i + 1, c);
+      out.push({ x: at("x"), y: at("y") });
+    }
+  }
+  out.push(p[p.length - 1]);
+  return out;
+}
 
 // The midsagittal section, facing right, as a textbook draws it: flesh, and the air's way
 // through it. The walls, the tongue, the soft palate, the teeth and the lips are the engine's
-// (what it computes its tube from); the skin of the face is only a frame for them, hung on
-// the lips. `live`: {voicing (0 to 1), sound (a phoneme, or "")}.
+// (what it computes its tube from). The nose is drawn as the report's figure draws it
+// (docs/report/make_figures.py): the throat's back wall goes on up into the nose's roof, and
+// the nose's floor is the soft palate and the bone of the hard one, so that the way into the
+// nose is seen to open and shut behind the soft palate. The skin of the face is only a frame,
+// hung on the lips. `live`: {voicing (0 to 1), sound (a phoneme, or "")}.
 export function drawTract(canvas, f, live) {
   const { g, w, h } = fit(canvas);
   g.clearRect(0, 0, w, h);
@@ -80,8 +110,8 @@ export function drawTract(canvas, f, live) {
     pts.forEach((p, i) => to(p, i === 0));
     if (close) g.closePath();
   };
-  const ink = css("--ink"), soft = css("--soft");
-  const k = f.tongueRadius / 2.25;   // the body's size beside the adult male's
+  const ink = css("--ink");
+  const k = f.tongueRadius / 2.25;   // the body's size beside the adult male's, for the face
   const gl = f.glottis;
   const far = { left: BOX.x0 - 1, bottom: BOX.y0 - 1, top: BOX.y1 + 1 };
   g.save();
@@ -91,33 +121,58 @@ export function drawTract(canvas, f, live) {
   g.lineJoin = "round";
   g.lineCap = "round";
 
-  // the air below the folds, and above them between the two walls
+  // The engine's outer wall in its parts: the back of the throat up to the height of the soft
+  // palate's tip, the soft palate's under side (tip to root), the hard palate, and the gum, the
+  // incisors and the upper lip. Its soft palate is the upper side (root to tip), then the under side.
+  const outer = f.outer.filter((p) => p.y > gl.y);
+  const half = f.velum.length / 2;
+  const tip = f.velum[half];
+  const at = outer.reduce((best, p, i) => (Math.hypot(p.x - tip.x, p.y - tip.y) < Math.hypot(outer[best].x - tip.x, outer[best].y - tip.y) ? i : best), 0);
+  const throat = outer.slice(0, at);
+  const size = f.nasalCavity[0].y / PALATE_END;   // the body's size, exactly: the nose's roof starts at the hard palate's back end
+  let front = at + half - 1;
+  while (front + 1 < outer.length && outer[front + 1].y > 8.5 * size) front++;
+  const hard = outer.slice(at + half - 1, front + 1);
+  const bone = hard.map((p) => ({ x: p.x, y: p.y + BONE * size }));
+  const last = throat[throat.length - 1];
+  const roof = f.nasalCavity.filter((p) => p.x > 2.9 * size);
+  const ceiling = through([last, ...BACK.map(([x, y]) => ({ x: x * size, y: y * size })).filter((p) => p.y > last.y + 0.2 * size), ...roof]);
+  const back = [{ x: gl.x - 0.62 * k, y: far.bottom }, { x: gl.x - 0.62 * k, y: gl.y }, ...throat, ...ceiling.slice(1)];
+
+  // the air: below the folds, above them between the two walls, and in the nose
   g.fillStyle = css("--air");
   g.fillRect(X(gl.x - 0.62 * k), Y(gl.y), s * 1.3 * k, s * (gl.y - far.bottom));
-  const grid = f.grid.filter((c) => Number.isFinite(c.outer.x) && Number.isFinite(c.inner.x));
-  const outer = f.outer.filter((p) => p.y > gl.y);
   path([{ x: gl.x - 0.62 * k, y: gl.y }, ...outer, ...[...f.inner].reverse(), { x: gl.x + 0.68 * k, y: gl.y }], true);
   g.fill();
+  path([...ceiling, ...[...bone].reverse(), ...f.velum.slice(0, half + 1)], true);
+  g.fill();
+  // the soft palate; shut, its tip is pressed into the back wall, and the flesh drawn next covers what went in
+  g.strokeStyle = ink;
+  g.lineWidth = 2;
+  path(f.velum, true);
+  g.fillStyle = css("--tongue");
+  g.fill();
+  g.stroke();
 
-  // the flesh behind and above the way: the back of the throat, the palate, the nose and the upper lip
+  // the flesh behind the throat and over the nose, and in front of the nose down to the upper lip
   const up = f.upperLip[f.upperLip.length - 1], low = f.lowerLip[f.lowerLip.length - 1];
-  g.beginPath();
-  to({ x: gl.x - 0.62 * k, y: far.bottom }, true);
-  to({ x: gl.x - 0.62 * k, y: gl.y });
-  outer.forEach((p) => to(p));
-  to(up);
-  g.quadraticCurveTo(X(up.x + 0.15 * k), Y(up.y + 0.45 * k), X(up.x + 0.95 * k), Y(up.y + 0.5 * k));
-  g.quadraticCurveTo(X(up.x + 2.35 * k), Y(up.y + 0.75 * k), X(up.x + 2.0 * k), Y(up.y + 1.55 * k));
-  g.quadraticCurveTo(X(up.x + 1.5 * k), Y(up.y + 2.6 * k), X(up.x + 1.15 * k), Y(far.top));
+  const face = () => {
+    g.quadraticCurveTo(X(up.x + 0.15 * k), Y(up.y + 0.45 * k), X(up.x + 0.95 * k), Y(up.y + 0.5 * k));
+    g.quadraticCurveTo(X(up.x + 2.35 * k), Y(up.y + 0.75 * k), X(up.x + 2.0 * k), Y(up.y + 1.55 * k));
+    g.quadraticCurveTo(X(up.x + 1.5 * k), Y(up.y + 2.6 * k), X(up.x + 1.15 * k), Y(far.top));
+  };
+  path([...back, bone[bone.length - 1], ...outer.slice(front), up]);
+  face();
   to({ x: far.left, y: far.top });
   to({ x: far.left, y: far.bottom });
   g.closePath();
   g.fillStyle = css("--flesh");
   g.fill();
-  g.strokeStyle = ink;
   g.lineWidth = 1.5;
+  path([up]);
+  face();
   g.stroke();
-  // the flesh below and in front of it: the floor of the mouth, the chin and the neck
+  // the flesh below and in front of the way: the floor of the mouth, the chin and the neck
   g.beginPath();
   to({ x: gl.x + 0.68 * k, y: far.bottom }, true);
   to({ x: gl.x + 0.68 * k, y: gl.y });
@@ -131,37 +186,25 @@ export function drawTract(canvas, f, live) {
   g.fill();
   g.stroke();
 
-  // the nose's hollow, which the soft palate opens and shuts
-  if (f.nasalCavity.length > 2) {
-    path(f.nasalCavity, true);
-    g.fillStyle = css(f.velumPort > 0.02 ? "--air" : "--hollow");
-    g.fill();
-    g.lineWidth = 1;
-    g.strokeStyle = soft;
-    g.stroke();
-  }
   // the tongue
   path(f.tongue, true);
   g.fillStyle = css("--tongue");
   g.fill();
-  // the walls of the way
+  // the walls of the way: the throat's back and the nose's roof, the roof of the mouth, the floor
   g.strokeStyle = ink;
   g.lineWidth = 2;
-  path(outer);
+  path(back);
+  g.stroke();
+  path(outer.slice(front));
   g.stroke();
   path(f.inner);
   g.stroke();
   path(f.epiglottis);
   g.stroke();
-  // the soft palate
-  path(f.velum, true);
-  g.fillStyle = css("--tongue");
-  g.fill();
-  g.stroke();
-  // the teeth and the lips
+  // the bone of the hard palate, the teeth and the lips
   g.lineWidth = 1.25;
-  for (const teeth of [f.upperTeeth, f.lowerTeeth]) {
-    path(teeth, true);
+  for (const white of [[...hard, ...[...bone].reverse()], f.upperTeeth.slice(1, 4), f.lowerTeeth]) {
+    path(white, true);
     g.fillStyle = css("--tooth");
     g.fill();
     g.stroke();
@@ -175,7 +218,7 @@ export function drawTract(canvas, f, live) {
   }
   // the vocal folds: two wedges across the way, bright when they vibrate
   const voicing = Math.max(0, Math.min(1, live?.voicing ?? 0));
-  g.fillStyle = voicing > 0.3 ? css("--mark") : soft;
+  g.fillStyle = voicing > 0.3 ? css("--mark") : css("--soft");
   for (const side of [-1, 1]) {
     const wall = gl.x + (side < 0 ? -0.62 : 0.68) * k;
     path([{ x: wall, y: gl.y - 0.16 * k }, { x: gl.x + side * 0.06 * k, y: gl.y + 0.1 * k }, { x: wall, y: gl.y + 0.36 * k }], true);
