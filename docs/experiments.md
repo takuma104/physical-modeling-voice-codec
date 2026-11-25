@@ -482,6 +482,19 @@ uv run python -m pmvc.gap out/jvs --variant encv2 --out /tmp/gap_low --name gap_
 #   floor). --opinions also asks SQUIM and UTMOSv2
 uv run python -m pmvc.bench out/jvs --variants encv2,encit --enrol out/jvsall --judged results_rel --opinions --name bench_v1
 uv run python -m pmvc.bench out/transplant --variants encv2 --judged results_rel --opinions --name bench_v1      # English (TSP): no speaker identification and no envelope terms
+#   Does the engine come nearer a recording's envelope when asked (phase 3-1 of the plan)? Each speaker's settings fitted to the
+#   distance between envelopes alone, with no verification model
+S8=jvs093,jvs094,jvs095,jvs096,jvs097,jvs098,jvs099,jvs100
+uv run python -m pmvc.speaker fit out/jvsall --name speakers_env --start out/jvsall/speakers.json --evals 200 --by envelope --speakers $S8 \
+  --only scale,pharynx,tongueRadius,lipWidth,openQuotient,brightness,tension,closureSharpness,epilarynx,larynxShift,velumShift,rootShift
+uv run python -m pmvc.encoder revoice out/jvs --of enci --out encie --split test --voice out/fit/voice-F2.json --no-wall-air --closed-area 1e-6 --speakers out/jvsall/speakers_env.json
+uv run python -m pmvc.bench out/jvs --variants enci,encit,encie --enrol out/jvsall --name bench_static
+#   The tracks searched one utterance at a time (the five shortest test sentences of the 8 speakers). The objective is the listener's
+#   distance + a weight x the envelope distance. Weight 3.0 was run on the first two sentences only (16 recordings)
+IDS=$(for k in 091 099 098 088 080; do for s in ${S8//,/ }; do printf "%s_%s," $s $k; done; done | sed 's/,$//')
+uv run python -m pmvc.copysynth out/jvs --ids $IDS --base encit --out reach_t --nll-weight 0 --shape-weight 0.3 --iters 50 \
+  --listener utter-project/mHuBERT-147 --layer 8 --scale out/transplant/warp --also epilarynx=0.15
+uv run python -m pmvc.bench out/jvs --variants encit,reach_t,reach_s --enrol out/jvsall --name bench_reach --per 5
 #   The fourth listening page (listening_v2.html): the hybrids, and renders through the recording condition
 uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```

@@ -480,6 +480,17 @@ uv run python -m pmvc.gap out/jvs --variant encv2 --out /tmp/gap_low --name gap_
 #   (pmvc.room: ハイパス、短い残響、ノイズフロア)を通したあとの 2 通り。--opinions で SQUIM と UTMOSv2 も
 uv run python -m pmvc.bench out/jvs --variants encv2,encit --enrol out/jvsall --judged results_rel --opinions --name bench_v1
 uv run python -m pmvc.bench out/transplant --variants encv2 --judged results_rel --opinions --name bench_v1      # 英語(TSP)。話者の照合と包絡の項は出ない
+#   エンジンは、頼まれれば録音の包絡に寄れるか(計画の Phase 3-1)。話者ごとの設定を、照合モデルを使わず包絡の距離だけで当てはめる
+S8=jvs093,jvs094,jvs095,jvs096,jvs097,jvs098,jvs099,jvs100
+uv run python -m pmvc.speaker fit out/jvsall --name speakers_env --start out/jvsall/speakers.json --evals 200 --by envelope --speakers $S8 \
+  --only scale,pharynx,tongueRadius,lipWidth,openQuotient,brightness,tension,closureSharpness,epilarynx,larynxShift,velumShift,rootShift
+uv run python -m pmvc.encoder revoice out/jvs --of enci --out encie --split test --voice out/fit/voice-F2.json --no-wall-air --closed-area 1e-6 --speakers out/jvsall/speakers_env.json
+uv run python -m pmvc.bench out/jvs --variants enci,encit,encie --enrol out/jvsall --name bench_static
+#   制御列を発話ごとに探索する(テストの短い 5 文 × 8 話者)。目的は、リスナー距離 + 重み × 包絡の距離。重み 3.0 は最初の 2 文(16 録音)だけ
+IDS=$(for k in 091 099 098 088 080; do for s in ${S8//,/ }; do printf "%s_%s," $s $k; done; done | sed 's/,$//')
+uv run python -m pmvc.copysynth out/jvs --ids $IDS --base encit --out reach_t --nll-weight 0 --shape-weight 0.3 --iters 50 \
+  --listener utter-project/mHuBERT-147 --layer 8 --scale out/transplant/warp --also epilarynx=0.15
+uv run python -m pmvc.bench out/jvs --variants encit,reach_t,reach_s --enrol out/jvsall --name bench_reach --per 5
 #   試聴ページの 4 枚目(listening_v2.html): 入れ替えた音と、録音条件を足した音
 uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```

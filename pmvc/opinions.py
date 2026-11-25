@@ -56,6 +56,8 @@ def utmos(wavs: list[Path], repeats: int = REPEATS) -> list[float]:
         with tempfile.TemporaryDirectory() as tmp:
             for i, p in enumerate(wavs):
                 (Path(tmp) / f"{i:06d}.wav").symlink_to(p.resolve())
-            rows = model.predict(input_dir=tmp, device="cpu", num_repetitions=repeats, num_workers=0, verbose=False)
+            # its spectrogram network is some ten times slower on a CPU
+            device = "mps" if torch.backends.mps.is_available() else "cuda:0" if torch.cuda.is_available() else "cpu"
+            rows = model.predict(input_dir=tmp, device=device, num_repetitions=repeats, num_workers=0, verbose=False)
     by = {Path(r["file_path"]).stem: float(r["predicted_mos"]) for r in rows}
     return [by[f"{i:06d}"] for i in range(len(wavs))]

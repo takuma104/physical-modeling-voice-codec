@@ -29,6 +29,7 @@ numbers to go with the speaker's tracks:
 
 usage: python -m pmvc.speaker fit [dir] [--tracks enci] [--split train] [--n 6] [--of 20]
                                   [--only female,child] [--start FILE] [--evals 90]
+                                  [--by verifier|envelope]
                                   [--name speakers] [--seconds 4] [--at-once 3] [--speakers a,b]
 
 For each speaker of <dir>: the first `--seconds` of `--n` of the split's recordings (spread
@@ -46,6 +47,11 @@ the body is fitted either within the family (female, child) or by its four numbe
   speakers.<name>.settings   the fitted settings
   speakers.<name>.fit        the cosine and the listener's distance before and after, on the
                              fitted recordings
+`--by envelope` asks no verification model: the settings kept are those under which the
+renders' spectral envelopes are nearest their own recordings' (`pmvc.audio.mel_distance`, in
+units of 10 dB, in the cosine's place; `like` is then that distance, negative). It is the
+test of how near these settings can bring the voice to a speaker's envelope when that is all
+they are asked for; what a verifier makes of the result is then a judgement it had no part in.
 `pmvc.encoder revoice --speakers <file>` renders a variant's tracks under them; whether the
 voice is then the speaker's is for `pmvc.whose` to say on recordings that were not fitted, and
 for the ear.
@@ -86,7 +92,7 @@ from numpy.typing import NDArray
 from scipy.optimize import minimize
 from scipy.signal import stft
 
-from .audio import FRAME_RATE, load
+from .audio import FRAME_RATE, load, log_mel, mel_distance
 from .encoder import ids_in, pick_device, render_track
 from .listener import FEATURE_RATE, Listener, distance, to16k
 from .paths import ROOT
@@ -233,6 +239,7 @@ def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judge
         t["frames"] = np.array(t["frames"])[: round((t["shift"] + a.seconds) * t["rate"])]
     spans = [(int(m["span"][0] * FEATURE_RATE), min(int(m["span"][1] * FEATURE_RATE), int(a.seconds * FEATURE_RATE))) for m in metas]
     recorded = [judges.heard(load(d / "real" / f"{uid}.wav", SR)[0]) for uid in fitted]
+    mels = [log_mel(load(d / "real" / f"{uid}.wav", SR)[0]) for uid in fitted] if a.by == "envelope" else []
     start = own(tracks[0])
     if before_this is not None:
         # an earlier fit's settings; the body's four numbers are its family's unless it had them
@@ -256,9 +263,9 @@ def fit_speaker(d: Path, name: str, ids: list[str], a: argparse.Namespace, judge
         """How like the speaker the renders are under these settings, and how far from their recordings."""
         audio = list(pool.map(lambda t: render_track(settled(t, s)), tracks))
         like, far = [], []
-        for t, x, (b0, b1), rec in zip(tracks, audio, spans, recorded):
+        for i, (t, x, (b0, b1), rec) in enumerate(zip(tracks, audio, spans, recorded)):
             y = to16k(np.asarray(x[round(t["shift"] * 48000) :], dtype=np.float32))
-            like.append(float(judges.vector(y) @ target))
+            like.append(-mel_distance(mels[i], log_mel(y.astype(np.float64)), 2 * b0, 2 * b1) / 10.0 if mels else float(judges.vector(y) @ target))
             far.append(float(distance(rec[b0:b1], judges.heard(y)[b0:b1]).mean()))
         return float(np.mean(like)), float(np.mean(far))
 
@@ -380,6 +387,7 @@ def main() -> None:
     c.add_argument("--name", type=str, default="speakers_closure")
     f.add_argument("--only", type=str, default="", help="fit these settings, comma-separated (without it: female, child, openQuotient, brightness, tension)")
     f.add_argument("--evals", type=int, default=90)
+    f.add_argument("--by", choices=["verifier", "envelope"], default="verifier", help="what says a render is like the speaker: a verification model, or the distance between spectral envelopes")
     f.add_argument("--name", type=str, default="speakers")
     f.add_argument("--at-once", type=int, default=3, help="speakers fitted at a time")
     a = ap.parse_args()

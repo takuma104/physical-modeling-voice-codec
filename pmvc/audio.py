@@ -93,6 +93,15 @@ def log_mel(x: Array, sr: int = MEL_SR, n_mels: int = 40, floor_db: float = 50.0
     return 0.5 * np.log(mel + mel.max() * 10.0 ** (-floor_db / 10.0) + 1e-20)
 
 
+def mel_distance(a: Array, b: Array, first: int = 0, last: int | None = None) -> float:
+    """The mean distance (dB) between two log mel spectrograms (`log_mel`), frame against
+    frame from `first` up to `last`, with the level the two differ by over those frames taken
+    out: how far apart two clips' envelopes are, sound by sound, whatever their gains."""
+    n = min(len(a), len(b), len(a) if last is None else last)
+    diff = a[first:n] - b[first:n]
+    return float(np.abs(diff - diff.mean()).mean()) * 20.0 / np.log(10.0)
+
+
 def cepstra(mel: Array, n: int = 13) -> Array:
     """Mel cepstra c1..c(n-1) of a log mel spectrogram (c0, the level, is left out), scaled so
     that the log spectrum is c0 + Σ c_m·cos(...), the convention mel-cepstral distortion uses."""

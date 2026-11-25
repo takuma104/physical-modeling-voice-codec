@@ -62,7 +62,7 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import resample_poly
 
-from .audio import FRAME_RATE, Array, log_mel
+from .audio import FRAME_RATE, Array, log_mel, mel_distance
 from .calibrate import NLL_WEIGHT, Item, load_items, make_voice
 from .listener import Listener, distance
 from .paths import ROOT
@@ -130,11 +130,7 @@ class Search:
         """How far a render's envelope (16 kHz, on the recording's clock) is from the
         recording's over its speech, in units of 10 dB."""
         assert self.item.mel is not None
-        a, b = 2 * self.item.span[0], 2 * self.item.span[1]
-        mine = log_mel(clip.astype(np.float64))
-        n = min(len(mine), len(self.item.mel), b)
-        diff = self.item.mel[a:n] - mine[a:n]
-        return float(np.abs(diff - diff.mean()).mean()) * 2.0 / np.log(10.0)
+        return mel_distance(self.item.mel, log_mel(clip.astype(np.float64)), 2 * self.item.span[0], 2 * self.item.span[1]) / 10.0
 
     def objectives(self, clips: list[Array]) -> list[tuple[float, float, float, float]]:
         """The objective, feature distance, CTC loss and envelope distance of whole-utterance renders (16 kHz)."""
