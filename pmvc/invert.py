@@ -40,7 +40,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .audio import FRAME_RATE
-from .bench import SEXES, STEP, TOP, clip, shape, vowel_frames, vowel_rows
+from .bench import CURVE, SEXES, STEP, TOP, clip, shape, vowel_frames, vowel_rows
 from .calibrate import make_voice
 from .encoder import LEAD, ids_in
 from .paths import ROOT
@@ -207,7 +207,12 @@ def main() -> None:
                 lack = shaped(lack, True)
             cell[k] = shape(lack, speakers, vowels)
             s = cell[k]
-            print(f"  {sex} {k:8s} {s['total']:5.1f}  ({s['common']:.1f}, {s['speaker']:.1f}, {s['vowel']:.1f}, {s['rest']:.1f})   curve " + " ".join(f"{x:+5.1f}" for x in s["curve"]))
+            # where the error is: its rms in each band of the curve, all of it and what changes from frame to frame
+            level = shaped(lack, False)
+            moving = level - level.mean(axis=0)
+            for name, part in (("byBand", level), ("movingByBand", moving)):
+                s[name] = [float(np.sqrt((part[:, (CENTRES >= lo) & (CENTRES < hi)] ** 2).mean())) for lo, hi in CURVE]
+            print(f"  {sex} {k:8s} {s['total']:5.1f}  ({s['common']:.1f}, {s['speaker']:.1f}, {s['vowel']:.1f}, {s['rest']:.1f})   curve " + " ".join(f"{x:+5.1f}" for x in s["curve"]) + "   rms by band " + " ".join(f"{x:4.1f}" for x in s["byBand"]))
         moved = np.concatenate([(f[2] - c.poses) / (HIGH - LOW) for c, f in mine])
         cell["moved"] = {k: [float(moved[:, i].mean()), float(np.abs(moved[:, i]).mean())] for i, k in enumerate(NAMES) if free[i]}
         print("    moved (mean, mean size; shares of the range): " + "  ".join(f"{k} {x[0]:+.2f} {x[1]:.2f}" for k, x in cell["moved"].items()))

@@ -500,7 +500,23 @@ uv run python -m pmvc.bench out/jvs --variants encit,reach_t,reach_s --enrol out
 #   resonances, before anything is rendered)
 uv run python -m pmvc.tract out/jvs --variant encv2
 uv run python -m pmvc.tract out/jvs --variant encv2 --set epilarynx=1.0
-#   The fourth listening page (listening_v2.html): the hybrids, and renders through the recording condition
+#   How much of a recording's envelope must a render have? The envelope's error mended in steps: by averages only (a sex's, a
+#   speaker's, a phone's), then frame by frame slowly, then frame by frame. Each step's clips, envelope error and speaker identification
+uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --opinions
+#   Speakers to fit the tract's form on, none of them in the test: 12 women and 12 men, 4 recordings each (their names in a file,
+#   comma-separated). Their tracks and renders by the release encoder, and their alignments (added to out/jvs/aligned.json)
+uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name encv2 --out encv2 --ids $DEV $V --quiet-pauses
+uv run python -m pmvc.align write out/jvs --models out/jvsall/models --ids $DEV
+#   A form of the tract judged on renders: the tracks rendered again in the form, the vowels' envelope error measured. --try measures
+#   forms as given; --fit searches settings within bounds, one at a time. (form.layerLoss is the fork's loss that grows with frequency)
+uv run python -m pmvc.form out/jvs --per 3 --try form.layerLoss=1 --try form.layerLoss=2,glottis.closureSharpness=0.4
+uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --sex F --name form_fit_F \
+  --fit form.layerLoss=0:5,glottis.closureSharpness=0.05:1.0,larynx.length=0.7:1.8,set.epilarynx=0:1,form.fossaLength=1.2:3.2,form.fossaArea=0.2:2.0 \
+  --from form.layerLoss=0,glottis.closureSharpness=0.18,larynx.length=1.0,set.epilarynx=0,form.fossaLength=2.0,form.fossaArea=0.9
+#   Postures searched frame by frame against the transfer function (no render). Its predictor is rough near the tube's resonance
+#   and the fossa's zero, so what it reaches is an indication only
+uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
+#   The fourth listening page (listening_v2.html): the ladder's steps on cards, and the earlier tables
 uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
 ```
 

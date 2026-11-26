@@ -64,6 +64,8 @@ pub struct Player {
     speed: f64,
     /// the piriform fossa's length (cm) and area (cm²) as set, for an adult man's body
     fossa: (f64, f64),
+    /// the walls' second layer as set: its loss (1000 over its resistance) and its corner (Hz)
+    layer: (f64, f64),
 }
 
 impl Player {
@@ -91,7 +93,7 @@ impl Player {
         // the fossa as the engine builds it
         let (k, t) = (body.scale, v.airway.fossa);
         let fossa = (v.airway.net.tube_length[t.index] / k, v.airway.net.area[t.node(0)] / (k * k));
-        Ok(Player { v, keys, lag, rate, speed, fossa })
+        Ok(Player { v, keys, lag, rate, speed, fossa, layer: (0.0, 8000.0) })
     }
 
     /// The voice clock (s).
@@ -394,7 +396,13 @@ impl Player {
     /// midsagittal outline stands for, α·d^β, in the pharynx, in the mouth and behind the teeth
     /// (the engine's: 2.0, 2.6 and 2.0, all to the power 1.4); `viscous`, what the viscous loss
     /// at the tubes' walls is multiplied by, and `viscousHz`, the frequency (Hz) it is computed
-    /// for (the engine's loss does not grow with frequency: 700).
+    /// for (the engine's loss does not grow with frequency: 700); `layerLoss` and `layerCorner`,
+    /// a second layer at the tubes' walls (the fork's: a resistance of 1000/`layerLoss`
+    /// dyn·s/cm³ per unit area against a stiffness, with no mass) whose loss grows with the
+    /// square of the frequency up to `layerCorner` (Hz), so that it widens the upper
+    /// resonances and leaves the lowest alone. At 1 and 8000 it adds about 70 Hz to the width
+    /// of a resonance at 3 kHz in a tube of 3 cm², 10 Hz at 1 kHz and 200 Hz at 6 kHz. The
+    /// engine has none (0).
     pub fn set_form(&mut self, patch: &str) -> Said<()> {
         let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
         let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
@@ -402,7 +410,7 @@ impl Player {
         let (k, t) = (a.body.scale, a.fossa);
         for (key, x) in obj {
             let x = x.as_f64().ok_or_else(|| bad(format!("{key}: a number is needed")))?;
-            if !(x > 0.0) {
+            if !(x > 0.0 || (key == "layerLoss" && x == 0.0)) {
                 return Err(bad(format!("{key}: a positive number is needed")));
             }
             let law = &mut a.tract.area_law;
@@ -418,9 +426,14 @@ impl Player {
                 "frontBeta" => law.front.1 = x,
                 "viscous" => a.net.viscous_scale = x,
                 "viscousHz" => a.net.viscous_omega = 2.0 * PI * x,
+                "layerLoss" => self.layer.0 = x,
+                "layerCorner" => self.layer.1 = x,
                 _ => return Err(bad(format!("unknown form parameter {key:?}"))),
             }
         }
+        // the layer's resistance, and the stiffness that puts its corner where it is asked for
+        a.net.layer_r = if self.layer.0 > 0.0 { 1000.0 / self.layer.0 } else { 0.0 };
+        a.net.layer_k = 2.0 * PI * self.layer.1 * a.net.layer_r;
         if obj.contains_key("fossaLength") || obj.contains_key("fossaArea") {
             a.net.set_tube_targets(t, &vec![self.fossa.1 * k * k; t.n], Some(self.fossa.0 * k), None);
         }
@@ -435,6 +448,7 @@ impl Player {
             "fossaLength": self.fossa.0, "fossaArea": self.fossa.1,
             "pharynxAlpha": law.pharynx.0, "pharynxBeta": law.pharynx.1, "oralAlpha": law.oral.0, "oralBeta": law.oral.1, "frontAlpha": law.front.0, "frontBeta": law.front.1,
             "viscous": a.net.viscous_scale, "viscousHz": a.net.viscous_omega / (2.0 * PI),
+            "layerLoss": self.layer.0, "layerCorner": self.layer.1,
         })
         .to_string()
     }

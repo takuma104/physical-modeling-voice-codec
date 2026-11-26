@@ -157,7 +157,8 @@ impl Voice {
 
     /// The tract's form where neither the body nor a posture sets it, as JSON: any of
     /// `fossaLength`, `fossaArea`, `pharynxAlpha`, `pharynxBeta`, `oralAlpha`, `oralBeta`,
-    /// `frontAlpha`, `frontBeta`, `viscous` and `viscousHz` (see `pmvc_voice::Player::set_form`).
+    /// `frontAlpha`, `frontBeta`, `viscous`, `viscousHz`, `layerLoss` and `layerCorner` (see
+    /// `pmvc_voice::Player::set_form`).
     fn set_form(&mut self, patch: &str) -> PyResult<()> {
         self.p.set_form(patch).map_err(bad)
     }

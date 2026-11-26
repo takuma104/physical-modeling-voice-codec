@@ -12,6 +12,13 @@ dependencies = ["numpy"]
 [tool.maturin]
 module-name = "pmvc_engine"
 
-# rebuild when the Rust sources change (uv otherwise only watches this file)
+# rebuild when the Rust sources change (uv otherwise only watches this file): this crate's, the
+# wrapper's it is made of, and the engine's (a fork from V2 on, which changes)
 [tool.uv]
-cache-keys = [{ file = "pyproject.toml" }, { file = "Cargo.toml" }, { file = "src/**/*.rs" }]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "src/**/*.rs" },
+    { file = "../pmvc-voice/src/**/*.rs" },
+    { file = "../../third-party/chimera-vocal-synth/crates/chimera/src/**/*.rs" },
+]

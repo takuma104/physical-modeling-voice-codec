@@ -653,12 +653,14 @@ class Decoder:
         track's body (or the share it was settled for before), of a fitted voice by the
         speaker's median pitch."""
         w = self.share(pitch, float(track.get("voice", track["body"].get("female", 0.0))))
-        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose", "voice")}, "source": dict(track["source"])}
+        track = {**{k: v for k, v in track.items() if k not in ("noise", "glottis", "airway", "nose", "larynx", "form", "voice")}, "source": dict(track["source"])}
         if self.family:
             track["body"] = self.of_family("body", w)
             track["source"].update(self.of_family("source", w))
             track["noise"] = list(self.of_family("noise", w).values())
             track.update({part: self.of_family(part, w) for part in ("glottis", "airway", "nose")})
+            # the tract's form (V2's voices): the tube above the glottis, the fossa, the walls' loss
+            track.update({part: self.of_family(part, w) for part in ("larynx", "form") if self.family["low"].get(part)})
             track["voice"] = round(w, 4)
             if "frames" in track and (self.held or self.family["low"].get("shift")):
                 track["frames"] = np.round(self.hold(np.array(track["frames"], dtype=np.float64), track["keys"], w, habits=True), 5).tolist()
