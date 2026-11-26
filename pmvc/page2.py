@@ -64,20 +64,23 @@ LABELS: dict[str, str] = {
     "form-c": "ⓒ 包絡だけに当てはめた形（6 つとも）",
     "shape": "ⓓ ⓐ + 話者の声道の形（制御は V1 のまま）",
     "reach-a": "ⓔ ⓐ のまま、制御を探索",
-    "reach-as": "ⓕ 話者の声道の形 + 制御を探索",
+    "reach-as": "ⓕ 話者の声道の形 + 制御を探索（前回）",
+    "voice-c": "ⓖ 全員に共通の声の設定（制御は V1 のまま）",
+    "voice-o": "ⓗ 話者ごとの声の設定（制御は V1 のまま）",
+    "reach-o": "ⓘ ⓗ + 母音の中だけ制御を探索",
 }
 # the forms of `--forms`' lines, in their order, and those heard on the cards
 FORMS: tuple[str, ...] = ("form-a", "form-b", "form-c")
 HEARD_FORMS: tuple[str, ...] = ("form-a",)
 # the steps of the ladder heard on the cards
-HEARD_STEPS: tuple[str, ...] = ("S", "S+envR", "own", "slow")
+HEARD_STEPS: tuple[str, ...] = ("S", "S+envR", "slow")
 # the searched renders (`pmvc.reach`'s and `pmvc.form --shapes`' variants), as `--reached` names them
-REACHED: tuple[str, ...] = ("shape", "reach-a", "reach-as")
+REACHED: tuple[str, ...] = ("shape", "reach-a", "reach-as", "voice-c", "voice-o", "reach-o")
 ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("基準", ("R", "S", "S+envR")),
-    ("フレームごとの補正を 0.1 秒の移動平均でならしたもの（前回、上限にかなり近いと確認）", ("slow",)),
-    ("前回までに聞いた、時間で変わらない補正と形", ("own", "form-a")),
-    ("今回: 話者ごとの声道の形と、制御の探索（エンジンをそのまま鳴らした音。補正は掛けていません）", REACHED),
+    ("フレームごとの補正を 0.1 秒の移動平均でならしたもの（上限にかなり近いと確認済み）", ("slow",)),
+    ("前回までに聞いたもの", ("form-a", "shape", "reach-a", "reach-as")),
+    ("今回（エンジンをそのまま鳴らした音。補正は掛けていません）", ("voice-c", "voice-o", "reach-o")),
 )
 # V1's values of the settings a form is fitted in (`pmvc.form`'s `--from`)
 START: dict[str, str] = {
@@ -95,20 +98,25 @@ STEPS: tuple[tuple[str, str, str], ...] = (
     ("S+envR", "フレームごとに合わせる", "制御列が録音をフレームごとに追う（上限）"),
 )
 
-NOW_TEXT = """<p>前回の試聴で、平均だけで作った補正（①〜④）と形だけの変更（ⓐ）は V1 とほとんど変わらず、フレームごとの補正をゆっくり掛けた音（⑤）だけが上限にかなり近い、と確認できました。つまり、合成音の包絡が録音を<b>時間に沿って</b>追わないと、近づいて聞こえません。</p>
-<p>そこで今回は、補正を掛けるのをやめて、エンジンそのものがどこまで録音の包絡を追えるかを調べました。制御列（舌・顎・唇などの 14 チャネル）を 50 ms きざみで動かし、実際に鳴らしながら録音の包絡に寄せる探索です（<code>pmvc.reach</code>）。あわせて、エンジン（フォーク）に「話者ごとの声道の形」を足しました。声門から唇までの 12 か所で、声道の断面積を何倍にするかを話者ごとに決める設定です（時間では変わりません。既定では無効で、V1 の音は 1 サンプルも変わりません）。</p>
-<p>カードの最後の段が今回の音です。どれも、エンジンをそのまま鳴らした音です。</p>
+NOW_TEXT = """<p>前回（3 回め）の試聴の結果は次のとおりでした。</p>
 <ul>
-<li><b>ⓓ</b>: ⓐ の形に、その話者の声道の形を足したもの。制御列は V1 のまま（エンコーダの出力そのまま）。</li>
-<li><b>ⓔ</b>: ⓐ の形のまま、制御列だけをその文の録音に合わせて探索したもの。</li>
-<li><b>ⓕ</b>: 話者の声道の形と、制御列の探索の両方。声道の形は、その話者の 3 文に共通の 1 組です。</li>
+<li>ⓕ（話者の声道の形 + 制御の探索）は V1 や ⓐ より録音に近く、4 文のうち 3 文は V1 と上限の中間あたり。jvs097_080 は上限に近いが、方向がほかと違い、高域が過剰かもしれない。</li>
+<li>ⓕ の副作用: jvs093_099 の「なく」「だった」が舌足らず。jvs097_080 の「31年」の後ろで椅子が軋むような音、「版」で唇が震えるような音。ほかはほぼ無し。</li>
+<li>ⓓ（形だけ）・ⓔ（制御だけ）・ⓕ の差はごく小さく、ⓔ と ⓕ はほぼ同じ、ⓓ が少し悪い。</li>
+</ul>
+<p>つまり、エンジンの共鳴そのものを動かす変更は聞こえます（同じくらいの数字でも、補正カーブを掛けるだけの ④ はほとんど聞こえませんでした）。そこで今回は、副作用の原因を直し、学習をやり直さずに使える部分を切り出しました。</p>
+<ul>
+<li><b>副作用の原因。</b>探索が、閉鎖のある子音（「年版」の ん・ば など）で唇や舌の閉じをわずかに開けて細いすき間を作っていました（軋みと唇の震え）。また、母音の間じゅう舌先を持ち上げていました（舌足らず）。探索を「母音の中だけ動かす」「口の中のいちばん狭い所を元より細くしない」「舌先は動かさない」ように直しました。</li>
+<li><b>声の設定（時間で変わらない部分）を、制御列はそのままで当てはめる方式にしました。</b>声道の形（12 か所）に、声門の閉じ方、開放率、喉頭の上の管の長さを加えた 15 個です。まず、テストに入っていない 24 話者で男女それぞれに共通の設定を決め（ⓖ）、その上に話者ごとの設定を、その話者の 3 文から決めます（ⓗ）。どちらもエンコーダの出力（V1 の制御列）をそのまま使うので、学習のやり直しは要りません。高域が過剰だった話者には、声源の明るさを話者ごとに合わせることで対処しています。</li>
+<li><b>ⓘ</b> は、ⓗ の声で、母音の中だけ制御列を録音に合わせて探索したものです。これを使うには、エンコーダの学習をやり直す必要があります。</li>
 </ul>
 <p>聞いていただきたいのは次の点です。</p>
 <ul>
-<li>ⓕ は、V1 や ⓐ より録音に近づいて聞こえますか。⑤（男女 1 人ずつにあります）や上限と比べて、どのくらいの位置ですか。</li>
-<li>ⓕ に副作用はありますか（ざらつき、こもり、ブザーのような音、発音の崩れ）。包絡のずれだけを見て探索しているので、前回の ⓒ のような抜け道に入っていないかを耳で確かめたいです。</li>
-<li>ⓓ（形だけ）と ⓕ の差、ⓔ（制御だけ）と ⓕ の差は聞こえますか。ⓓ が良ければ話者ごとの設定だけで済み、ⓕ まで要るならエンコーダの学習をやり直すことになります。</li>
-</ul>"""
+<li>ⓗ は V1 や ⓐ より録音に近いですか。前回の ⓕ と比べてどうですか。jvs097_080 の「方向が違う・高域が過剰」な感じは、ⓗ や ⓘ で直っていますか。</li>
+<li>ⓘ では、前回の副作用（「なく」「だった」の舌足らず、「31年」の軋み、「版」の唇の震え）は消えていますか。新しい副作用はありますか。</li>
+<li>ⓗ と ⓘ の差は聞こえますか（聞こえなければ、制御列の学習のやり直しは後回しにできます）。ⓖ（全員に共通）と ⓗ（話者ごと）の差は聞こえますか。</li>
+</ul>
+<p>話者ごとの設定（ⓗ）を決めるのに使った 3 文のうち、カードの文と重なるのは jvs093_099 だけです。ほかの 3 枚は、設定を決めるのに使っていない文です。</p>"""
 LADDER_TEXT = """<p>前回（2 回め）の試聴で使った表です。「合成音 + 録音の包絡」（上限）は包絡のずれを一度に全部直しているので、どこまで直せば近づいて聞こえるのかを段階に分けました。①〜④は補正カーブを<b>平均だけ</b>で作ったもの（その発話自身のフレームは使わず、同性のほかの話者や同じ話者のほかの発話の平均）、⑤はフレームごとの補正を 0.1 秒の移動平均でならしたものです。</p>
 <p>試聴の結果は次のとおりでした。</p>
 <ul>
@@ -204,31 +212,37 @@ def cards(d: Path, variant: str, ladder: Path, forms: list[str], reached: dict[s
 
 def cards_table(d: Path, errors: dict[str, dict[str, list[tuple[float, float]]]]) -> str:
     """The envelope's error of the cards' own clips, a row a kind; and under it what the
-    speakers' shapes do to the other test sentences (`pmvc.form --shapes`' form_shape.json)."""
-    order = ("S", "own", "form-a", "shape", "reach-a", "reach-as", "slow", "S+envR")
+    voices do to all test sentences with V1's tracks (`pmvc.bench`'s bench_voice.json)."""
+    order = ("S", "form-a", "shape", "reach-a", "reach-as", "voice-c", "voice-o", "reach-o", "slow", "S+envR")
     body = "".join(
         f'<tr><th>{esc(LABELS[k])}</th>' + "".join(f'<td class="num">{pair({s: float(np.mean([e[i] for e in errors[k][s]])) for s in SEXES}, "{:.1f}")}</td>' for i in (0, 1)) + "</tr>"
         for k in order if k in errors and all(s in errors[k] for s in SEXES)
     )  # fmt: skip
     out = f"""<div class="scroll"><table>
-<caption>カードの 4 文（女性 2 文 / 男性 2 文）での、母音の包絡の録音とのずれ（dB、rms）。「重み付き」は各帯域を録音での大きさに応じて数えたもの、「重みなし」は 8 kHz までの全帯域を同じ重みで数えたもの。ⓕ の声道の形は、カードの文を含むその話者の 3 文に合わせてあります。</caption>
+<caption>カードの 4 文（女性 2 文 / 男性 2 文）での、母音の包絡の録音とのずれ（dB、rms）。「重み付き」は各帯域を録音での大きさに応じて数えたもの、「重みなし」は 8 kHz までの全帯域を同じ重みで数えたもの。</caption>
 <thead><tr><th>音</th><th>ずれ（重み付き）</th><th>ずれ（重みなし）</th></tr></thead><tbody>{body}</tbody></table></div>"""
-    p = d / "form_shape.json"
+    p = d / "bench_voice.json"
     if p.exists():
-        tries = json.loads(p.read_text())["tries"]
-        names = {"": "合成音（V1）"}
-        for k in tries:
-            if k:
-                names[k] = "ⓓ ⓐ + 話者の声道の形" if k.endswith("+shapes") else "ⓐ"
-        rows = "".join(
-            f'<tr><th>{esc(names[k])}</th>'
-            + "".join(f'<td class="num">{pair({s: m[s][key] for s in SEXES}, fmt)}</td>' for key, fmt in (("heard", "{:.1f}"), ("total", "{:.1f}"), ("quality", "{:.2f}"), ("natural", "{:.2f}"), ("own", "{:.3f}")) if all(key in m[s] for s in SEXES))
-            + "</tr>"
-            for k, m in tries.items()
-        )
+        b = json.loads(p.read_text())
+        v = b["variants"]
+        names = {"real": "実録音", "encv2": "合成音（V1）", "encv2_c": "ⓖ 全員に共通の声の設定", "encv2_o": "ⓗ 話者ごとの声の設定"}
+
+        def row(k: str) -> str:
+            c = v[k]
+            cells = [
+                pair({s: c["shape"][s]["total"] for s in SEXES}, "{:.1f}") if "shape" in c else "–",
+                pair({s: c["shape"][s]["rest"] for s in SEXES}, "{:.1f}") if "shape" in c else "–",
+                pair({s: c["wavlm"]["sexes"][s]["own"] for s in SEXES}, "{:.3f}"),
+                pair({s: 100 * c["unispeech"]["sexes"][s]["top1"] for s in SEXES}, "{:.0f}"),
+                pair(c["quality"]["dry"]), pair(c["natural"]["dry"]),
+                pair({s: 100 * c["judged"]["whisper"][s] for s in SEXES}, "{:.1f}") if "judged" in c else "–",
+                pair({s: 100 * c["judged"]["phones"][s] for s in SEXES}, "{:.1f}") if "judged" in c and "phones" in c["judged"] else "–",
+            ]  # fmt: skip
+            return f"<tr><th>{esc(names[k])}</th>" + "".join(f'<td class="num">{x}</td>' for x in cells) + "</tr>"
+
         out += f"""<div class="scroll"><table>
-<caption>声道の形は、合わせるのに使っていない文でも効くか。カードの 4 話者のテスト全文（各 25 文、うち 3 文が形を合わせた文）を、制御列は V1 のまま鳴らした値です。女性 / 男性。類似度は WavLM の本人とのコサイン類似度（実録音は 0.98）。NISQA は参考です。</caption>
-<thead><tr><th>音</th><th>ずれ（重み付き）</th><th>ずれ（重みなし）</th><th>NISQA 品質</th><th>NISQA 自然さ</th><th>類似度</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+<caption>テストの 8 話者・{b["clips"]} 文を、制御列は V1 のまま鳴らした値（<code>pmvc.bench</code>）。女性 / 男性。話者ごとの設定は各話者の 3 文から決めたもので、その 3 文もこの {b["clips"]} 文に含まれます。包絡のずれは母音での録音との差（dB、rms、重みなし）で、「うち残り」はフレームごとに変わる部分。類似度は WavLM の本人とのコサイン類似度、本人率は登録した 100 話者の中で本人が最も近かった割合（UniSpeech-SAT）。Whisper は large-v3-turbo の誤り率、音声記号は録音の音声記号との不一致（別の話者の録音どうしでは 35 / 29%）。NISQA は参考です。</caption>
+<thead><tr><th>音</th><th>包絡のずれ</th><th>うち残り</th><th>類似度</th><th>本人率 %</th><th>NISQA 品質</th><th>NISQA 自然さ</th><th>Whisper %</th><th>音声記号 %</th></tr></thead><tbody>{"".join(row(k) for k in names if k in v)}</tbody></table></div>"""
     return out
 
 
@@ -522,7 +536,7 @@ def build(d: Path, variant: str, ladder: Path, forms: list[str], reached: dict[s
     errors: dict[str, dict[str, list[tuple[float, float]]]] = {}
     form = form_section(d, forms)
     made = cards(d, variant, ladder, forms if form else [], reached, clips, errors)
-    body = f"""<section aria-labelledby="h-now"><h2 id="h-now">1. エンジンは録音の包絡を追えるか（話者ごとの声道の形と、制御の探索）</h2>
+    body = f"""<section aria-labelledby="h-now"><h2 id="h-now">1. 話者ごとの声の設定と、副作用を直した制御の探索</h2>
 {NOW_TEXT}
 {cards_table(d, errors)}
 {made}

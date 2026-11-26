@@ -62,6 +62,22 @@ impl Voice {
         out.into_pyarray(py)
     }
 
+    /// The next `frames` stretches of `hop` samples, and with them the oral tube's narrowest
+    /// section (cm², `probe`'s third) as each stretch began: how near a closure the mouth was,
+    /// frame by frame of a track. Other Python threads run while it renders.
+    fn render_watched<'py>(&mut self, py: Python<'py>, frames: usize, hop: usize) -> (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f64>>) {
+        let mut out = vec![0f32; frames * hop];
+        let mut narrow = vec![0f64; frames];
+        let p = &mut self.p;
+        py.allow_threads(|| {
+            for f in 0..frames {
+                narrow[f] = p.probe().2;
+                p.render(&mut out[f * hop..(f + 1) * hop]);
+            }
+        });
+        (out.into_pyarray(py), narrow.into_pyarray(py))
+    }
+
     /// Voice source settings (a JSON object, as in the constructor), applied now.
     fn set_source(&mut self, source: &str) -> PyResult<()> {
         self.p.set_source(source).map_err(bad)

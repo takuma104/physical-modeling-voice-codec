@@ -521,25 +521,33 @@ uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --
 #   伝達関数を相手に、フレームごとに構えを探す(鳴らさない)。予測は喉頭の上の管の共鳴と梨状窩の零点の付近で粗いので、
 #   届いた値は目安にとどまる
 uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
-#   頼まれれば、エンジンは録音の包絡を出せるか。制御列を、実際に鳴らしながら探索する。1 回のレンダで 3 つおきの節（50 ms 間隔）を
-#   全部同時に動かし、節ごとに周りのフレームだけで採点する。--astray は、答えが存在する的（制御列の節を乱数でずらした合成音）での
-#   探索のテスト。--form は探索するときの形（$A は試聴ページの形 ⓐ）。--shape 12 は、話者の複数の文に共通の声道の形
-#   （フォークの断面積の倍率。声門から唇まで 12 か所）も一緒に探す
+#   頼まれれば、エンジンは録音の包絡を出せるか（pmvc.reach）。制御列を、実際に鳴らしながら探索する。1 回のレンダで 3 つおきの節
+#   （50 ms 間隔）を全部同時に動かし、節ごとに周りのフレームだけで採点する。動かすのは母音の中だけで、口の中のいちばん狭い所は
+#   元より細くしない。--astray は、答えが存在する的（制御列の節を乱数でずらした合成音）での探索のテスト。--form は探索するときの形
+#   （$A は試聴ページの形 ⓐ。レンダ同士を比べるので、雑音の乱数の引き方を固定する airway.noiseDraws=3 を足す）
 #   crates/pmvc-voice やエンジンを編集したあとは uv sync --reinstall-package pmvc-engine（uv は自動では作り直さない）
 CARDS=jvs093_099,jvs095_098,jvs097_080,jvs100_090
-#   （レンダ同士を比べるときは、雑音の乱数の引き方を固定する: airway.noiseDraws=3、フォークの設定）
 uv run python -m pmvc.reach out/jvs --ids jvs100_090 --iters 20 --astray 0.5 --stay 0 --form airway.noiseDraws=3 --out reach_self
-uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_v1 --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_a --form "$A" --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids jvs093_099,jvs093_091,jvs093_088,jvs100_090,jvs100_091,jvs100_099 --iters 16 --shape 12 --out reach_as --form "$A" --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids jvs095_098,jvs095_091,jvs095_088,jvs097_080,jvs097_091,jvs097_099 --iters 16 --shape 12 --out reach_as2 --form "$A" --judges out/jvsall
-#   話者の形だけ（制御列は探索しない）: V1 の制御列をその形で鳴らし、その話者のテスト全文で測る
-SHAPES=out/jvs/reach_as.json,out/jvs/reach_as2.json
-uv run python -m pmvc.form out/jvs --try "$A" --shapes $SHAPES --judges out/jvsall --per 25 --name form_shape
-uv run python -m pmvc.form out/jvs --write encv2_shape --try "$A" --shapes $SHAPES
-#   4 枚目の試聴ページ（listening_v2.html）: カードに、段階の音、形（SPEC を 1 行ずつ書いたファイルの 1 つめ）、探索した合成音
-uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --reached shape=encv2_shape,reach-a=reach_a,reach-as=reach_as+reach_as2 \
-  --notes out/transplant/notes_v2.html
+#   声の設定（時間で変わらない部分: 声道の形 12 か所、声門の閉じ方、開放率、喉頭の上の管の長さ）を、制御列はそのままで当てはめる
+#   （--still）。まず男女それぞれに共通の設定を、テストに入っていない 24 話者の 1 文ずつで（--share sex）。次にその上に、テストの
+#   8 話者それぞれの設定を 3 文ずつで（--from）
+ST=glottis.closureSharpness,glottis.openQuotient,larynx.length
+IDS3=$(for s in 093 094 095 096 097 098 099 100; do for k in 088 091 099; do printf "jvs%s_%s," $s $k; done; done | sed 's/,$//')
+uv run python -m pmvc.reach out/jvs --ids-file out/jvs/v2_probe/dev_ids.txt --per 1 --share sex --still --shape 12 --statics $ST --form "$A,airway.noiseDraws=3" --iters 12 --out voice_common
+uv run python -m pmvc.reach out/jvs --ids $IDS3 --share speaker --still --shape 12 --statics $ST --form "$A,airway.noiseDraws=3" --from out/jvs/voice_common.json --iters 10 --out voice_own
+#   テストの 200 文を、V1 の制御列のまま、共通の設定と話者ごとの設定で鳴らし直し、採点する
+VOICES=out/jvs/voice_common.json,out/jvs/voice_own.json
+uv run python -m pmvc.form out/jvs --write encv2_c --try "$A" --shapes out/jvs/voice_common.json
+uv run python -m pmvc.form out/jvs --write encv2_o --try "$A" --shapes $VOICES
+uv run python -m pmvc.judge out/jvs --split test --variants encv2,encv2_c,encv2_o --name results_voice
+uv run python -m pmvc.bench out/jvs --variants encv2,encv2_c,encv2_o --enrol out/jvsall --name bench_voice --judged results_voice
+#   話者ごとの設定の上で、母音の中だけ制御列を探索する（カードの 4 文）
+uv run python -m pmvc.reach out/jvs --ids $CARDS --from $VOICES --form "$A,airway.noiseDraws=3" --iters 16 --out reach_own_nt --judges out/jvsall
+#   最初の探索（保護なし。耳で副作用が見つかったもの。いまの pmvc.reach では再現できない）: V1 の形（reach_v1）、形 ⓐ（reach_a）、
+#   話者の声道の形も一緒に探索（reach_as、reach_as2: --shape 12）。形だけを V1 の制御列に当てたものが encv2_shape
+#   4 枚目の試聴ページ（listening_v2.html）: カードに、段階の音、形（SPEC を 1 行ずつ書いたファイルの 1 つめ）、探索や当てはめの合成音
+uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --notes out/transplant/notes_v2.html \
+  --reached shape=encv2_shape,reach-a=reach_a,reach-as=reach_as+reach_as2,voice-c=encv2_c,voice-o=encv2_o,reach-o=reach_own_nt
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。

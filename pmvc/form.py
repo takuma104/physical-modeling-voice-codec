@@ -32,8 +32,9 @@ split's tracks and renders in the form of the one SPEC as a variant of their own
 (<dir>/<VARIANT>/<id>.tracks.json and .wav), for `pmvc.bench` and the other judges. With
 `--speakers` (a file of `pmvc.speaker fit`), each speaker's renders are also under the settings
 fitted to the speaker, on top of the form; with `--shapes` (files of `pmvc.reach --shape`),
-with the tract in the shape of its own that was found for the speaker (the fork's area
-profile), for the speakers those files have.
+with the tract in the shape of its own (the fork's area profile) and under the settings that
+were found for the speaker, or for the speaker's sex where a search was shared by a sex; only
+the speakers those files have a voice for are taken.
 """
 
 import argparse
@@ -95,15 +96,35 @@ def formed(track: dict[str, Any], sex: str, spec: list[tuple[str, str, str, floa
     return t
 
 
-def shaped(track: dict[str, Any], shape: list[float] | None) -> dict[str, Any]:
-    """A track with the tract in a shape of its own (the fork's area profile: the logarithms of
-    what the tract's area is multiplied by at places from the glottis to the lips)."""
-    return {**track, "form": {**track.get("form", {}), "profile": shape}} if shape else track
+def shaped(track: dict[str, Any], voice: dict[str, Any] | None) -> dict[str, Any]:
+    """A track with the tract and the source as a speaker's own (`pmvc.reach`'s): `profile`,
+    the tract's shape (the fork's area profile: the logarithms of what the tract's area is
+    multiplied by at places from the glottis to the lips), and `set`, settings by `part.key`."""
+    if not voice:
+        return track
+    t = dict(track)
+    if voice.get("profile"):
+        t["form"] = {**t.get("form", {}), "profile": voice["profile"]}
+    for name, x in voice.get("set", {}).items():
+        part, key = name.split(".")
+        t[part] = {**t.get(part, {}), key: x}
+    return t
 
 
-def shapes_in(paths: str) -> dict[str, list[float]]:
-    """Each speaker's tract shape, from files that `pmvc.reach --shape` wrote (comma-separated)."""
-    return {r["speaker"]: r["shape"] for p in filter(None, paths.split(",")) for r in json.loads(Path(p).read_text())["clips"] if r.get("shape")}
+def voices_in(paths: str) -> dict[str, dict[str, Any]]:
+    """The voices that `pmvc.reach --shape` found, from its files (comma-separated; a later
+    file's take the place of an earlier one's): by speaker, or by sex (F, M) where a search
+    was shared by a sex."""
+    out: dict[str, dict[str, Any]] = {}
+    for p in filter(None, paths.split(",")):
+        found = json.loads(Path(p).read_text())
+        out.update(found["voices"] if "voices" in found else {r["speaker"]: {"profile": r["shape"], "set": {}} for r in found["clips"] if r.get("shape")})
+    return out
+
+
+def voice_for(voices: dict[str, dict[str, Any]], m: dict[str, Any]) -> dict[str, Any] | None:
+    """A recording's speaker's voice among `voices`, or failing that the sex's."""
+    return voices.get(m["speaker"], voices.get(m["sex"]))
 
 
 class Clip:
@@ -127,11 +148,11 @@ class Clip:
         mag = np.abs(gap.spectrum(x))[self.frames]
         return gap.envelope(mag, self.cut) @ BANDS.T * DB if len(mag) else np.zeros((0, len(BANDS)))
 
-    def render(self, sex_spec: list[tuple[str, str, str, float]], own: dict[str, float] | None = None, shape: list[float] | None = None) -> Array:
+    def render(self, sex_spec: list[tuple[str, str, str, float]], own: dict[str, float] | None = None, voice: dict[str, Any] | None = None) -> Array:
         """The track's render in a form, on the recording's clock; with `own`, under the
-        speaker's own settings on top of the form (`pmvc.speaker`'s); with `shape`, with the
-        tract in the speaker's own shape (`pmvc.reach`'s)."""
-        track = shaped(formed(self.track, self.meta["sex"], sex_spec), shape)
+        speaker's own settings on top of the form (`pmvc.speaker`'s); with `voice`, with the
+        tract's shape and the settings that `pmvc.reach` found for the speaker."""
+        track = shaped(formed(self.track, self.meta["sex"], sex_spec), voice)
         y = resample_poly(render_track(settled(track, own) if own else track), 1, 48000 // SR)[round(LEAD * SR) :]
         y = np.pad(y, (0, max(0, len(self.x) - len(y))))[: len(self.x)]
         return np.roll(y, -gap.lag(self.x, y))
@@ -192,13 +213,13 @@ class Judges:
         return out
 
 
-def measure(clips: list[Clip], spec: str, pool: ThreadPoolExecutor, speakers: dict[str, Any] | None = None, judges: Judges | None = None, shapes: dict[str, list[float]] | None = None) -> dict[str, Any]:
+def measure(clips: list[Clip], spec: str, pool: ThreadPoolExecutor, speakers: dict[str, Any] | None = None, judges: Judges | None = None, shapes: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """The envelope's error of the renders in a form, for each sex; with `speakers`
     (`pmvc.speaker`'s file's), each speaker's renders under the speaker's own settings too;
     with `shapes`, with the tract in each speaker's own shape; with `judges`, what they make
     of the renders as well."""
     s = settings(spec)
-    renders = list(pool.map(lambda c: c.render(s, (speakers or {}).get(c.meta["speaker"], {}).get("settings"), (shapes or {}).get(c.meta["speaker"])), clips))
+    renders = list(pool.map(lambda c: c.render(s, (speakers or {}).get(c.meta["speaker"], {}).get("settings"), voice_for(shapes or {}, c.meta)), clips))
     rows = list(pool.map(lambda job: job[0].lack(job[1]), zip(clips, renders)))
     said_by = judges.of(clips, renders) if judges else {}
     out: dict[str, Any] = {}
@@ -239,7 +260,7 @@ def main() -> None:
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--steps", type=int, default=7, help="renders for each setting in a round")
     ap.add_argument("--speakers", type=Path, default=None, help="pmvc.speaker's file: each speaker's renders under the speaker's own settings, on top of a --try's form (those tries are named `SPEC +speakers`)")
-    ap.add_argument("--shapes", type=str, default="", help="files of pmvc.reach --shape (comma-separated): each speaker's renders with the tract in the speaker's own shape, on top of a --try's form (those tries are named `SPEC +shapes`); only the speakers the files have are taken")
+    ap.add_argument("--shapes", type=str, default="", help="files of pmvc.reach --shape (comma-separated): each speaker's renders with the tract's shape and the settings found for the speaker (or for the speaker's sex), on top of a --try's form (those tries are named `SPEC +shapes`); only the speakers the files have a voice for are taken")
     ap.add_argument("--judges", type=Path, default=None, help="also ask NISQA and a verifier of each --try's renders; the directory whose training recordings stand for the speakers (out/jvsall)")
     ap.add_argument("--write", type=str, default="", help="a variant to leave the tracks and renders of the one --try in")
     ap.add_argument("--name", type=str, default="form")
@@ -251,9 +272,9 @@ def main() -> None:
     metas = [m for m in metas if m["id"] in aligned and (d / "real" / f"{m['id']}.wav").exists() and (d / a.variant / f"{m['id']}.tracks.json").exists()]
     pitch = {s: float(np.median([m["f0Median"] for m in metas if m["speaker"] == s])) for s in {m["speaker"] for m in metas}}
     fitted: dict[str, Any] = json.loads(a.speakers.read_text())["speakers"] if a.speakers else {}
-    shapes = shapes_in(a.shapes)
+    shapes = voices_in(a.shapes)
     if shapes:
-        metas = [m for m in metas if m["speaker"] in shapes]
+        metas = [m for m in metas if voice_for(shapes, m)]
     if a.write:
         import soundfile as sf
 
@@ -264,7 +285,7 @@ def main() -> None:
             track = formed(json.loads((d / a.variant / f"{m['id']}.tracks.json").read_text()), m["sex"], spec)
             if m["speaker"] in fitted:
                 track = settled(track, fitted[m["speaker"]]["settings"])
-            track = shaped(track, shapes.get(m["speaker"]))
+            track = shaped(track, voice_for(shapes, m))
             (d / a.write / f"{m['id']}.tracks.json").write_text(json.dumps(track))
             sf.write(str(d / a.write / f"{m['id']}.wav"), render_track(track), 48000, subtype="PCM_16")
 

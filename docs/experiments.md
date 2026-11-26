@@ -526,26 +526,36 @@ uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --
 #   Postures searched frame by frame against the transfer function (no render). Its predictor is rough near the tube's resonance
 #   and the fossa's zero, so what it reaches is an indication only
 uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
-#   Can the engine give a recording's envelope when its track asks for it? The tracks searched through the engine, every third knot
-#   (50 ms apart) at once in a render, each judged by the frames around it. --astray tests the search on a target that has an answer
-#   (the track's own knots moved at random). --form: the form searched in ($A is the page's form a). --shape 12: also a shape of the
-#   tract that a speaker's sentences share (the fork's area profile, 12 places from the glottis to the lips)
+#   Can the engine give a recording's envelope when it is asked to (pmvc.reach)? The tracks searched through the engine, every third
+#   knot (50 ms apart) at once in a render, each judged by the frames around it; a track is moved inside its vowels only, and the
+#   mouth's narrowest section may not become narrower than the track had it. --astray tests the search on a target that has an answer
+#   (the track's own knots moved at random). --form: the form searched in ($A is the page's form a; airway.noiseDraws=3, the fork's
+#   setting, makes renders draw their noise alike, as renders that are compared must)
 #   After an edit of crates/pmvc-voice or the engine: uv sync --reinstall-package pmvc-engine (uv does not rebuild it by itself)
 CARDS=jvs093_099,jvs095_098,jvs097_080,jvs100_090
-#   (renders that are compared draw their noise alike: airway.noiseDraws=3, the fork's setting)
 uv run python -m pmvc.reach out/jvs --ids jvs100_090 --iters 20 --astray 0.5 --stay 0 --form airway.noiseDraws=3 --out reach_self
-uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_v1 --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_a --form "$A" --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids jvs093_099,jvs093_091,jvs093_088,jvs100_090,jvs100_091,jvs100_099 --iters 16 --shape 12 --out reach_as --form "$A" --judges out/jvsall
-uv run python -m pmvc.reach out/jvs --ids jvs095_098,jvs095_091,jvs095_088,jvs097_080,jvs097_091,jvs097_099 --iters 16 --shape 12 --out reach_as2 --form "$A" --judges out/jvsall
-#   The speakers' shapes without any search of the tracks: V1's tracks rendered in them, on all test sentences of those speakers
-SHAPES=out/jvs/reach_as.json,out/jvs/reach_as2.json
-uv run python -m pmvc.form out/jvs --try "$A" --shapes $SHAPES --judges out/jvsall --per 25 --name form_shape
-uv run python -m pmvc.form out/jvs --write encv2_shape --try "$A" --shapes $SHAPES
+#   A voice (what does not change over time: the tract's shape at 12 places, how sharply the glottis closes, its open quotient, the
+#   length of the tube above it) fitted with the tracks as they are (--still). First one voice a sex, on a sentence each of the 24
+#   speakers that are not in the test (--share sex); then on top of it each test speaker's own, on three sentences (--from)
+ST=glottis.closureSharpness,glottis.openQuotient,larynx.length
+IDS3=$(for s in 093 094 095 096 097 098 099 100; do for k in 088 091 099; do printf "jvs%s_%s," $s $k; done; done | sed 's/,$//')
+uv run python -m pmvc.reach out/jvs --ids-file out/jvs/v2_probe/dev_ids.txt --per 1 --share sex --still --shape 12 --statics $ST --form "$A,airway.noiseDraws=3" --iters 12 --out voice_common
+uv run python -m pmvc.reach out/jvs --ids $IDS3 --share speaker --still --shape 12 --statics $ST --form "$A,airway.noiseDraws=3" --from out/jvs/voice_common.json --iters 10 --out voice_own
+#   The 200 test sentences rendered again, V1's tracks in the common voices and in the speakers' own, and judged
+VOICES=out/jvs/voice_common.json,out/jvs/voice_own.json
+uv run python -m pmvc.form out/jvs --write encv2_c --try "$A" --shapes out/jvs/voice_common.json
+uv run python -m pmvc.form out/jvs --write encv2_o --try "$A" --shapes $VOICES
+uv run python -m pmvc.judge out/jvs --split test --variants encv2,encv2_c,encv2_o --name results_voice
+uv run python -m pmvc.bench out/jvs --variants encv2,encv2_c,encv2_o --enrol out/jvsall --name bench_voice --judged results_voice
+#   In the speakers' own voices, the tracks searched inside their vowels (the four card sentences)
+uv run python -m pmvc.reach out/jvs --ids $CARDS --from $VOICES --form "$A,airway.noiseDraws=3" --iters 16 --out reach_own_nt --judges out/jvsall
+#   The first searches (unguarded; the ear found their side effects, and pmvc.reach as it is now does not make them again): in V1's
+#   form (reach_v1), in form a (reach_a), and with a speaker's tract shape searched too (reach_as, reach_as2: --shape 12); the shapes
+#   alone on V1's tracks are encv2_shape
 #   The fourth listening page (listening_v2.html): the ladder's steps, the first of the forms (a file of SPECs, a line each) and
-#   the searched renders on cards
-uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --reached shape=encv2_shape,reach-a=reach_a,reach-as=reach_as+reach_as2 \
-  --notes out/transplant/notes_v2.html
+#   the searched and fitted renders on cards
+uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --notes out/transplant/notes_v2.html \
+  --reached shape=encv2_shape,reach-a=reach_a,reach-as=reach_as+reach_as2,voice-c=encv2_c,voice-o=encv2_o,reach-o=reach_own_nt
 ```
 
 The encoders are trained and evaluated on separate speakers. In TSP a woman and a man with the same letter read the same sentence list, so with FK, MK, FL and ML held out for the test and FJ and MJ for validation, those speakers' sentences are not in the training either.
