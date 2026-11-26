@@ -222,6 +222,9 @@ __marimo__/
 # experiment outputs (renders, metrics, listening pages)
 out/
 
+# the published weights, downloaded by the README's quick start (hf download ... --local-dir models)
+/models/
+
 # technical report: fonts are downloaded by docs/report/build.sh
 docs/report/fonts/
 
