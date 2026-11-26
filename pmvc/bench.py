@@ -86,21 +86,29 @@ def vowel_frames(d: Path, uid: str, aligned: dict[str, Any]) -> tuple[NDArray[np
     return kind, np.load(d / "pitch" / f"{uid}.npy"), phones[round(LEAD * FRAME_RATE) :]
 
 
-def shape_rows(x: Array, y: Array, pitch: float, kind: NDArray[np.str_], f0: Array, phones: list[str]) -> tuple[Array, list[str]]:
+def vowel_rows(x: Array, y: Array, pitch: float, kind: NDArray[np.str_], f0: Array, phones: list[str]) -> tuple[Array, list[str], list[int]]:
     """The envelope of the recording `x` minus that of the render `y` (dB) in bands of STEP,
-    for the frames in the middle of a vowel, and each such frame's vowel."""
+    for the frames in the middle of a vowel; each such frame's vowel; and which of the
+    recording's 10 ms frames they are."""
     cut = round(min(gap.CUT_MAX, gap.CUT_SHARE / pitch) * SR)
     ex, ey = gap.envelope(np.abs(gap.spectrum(x)), cut), gap.envelope(np.abs(gap.spectrum(y)), cut)
     hz = np.fft.rfftfreq(gap.FFT, 1 / SR)
     bands = [(hz >= lo) & (hz < lo + STEP) for lo in np.arange(0.0, TOP, STEP)]
-    rows, vowels = [], []
+    rows, vowels, at = [], [], []
     for j in range(min(len(kind), len(f0), len(phones))):
         k = round(j / FRAME_RATE * SR / gap.HOP)
         if kind[j] == "v" and f0[j] > 60 and k < len(ex):
             diff = (ex[k] - ey[k]) * 20 / np.log(10)
             rows.append([diff[b].mean() for b in bands])
             vowels.append(phones[j])
-    return np.array(rows).reshape(-1, len(bands)), vowels
+            at.append(j)
+    return np.array(rows).reshape(-1, len(bands)), vowels, at
+
+
+def shape_rows(x: Array, y: Array, pitch: float, kind: NDArray[np.str_], f0: Array, phones: list[str]) -> tuple[Array, list[str]]:
+    """`vowel_rows` without the frames' numbers."""
+    rows, vowels, _ = vowel_rows(x, y, pitch, kind, f0, phones)
+    return rows, vowels
 
 
 def shape(rows: Array, speakers: list[str], vowels: list[str]) -> dict[str, Any]:

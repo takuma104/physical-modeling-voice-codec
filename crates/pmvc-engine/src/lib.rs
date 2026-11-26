@@ -8,7 +8,7 @@
 //! track up to a frame once and try many continuations from there. What it does is
 //! `pmvc_voice::Player`'s, which the browser's player (`pmvc-wasm`) has too.
 
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pmvc_voice::{FS, Player};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -134,6 +134,38 @@ impl Voice {
     /// `freqs` (Hz), by the engine's frequency-domain model of its airway.
     fn transfer<'py>(&self, py: Python<'py>, freqs: PyReadonlyArray1<f64>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         Ok(self.p.transfer(freqs.as_slice()?).into_pyarray(py))
+    }
+
+    /// The articulators where they stand at this sample: CHIMERA's seventeen, in its own order.
+    #[getter]
+    fn pose<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.p.pose().into_pyarray(py)
+    }
+
+    /// The tract's transfer function with the articulators standing as each row of `poses` has
+    /// them (seventeen a row, as `pose` gives them): rows of levels (dB) at `freqs`. Nothing is
+    /// rendered; the voice's airway is left in the last pose (see `pmvc_voice::Player::transfers`).
+    /// Other Python threads run meanwhile.
+    fn transfers<'py>(&mut self, py: Python<'py>, poses: PyReadonlyArray2<f64>, freqs: PyReadonlyArray1<f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let a = poses.as_array();
+        let rows: Vec<f64> = a.iter().copied().collect();
+        let freqs = freqs.as_slice()?.to_vec();
+        let p = &mut self.p;
+        let out = py.allow_threads(|| p.transfers(&rows, &freqs)).map_err(bad)?;
+        Ok(numpy::ndarray::Array2::from_shape_vec((a.nrows(), freqs.len()), out).map_err(|e| bad(e.to_string()))?.into_pyarray(py))
+    }
+
+    /// The tract's form where neither the body nor a posture sets it, as JSON: any of
+    /// `fossaLength`, `fossaArea`, `pharynxAlpha`, `pharynxBeta`, `oralAlpha`, `oralBeta`,
+    /// `frontAlpha`, `frontBeta`, `viscous` and `viscousHz` (see `pmvc_voice::Player::set_form`).
+    fn set_form(&mut self, patch: &str) -> PyResult<()> {
+        self.p.set_form(patch).map_err(bad)
+    }
+
+    /// The tract's form as it is now (a JSON object).
+    #[getter]
+    fn form(&self) -> String {
+        self.p.form()
     }
 
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.

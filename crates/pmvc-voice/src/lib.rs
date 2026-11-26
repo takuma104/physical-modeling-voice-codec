@@ -9,7 +9,7 @@
 //! track up to a frame once and try many continuations from there.
 
 use chimera::airway::frequency::transfer_function;
-use chimera::anatomy::human::{ArticKey, BodyMix, HumanBody, HumanVocalTract, NEUTRAL};
+use chimera::anatomy::human::{ArticKey, BodyMix, HumanArtic, HumanBody, HumanVocalTract, N_ARTIC, NEUTRAL};
 use chimera::control::articulators::ARTIC_SPECS;
 use chimera::control::score::{ControlKey, Gesture, Targets};
 use chimera::math::PI;
@@ -62,6 +62,8 @@ pub struct Player {
     lag: Vec<f64>,
     rate: f64,
     speed: f64,
+    /// the piriform fossa's length (cm) and area (cm²) as set, for an adult man's body
+    fossa: (f64, f64),
 }
 
 impl Player {
@@ -86,7 +88,10 @@ impl Player {
                 ControlKey::Source(_) => 0.0,
             })
             .collect();
-        Ok(Player { v, keys, lag, rate, speed })
+        // the fossa as the engine builds it
+        let (k, t) = (body.scale, v.airway.fossa);
+        let fossa = (v.airway.net.tube_length[t.index] / k, v.airway.net.area[t.node(0)] / (k * k));
+        Ok(Player { v, keys, lag, rate, speed, fossa })
     }
 
     /// The voice clock (s).
@@ -357,6 +362,83 @@ impl Player {
         transfer_function(&a.net.linear_elements(), a.pharynx.first_node(), freqs, &[a.glottis_port]).pressure_db
     }
 
+    /// The articulators where they stand at this sample: CHIMERA's seventeen, in its own order
+    /// (`ArticKey::ALL`). What a track asks for is not quite where they are: they follow their
+    /// targets with their own inertia, and a tongue that would enter the palate is held back.
+    pub fn pose(&self) -> Vec<f64> {
+        self.v.artic.x.to_array().to_vec()
+    }
+
+    /// The tract's transfer function (as `transfer` gives it) with the articulators standing as
+    /// each of `poses` has them (rows of seventeen, as `pose` gives them): the levels at `freqs`,
+    /// row after row. Nothing is rendered, so a form of the tract (`set_larynx`, `set_form`) can
+    /// be tried on the postures of many frames in the time one of them takes to sound. The
+    /// airway's targets are left at the last pose: this is for a voice that is not rendering.
+    pub fn transfers(&mut self, poses: &[f64], freqs: &[f64]) -> Said<Vec<f64>> {
+        if poses.len() % N_ARTIC != 0 {
+            return Err(bad(format!("a pose needs {N_ARTIC} numbers")));
+        }
+        let mut out = Vec::with_capacity(poses.len() / N_ARTIC * freqs.len());
+        for row in poses.chunks(N_ARTIC) {
+            self.v.airway.apply(&HumanArtic::from_array(row), 0.0);
+            out.extend(self.transfer(freqs));
+        }
+        Ok(out)
+    }
+
+    /// The tract's form where neither the body's four numbers nor a posture sets it: a JSON
+    /// object with any of `fossaLength` (cm) and `fossaArea` (cm²), the piriform fossa's (the
+    /// side branch above the tube over the glottis; for an adult man's body, scaled to the
+    /// voice's as the engine scales its own: 2.0 and 0.9); `pharynxAlpha`, `pharynxBeta`,
+    /// `oralAlpha`, `oralBeta`, `frontAlpha`, `frontBeta`, the area that a width d (cm) of the
+    /// midsagittal outline stands for, α·d^β, in the pharynx, in the mouth and behind the teeth
+    /// (the engine's: 2.0, 2.6 and 2.0, all to the power 1.4); `viscous`, what the viscous loss
+    /// at the tubes' walls is multiplied by, and `viscousHz`, the frequency (Hz) it is computed
+    /// for (the engine's loss does not grow with frequency: 700).
+    pub fn set_form(&mut self, patch: &str) -> Said<()> {
+        let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
+        let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
+        let a = &mut self.v.airway;
+        let (k, t) = (a.body.scale, a.fossa);
+        for (key, x) in obj {
+            let x = x.as_f64().ok_or_else(|| bad(format!("{key}: a number is needed")))?;
+            if !(x > 0.0) {
+                return Err(bad(format!("{key}: a positive number is needed")));
+            }
+            let law = &mut a.tract.area_law;
+            match key.as_str() {
+                "fossaLength" if x * k / (t.n as f64) < a.dx_stable => return Err(bad(format!("fossaLength: under {:.2} cm the fossa's sections are shorter than a time step allows", a.dx_stable * t.n as f64 / k))),
+                "fossaLength" => self.fossa.0 = x,
+                "fossaArea" => self.fossa.1 = x,
+                "pharynxAlpha" => law.pharynx.0 = x,
+                "pharynxBeta" => law.pharynx.1 = x,
+                "oralAlpha" => law.oral.0 = x,
+                "oralBeta" => law.oral.1 = x,
+                "frontAlpha" => law.front.0 = x,
+                "frontBeta" => law.front.1 = x,
+                "viscous" => a.net.viscous_scale = x,
+                "viscousHz" => a.net.viscous_omega = 2.0 * PI * x,
+                _ => return Err(bad(format!("unknown form parameter {key:?}"))),
+            }
+        }
+        if obj.contains_key("fossaLength") || obj.contains_key("fossaArea") {
+            a.net.set_tube_targets(t, &vec![self.fossa.1 * k * k; t.n], Some(self.fossa.0 * k), None);
+        }
+        Ok(())
+    }
+
+    /// The tract's form as it is now (a JSON object, as `set_form` takes it).
+    pub fn form(&self) -> String {
+        let a = &self.v.airway;
+        let law = a.tract.area_law;
+        serde_json::json!({
+            "fossaLength": self.fossa.0, "fossaArea": self.fossa.1,
+            "pharynxAlpha": law.pharynx.0, "pharynxBeta": law.pharynx.1, "oralAlpha": law.oral.0, "oralBeta": law.oral.1, "frontAlpha": law.front.0, "frontBeta": law.front.1,
+            "viscous": a.net.viscous_scale, "viscousHz": a.net.viscous_omega / (2.0 * PI),
+        })
+        .to_string()
+    }
+
     /// The gains of the turbulence noise at the glottis, at constrictions and at the teeth.
     pub fn noise_gains(&self) -> (f64, f64, f64) {
         let g = self.v.airway.noise_gain;
@@ -370,7 +452,7 @@ impl Player {
 
     /// A voice for a control track, from the track without its frames (JSON): `body`, `source`,
     /// `keys`, `rate`, and where it has them `speed`, `noise` (what the three noise gains are
-    /// multiplied by), `glottis`, `airway`, `nose` and `larynx`. As `pmvc.calibrate.make_voice` makes one.
+    /// multiplied by), `glottis`, `airway`, `nose`, `larynx` and `form`. As `pmvc.calibrate.make_voice` makes one.
     pub fn of_track(header: &str) -> Said<Self> {
         let t: serde_json::Value = serde_json::from_str(header).map_err(bad)?;
         let part = |name: &str| t.get(name).filter(|x| x.as_object().is_some_and(|o| !o.is_empty())).map(|x| x.to_string());
@@ -399,6 +481,9 @@ impl Player {
         }
         if let Some(x) = part("larynx") {
             p.set_larynx(&x)?;
+        }
+        if let Some(x) = part("form") {
+            p.set_form(&x)?;
         }
         Ok(p)
     }

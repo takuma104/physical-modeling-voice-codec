@@ -145,8 +145,8 @@ pub unsafe extern "C" fn player_probe(p: *const Player, out: *mut f64) {
 }
 
 /// Settings of the voice changed while it plays, as JSON: `kind` 0 the source, 1 the glottis,
-/// 2 the airway, 3 the nose, 4 the tube above the glottis (what `pmvc_voice::Player`'s `set_…`
-/// take). 1 if they will do.
+/// 2 the airway, 3 the nose, 4 the tube above the glottis, 5 the tract's form (what
+/// `pmvc_voice::Player`'s `set_…` take). 1 if they will do.
 ///
 /// # Safety
 /// `p` is a live player and `patch` is `n` bytes of UTF-8 that JavaScript wrote.
@@ -159,6 +159,7 @@ pub unsafe extern "C" fn player_patch(p: *mut Player, kind: u32, patch: *const u
         2 => player.set_airway(s),
         3 => player.set_nose(s),
         4 => player.set_larynx(s),
+        5 => player.set_form(s),
         _ => Err(format!("no such kind of settings: {kind}")),
     });
     match done {
