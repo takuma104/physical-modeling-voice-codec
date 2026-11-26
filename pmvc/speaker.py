@@ -26,6 +26,12 @@ numbers to go with the speaker's tracks:
                   what is added to the encoder's channel in every frame: a larynx carried
                   higher or lower (cm), a little more or less opening to the nose (cm²), the
                   tongue root further forward or back (cm)
+  length          the length of the tube above the glottis, as a multiple of what the body
+                  gives it (the fork's `larynx.length`): where the voice's fourth formant is
+  layerLoss       the loss at the walls that grows with frequency (the fork's
+                  `form.layerLoss`, 0 none): how wide the upper resonances are
+  fossaLength     the piriform fossa's length (cm, for an adult man's body): where the dip
+                  above the fourth formant is
 
 usage: python -m pmvc.speaker fit [dir] [--tracks enci] [--split train] [--n 6] [--of 20]
                                   [--only female,child] [--start FILE] [--evals 90]
@@ -118,6 +124,9 @@ PARAMS: tuple[tuple[str, str, float, float, float], ...] = (
     ("larynxShift", "shift", -0.6, 0.6, 0.0),
     ("velumShift", "shift", -0.1, 0.3, 0.0),
     ("rootShift", "shift", -0.5, 0.5, 0.0),
+    ("length", "larynx", 0.7, 1.8, 1.0),
+    ("layerLoss", "form", 0.0, 4.0, 0.0),
+    ("fossaLength", "form", 1.5, 3.2, 2.0),
 )
 # the body's four numbers for CHIMERA's adult male, adult female and child
 PRESETS: dict[str, tuple[float, float, float]] = {"scale": (1.0, 0.9, 0.74), "pharynx": (1.0, 0.88, 0.8), "tongueRadius": (2.25, 2.2, 2.15), "lipWidth": (4.6, 4.4, 4.0)}
@@ -144,7 +153,7 @@ def family(female: float, child: float) -> dict[str, float]:
 def settled(track: dict[str, Any], s: dict[str, float]) -> dict[str, Any]:
     """`track` with a speaker's settings in place of its own; its frames with the speaker's
     habits of posture (as a list if they were one)."""
-    out = {**track, "body": dict(track["body"]), "source": dict(track["source"]), "glottis": dict(track.get("glottis", {}))}
+    out = {**track, "body": dict(track["body"]), "source": dict(track["source"]), **{part: dict(track.get(part, {})) for part in ("glottis", "larynx", "form")}}
     frames: NDArray[np.float64] | None = None
     for name, part, _, _, default in PARAMS:
         if name not in s:
@@ -158,8 +167,9 @@ def settled(track: dict[str, Any], s: dict[str, float]) -> dict[str, Any]:
             frames[:, k] = s[name] if part == "set" else frames[:, k] + s[name]
         else:
             out[part][name] = round(float(s[name]), 5)
-    if not out["glottis"]:
-        del out["glottis"]
+    for part in ("glottis", "larynx", "form"):
+        if not out[part]:
+            del out[part]
     if frames is not None:
         out["frames"] = frames if isinstance(track["frames"], np.ndarray) else np.round(frames, 5).tolist()
     return out

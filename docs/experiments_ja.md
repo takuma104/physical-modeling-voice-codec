@@ -498,21 +498,26 @@ uv run python -m pmvc.tract out/jvs --variant encv2 --set epilarynx=1.0
 #   包絡をどこまで合わせればよいか: 包絡のずれを段階に分けて直す。平均だけで作る段(性別、話者、音素)、フレームごとをゆっくり、
 #   フレームごと。各段の音、包絡のずれ、話者の照合
 uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --opinions
+#   フレームごとの補正を、1 フレームあたり N 個の数値で持てる粗さに丸めた場合(合成音のあとに補正フィルタを足す方式に要る情報量)
+uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --bands 4,8,16,32 --only bands4,bands8,bands16,bands32 --name ladder_bands
 #   声道の形を当てはめるための話者(テストに入っていない女性 12 人、男性 12 人、4 文ずつ。名前をカンマ区切りでファイルに)。
 #   公開用エンコーダの制御列と合成音、音素の対応付け(out/jvs/aligned.json に追加される)
 uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name encv2 --out encv2 --ids $DEV $V --quiet-pauses
 uv run python -m pmvc.align write out/jvs --models out/jvsall/models --ids $DEV
 #   声道の形を、実際に鳴らして測る: 制御列をその形で鳴らし直し、母音の包絡のずれを測る。--try は与えた形を測り、--fit は
 #   設定を範囲の中で 1 つずつ探索する(form.layerLoss は、フォークに足した「周波数とともに増える損失」)
+#   包絡のずれは 2 通りで出る: heard(各帯域を録音での大きさに応じて数える)と、重みなし(全帯域を同じ重み)。重みなしだけで
+#   当てはめた形は、ほかの物差しが V1 よりかなり悪いと判定したので、--judges で NISQA と照合モデルにも聞く
 uv run python -m pmvc.form out/jvs --per 3 --try form.layerLoss=1 --try form.layerLoss=2,glottis.closureSharpness=0.4
+uv run python -m pmvc.form out/jvs --per 25 --judges out/jvsall --name form_test --try "$A" --try "$A,form.layerLoss=0.4" --try "$FITTED"   # 試聴ページの 3 つの形
 uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --sex F --name form_fit_F \
   --fit form.layerLoss=0:5,glottis.closureSharpness=0.05:1.0,larynx.length=0.7:1.8,set.epilarynx=0:1,form.fossaLength=1.2:3.2,form.fossaArea=0.2:2.0 \
   --from form.layerLoss=0,glottis.closureSharpness=0.18,larynx.length=1.0,set.epilarynx=0,form.fossaLength=2.0,form.fossaArea=0.9
 #   伝達関数を相手に、フレームごとに構えを探す(鳴らさない)。予測は喉頭の上の管の共鳴と梨状窩の零点の付近で粗いので、
 #   届いた値は目安にとどまる
 uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
-#   試聴ページの 4 枚目(listening_v2.html): 段階の音のカードと、これまでの表
-uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
+#   試聴ページの 4 枚目(listening_v2.html): 段階の音と、形を変えた合成音(SPEC を 1 行ずつ書いたファイル、3 つまで)のカード
+uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --notes out/transplant/notes_v2.html
 ```
 
 エンコーダの学習と評価は話者で分けています。TSP では同じ文字の女性・男性話者が同じ文リストを読むので、FK・MK・FL・ML をテスト、FJ・MJ を検証に取り置くと、その話者の文も学習に出てきません。

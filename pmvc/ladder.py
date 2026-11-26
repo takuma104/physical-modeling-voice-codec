@@ -15,6 +15,10 @@ averages only, so that each step is what one kind of work could reach at best:
   own        a curve for each phone, of the speaker (the speaker's other clips): the speaker's
              tract, each sound shaped as this speaker shapes it, whatever stands around it
   slow       the frames' own gain, but only as fast as a mean over SLOW seconds follows
+  bandsN     the frames' own gain, but only as fine over frequency as N bands give it (`--bands
+             8,16,...`: N numbers a frame, on a mel scale up to the clip's Nyquist frequency,
+             with straight lines between the bands' centres): what a filter after the voice
+             would need to be told, frame by frame, to mend the envelope
   S+envR     the frames' own gain
 A clip's own frames are in none of its averages (the speaker's other clips, the sex's other
 speakers), so a step gives nothing that a setting could not have known. Phones are the
@@ -23,7 +27,7 @@ and a phone heard in fewer than FEW frames takes the step below (`own` falls to 
 `sound` to `sex`).
 
 usage: python -m pmvc.ladder [dir] --variant encv2 --enrol out/jvsall --out DIR [--name ladder] [--per 25]
-                             [--no-speaker] [--opinions]
+                             [--bands 8,16] [--only STEP,...] [--no-speaker] [--opinions]
 
 Judges: the envelope's error in the vowels (`pmvc.bench`'s), the two verifiers among the
 enrolled speakers, and with `--opinions` NISQA's two models and UTMOSv2. Writes the clips to
@@ -118,6 +122,18 @@ class Sums:
         return np.asarray(whole), {p: s / k for p, (s, k) in left.items() if k >= FEW}
 
 
+def in_bands(diff: Array, n: int) -> Array:
+    """A gain (frames, bins) as `n` numbers a frame can give it: its means over `n` bands of
+    equal width on a mel scale, joined by straight lines between the bands' centres."""
+    hz = np.fft.rfftfreq(gap.FFT, 1 / SR)
+    mel = 2595.0 * np.log10(1.0 + hz / 700.0)
+    edges = np.linspace(0.0, mel[-1], n + 1)
+    centres = 0.5 * (edges[:-1] + edges[1:])
+    which = np.minimum(np.searchsorted(edges, mel, side="right") - 1, n - 1)
+    means = np.stack([diff[:, which == b].mean(axis=1) for b in range(n)], axis=1)
+    return np.stack([np.interp(mel, centres, row) for row in means])
+
+
 def gain(c: Heard, whole: Array, by_phone: dict[str, Array] | None) -> Array:
     """A gain for each frame of a clip from averages: `whole` everywhere, or each frame's
     phone's curve where there is one, cross-faded."""
@@ -135,6 +151,8 @@ def main() -> None:
     ap.add_argument("--name", type=str, default="ladder")
     ap.add_argument("--split", type=str, default="test")
     ap.add_argument("--per", type=int, default=25, help="recordings of each speaker")
+    ap.add_argument("--bands", type=str, default="", help="also the frames' own gain in so many bands: 8,16")
+    ap.add_argument("--only", type=str, default="", help="the steps to make and judge (comma-separated; all if empty)")
     ap.add_argument("--no-speaker", action="store_true")
     ap.add_argument("--opinions", action="store_true", help="also ask NISQA's two models and UTMOSv2")
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 4) - 2))
@@ -153,6 +171,8 @@ def main() -> None:
     with ThreadPoolExecutor(a.jobs) as pool:
         clips = list(pool.map(lambda m: Heard(d, a.variant, m, pitch[m["speaker"]], aligned), kept))
     print(f"{len(clips)} recordings of {len(count)} speakers")
+    fine = [int(n) for n in filter(None, a.bands.split(","))]
+    steps = tuple(k for k in (*STEPS[:-1], *(f"bands{n}" for n in fine), STEPS[-1]) if not a.only or k in a.only.split(","))
 
     of_speaker = {s: Sums([c for c in clips if c.meta["speaker"] == s]) for s in count}
     of_sex = {x: Sums([c for c in clips if c.meta["sex"] == x]) for x in SEXES}
@@ -169,11 +189,11 @@ def main() -> None:
         gains: dict[str, Array | None] = {
             "S": None, "sex": gain(c, sex_whole, None), "speaker": gain(c, own_whole, None),
             "sound": gain(c, sex_whole, sex_phone), "own": gain(c, own_whole, own_phone),
-            "slow": over_time(diff, SLOW), "S+envR": diff,
+            "slow": over_time(diff, SLOW), "S+envR": diff, **{f"bands{n}": in_bands(diff, n) for n in fine},
         }  # fmt: skip
         kind, f0, phones = vowel_frames(d, m["id"], aligned)
         rows: dict[str, tuple[Array, list[str]]] = {}
-        for step in STEPS:
+        for step in steps:
             g = gains[step]
             y = gap.signal(c.sy if g is None else c.sy * np.exp(g), c.n)
             rows[step] = shape_rows(c.x, y, pitch[m["speaker"]], kind, f0, phones)
@@ -186,8 +206,8 @@ def main() -> None:
     with ThreadPoolExecutor(a.jobs) as pool:
         made = list(pool.map(make, clips))
 
-    out: dict[str, Any] = {"variant": a.variant, "clips": len(kept), "steps": {step: {} for step in STEPS}}
-    for step in STEPS:
+    out: dict[str, Any] = {"variant": a.variant, "clips": len(kept), "steps": {step: {} for step in steps}}
+    for step in steps:
         cell = out["steps"][step]["shape"] = {}
         for x in SEXES:
             part = [(r[step], c.meta) for r, c in zip(made, clips) if c.meta["sex"] == x and len(r[step][0])]
@@ -198,7 +218,7 @@ def main() -> None:
                     [v for (_, vowels), _ in part for v in vowels],
                 )
     who = [m["speaker"] for m in kept]
-    path = {step: [path_of(step, m["id"]) for m in kept] for step in STEPS}
+    path = {step: [path_of(step, m["id"]) for m in kept] for step in steps}
     for short, model in {} if a.no_speaker else gap.VERIFIERS.items():
         from .audio import load
         from .whose import Verifier
@@ -206,7 +226,7 @@ def main() -> None:
         verifier = Verifier(pick_device(), model)
         means, sex = gap.enrolled(a.enrol, verifier, short, a.jobs)
         with ThreadPoolExecutor(a.jobs) as pool:
-            for step in STEPS:
+            for step in steps:
                 heard = pool.map(lambda p: load(p, 16000)[0], path[step])
                 out["steps"][step][short] = gap.identify(np.stack([verifier.vector(x) for x in heard]), who, means, sex)
         del verifier
@@ -215,7 +235,7 @@ def main() -> None:
         from .natural import score
         from .opinions import utmos
 
-        for step in STEPS:
+        for step in steps:
             rows = score(path[step])
             marks = {"quality": [r["quality"] for r in rows], "natural": [r["natural"] for r in rows], "utmos": utmos(path[step])}
             for k, values in marks.items():
@@ -223,7 +243,7 @@ def main() -> None:
         (d / f"{a.name}.json").write_text(json.dumps(out, indent=1))
 
     print(f"{'':10s}{'envelope error F / M (dB)':28s}" + ("" if a.no_speaker else f"{'top-1 WavLM F / M':20s}{'UniSpeech-SAT F / M':22s}{'own (WavLM)':12s}") + ("NISQA natural   quality     UTMOSv2" if a.opinions else ""))
-    for step in STEPS:
+    for step in steps:
         h = out["steps"][step]
         line = f"{step:10s}" + f"{h['shape']['F']['total']:5.1f} / {h['shape']['M']['total']:4.1f}".ljust(28)
         if not a.no_speaker:

@@ -503,21 +503,26 @@ uv run python -m pmvc.tract out/jvs --variant encv2 --set epilarynx=1.0
 #   How much of a recording's envelope must a render have? The envelope's error mended in steps: by averages only (a sex's, a
 #   speaker's, a phone's), then frame by frame slowly, then frame by frame. Each step's clips, envelope error and speaker identification
 uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --opinions
+#   The frames' own gain, but only as fine over frequency as N numbers a frame give it: what a filter after the voice would need
+uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --bands 4,8,16,32 --only bands4,bands8,bands16,bands32 --name ladder_bands
 #   Speakers to fit the tract's form on, none of them in the test: 12 women and 12 men, 4 recordings each (their names in a file,
 #   comma-separated). Their tracks and renders by the release encoder, and their alignments (added to out/jvs/aligned.json)
 uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name encv2 --out encv2 --ids $DEV $V --quiet-pauses
 uv run python -m pmvc.align write out/jvs --models out/jvsall/models --ids $DEV
 #   A form of the tract judged on renders: the tracks rendered again in the form, the vowels' envelope error measured. --try measures
 #   forms as given; --fit searches settings within bounds, one at a time. (form.layerLoss is the fork's loss that grows with frequency)
+#   The envelope's error is printed two ways: `heard` (each band counted by how loud the recording is in it) and plain (all bands
+#   alike). A fit by the plain error found a form the other judges put far below V1, so --judges asks NISQA and a verifier too
 uv run python -m pmvc.form out/jvs --per 3 --try form.layerLoss=1 --try form.layerLoss=2,glottis.closureSharpness=0.4
+uv run python -m pmvc.form out/jvs --per 25 --judges out/jvsall --name form_test --try "$A" --try "$A,form.layerLoss=0.4" --try "$FITTED"   # the three forms on the page
 uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --sex F --name form_fit_F \
   --fit form.layerLoss=0:5,glottis.closureSharpness=0.05:1.0,larynx.length=0.7:1.8,set.epilarynx=0:1,form.fossaLength=1.2:3.2,form.fossaArea=0.2:2.0 \
   --from form.layerLoss=0,glottis.closureSharpness=0.18,larynx.length=1.0,set.epilarynx=0,form.fossaLength=2.0,form.fossaArea=0.9
 #   Postures searched frame by frame against the transfer function (no render). Its predictor is rough near the tube's resonance
 #   and the fossa's zero, so what it reaches is an indication only
 uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
-#   The fourth listening page (listening_v2.html): the ladder's steps on cards, and the earlier tables
-uv run python -m pmvc.page2 out/jvs --notes out/transplant/notes_v2.html
+#   The fourth listening page (listening_v2.html): the ladder's steps and up to three forms (a file of SPECs, a line each) on cards
+uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --notes out/transplant/notes_v2.html
 ```
 
 The encoders are trained and evaluated on separate speakers. In TSP a woman and a man with the same letter read the same sentence list, so with FK, MK, FL and ML held out for the test and FJ and MJ for validation, those speakers' sentences are not in the training either.
