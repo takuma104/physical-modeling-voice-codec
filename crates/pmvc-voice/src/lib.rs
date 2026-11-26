@@ -194,7 +194,11 @@ impl Player {
     /// thumps below a few hundred hertz. `closedArea` (cm²) is the area under which the engine
     /// takes a constriction for closed and stops the flow through it within one sample: at the
     /// engine's own 2e-4 the flow still running then (about 1 cm³/s under a full breath) stops as
-    /// a step, a click that reaches 16 kHz.
+    /// a step, a click that reaches 16 kHz. `noiseDraws` (the fork's; 0, the engine's way, or 3
+    /// for a voice's three noise sources) is how many random numbers the noise draws a sample
+    /// whatever the number of sources: at 0 the breath noise of everything after the first
+    /// narrowing depends on the control step in which the narrowing's source joined, so two
+    /// tracks that are all but the same render with different noise.
     pub fn set_airway(&mut self, patch: &str) -> Said<()> {
         let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
         let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
@@ -210,6 +214,7 @@ impl Player {
                 "sealEase" => a.seal_ease = x,
                 "volumeSource" => a.net.enable_volume_source = x != 0.0,
                 "closedArea" => a.net.closed_area = x,
+                "noiseDraws" => a.net.noise_draws = x as usize,
                 _ => return Err(bad(format!("unknown airway parameter {k:?}"))),
             }
         }
@@ -402,13 +407,20 @@ impl Player {
     /// square of the frequency up to `layerCorner` (Hz), so that it widens the upper
     /// resonances and leaves the lowest alone. At 1 and 8000 it adds about 70 Hz to the width
     /// of a resonance at 3 kHz in a tube of 3 cm², 10 Hz at 1 kHz and 200 Hz at 6 kHz. The
-    /// engine has none (0).
+    /// engine has none (0). And `profile`, a tract of the speaker's own (the fork's
+    /// `HumanAirway::set_area_profile`): a list of natural logarithms of what the tract's area
+    /// is multiplied by at places equally far apart from the glottis to the lips, whatever the
+    /// articulators do (empty: none, the engine's).
     pub fn set_form(&mut self, patch: &str) -> Said<()> {
         let v: serde_json::Value = serde_json::from_str(patch).map_err(bad)?;
         let obj = v.as_object().ok_or_else(|| bad("a JSON object is needed"))?;
         let a = &mut self.v.airway;
         let (k, t) = (a.body.scale, a.fossa);
-        for (key, x) in obj {
+        if let Some(p) = obj.get("profile") {
+            let logs: Option<Vec<f64>> = p.as_array().and_then(|l| l.iter().map(|x| x.as_f64().filter(|x| x.abs() <= 3.0)).collect());
+            a.set_area_profile(&logs.ok_or_else(|| bad("profile: a list of logarithms of area ratios is needed, none beyond 3"))?);
+        }
+        for (key, x) in obj.iter().filter(|(key, _)| key.as_str() != "profile") {
             let x = x.as_f64().ok_or_else(|| bad(format!("{key}: a number is needed")))?;
             if !(x > 0.0 || (key == "layerLoss" && x == 0.0)) {
                 return Err(bad(format!("{key}: a positive number is needed")));
@@ -448,7 +460,7 @@ impl Player {
             "fossaLength": self.fossa.0, "fossaArea": self.fossa.1,
             "pharynxAlpha": law.pharynx.0, "pharynxBeta": law.pharynx.1, "oralAlpha": law.oral.0, "oralBeta": law.oral.1, "frontAlpha": law.front.0, "frontBeta": law.front.1,
             "viscous": a.net.viscous_scale, "viscousHz": a.net.viscous_omega / (2.0 * PI),
-            "layerLoss": self.layer.0, "layerCorner": self.layer.1,
+            "layerLoss": self.layer.0, "layerCorner": self.layer.1, "profile": a.area_profile(),
         })
         .to_string()
     }

@@ -507,6 +507,8 @@ uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out ou
 uv run python -m pmvc.ladder out/jvs --variant encv2 --enrol out/jvsall --out out/jvs/v2_probe/ladder --bands 4,8,16,32 --only bands4,bands8,bands16,bands32 --name ladder_bands
 #   Speakers to fit the tract's form on, none of them in the test: 12 women and 12 men, 4 recordings each (their names in a file,
 #   comma-separated). Their tracks and renders by the release encoder, and their alignments (added to out/jvs/aligned.json)
+#   (DEV: the names in out/jvs/v2_probe/dev_ids.txt)
+DEV=$(cat out/jvs/v2_probe/dev_ids.txt)
 uv run python -m pmvc.encoder encode out/jvs --models out/transplant/models --name encv2 --out encv2 --ids $DEV $V --quiet-pauses
 uv run python -m pmvc.align write out/jvs --models out/jvsall/models --ids $DEV
 #   A form of the tract judged on renders: the tracks rendered again in the form, the vowels' envelope error measured. --try measures
@@ -514,6 +516,9 @@ uv run python -m pmvc.align write out/jvs --models out/jvsall/models --ids $DEV
 #   The envelope's error is printed two ways: `heard` (each band counted by how loud the recording is in it) and plain (all bands
 #   alike). A fit by the plain error found a form the other judges put far below V1, so --judges asks NISQA and a verifier too
 uv run python -m pmvc.form out/jvs --per 3 --try form.layerLoss=1 --try form.layerLoss=2,glottis.closureSharpness=0.4
+#   The page's form a (no wall layer) and the first fit's six settings (form c)
+A="F:larynx.length=1.05,M:larynx.length=1.158,F:set.epilarynx=0.4377,M:set.epilarynx=0.7082,F:glottis.closureSharpness=0.3,M:glottis.closureSharpness=0.45"
+FITTED="F:form.layerLoss=1.436,F:glottis.closureSharpness=0.461,F:larynx.length=1.05,F:set.epilarynx=0.4377,F:form.fossaLength=1.964,F:form.fossaArea=0.8492,M:form.layerLoss=1.631,M:glottis.closureSharpness=0.7228,M:larynx.length=1.158,M:set.epilarynx=0.7082,M:form.fossaLength=2.033,M:form.fossaArea=0.8875"
 uv run python -m pmvc.form out/jvs --per 25 --judges out/jvsall --name form_test --try "$A" --try "$A,form.layerLoss=0.4" --try "$FITTED"   # the three forms on the page
 uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --sex F --name form_fit_F \
   --fit form.layerLoss=0:5,glottis.closureSharpness=0.05:1.0,larynx.length=0.7:1.8,set.epilarynx=0:1,form.fossaLength=1.2:3.2,form.fossaArea=0.2:2.0 \
@@ -521,8 +526,26 @@ uv run python -m pmvc.form out/jvs --ids out/jvs/v2_probe/dev_ids.txt --per 4 --
 #   Postures searched frame by frame against the transfer function (no render). Its predictor is rough near the tube's resonance
 #   and the fossa's zero, so what it reaches is an indication only
 uv run python -m pmvc.invert out/jvs --per 2 --stride 4 --evals 1280
-#   The fourth listening page (listening_v2.html): the ladder's steps and up to three forms (a file of SPECs, a line each) on cards
-uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --notes out/transplant/notes_v2.html
+#   Can the engine give a recording's envelope when its track asks for it? The tracks searched through the engine, every third knot
+#   (50 ms apart) at once in a render, each judged by the frames around it. --astray tests the search on a target that has an answer
+#   (the track's own knots moved at random). --form: the form searched in ($A is the page's form a). --shape 12: also a shape of the
+#   tract that a speaker's sentences share (the fork's area profile, 12 places from the glottis to the lips)
+#   After an edit of crates/pmvc-voice or the engine: uv sync --reinstall-package pmvc-engine (uv does not rebuild it by itself)
+CARDS=jvs093_099,jvs095_098,jvs097_080,jvs100_090
+#   (renders that are compared draw their noise alike: airway.noiseDraws=3, the fork's setting)
+uv run python -m pmvc.reach out/jvs --ids jvs100_090 --iters 20 --astray 0.5 --stay 0 --form airway.noiseDraws=3 --out reach_self
+uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_v1 --judges out/jvsall
+uv run python -m pmvc.reach out/jvs --ids $CARDS --iters 16 --out reach_a --form "$A" --judges out/jvsall
+uv run python -m pmvc.reach out/jvs --ids jvs093_099,jvs093_091,jvs093_088,jvs100_090,jvs100_091,jvs100_099 --iters 16 --shape 12 --out reach_as --form "$A" --judges out/jvsall
+uv run python -m pmvc.reach out/jvs --ids jvs095_098,jvs095_091,jvs095_088,jvs097_080,jvs097_091,jvs097_099 --iters 16 --shape 12 --out reach_as2 --form "$A" --judges out/jvsall
+#   The speakers' shapes without any search of the tracks: V1's tracks rendered in them, on all test sentences of those speakers
+SHAPES=out/jvs/reach_as.json,out/jvs/reach_as2.json
+uv run python -m pmvc.form out/jvs --try "$A" --shapes $SHAPES --judges out/jvsall --per 25 --name form_shape
+uv run python -m pmvc.form out/jvs --write encv2_shape --try "$A" --shapes $SHAPES
+#   The fourth listening page (listening_v2.html): the ladder's steps, the first of the forms (a file of SPECs, a line each) and
+#   the searched renders on cards
+uv run python -m pmvc.page2 out/jvs --forms out/jvs/v2_probe/form_cards.txt --reached shape=encv2_shape,reach-a=reach_a,reach-as=reach_as+reach_as2 \
+  --notes out/transplant/notes_v2.html
 ```
 
 The encoders are trained and evaluated on separate speakers. In TSP a woman and a man with the same letter read the same sentence list, so with FK, MK, FL and ML held out for the test and FJ and MJ for validation, those speakers' sentences are not in the training either.

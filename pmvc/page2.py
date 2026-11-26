@@ -1,16 +1,18 @@
 """The listening page of the work on the voice itself: what a render lacks of its recording, for the ear to check the judges against.
 
-usage: python -m pmvc.page2 [dir] [--variant encv2] [--ladder DIR] [--forms FILE] [--notes notes_v2.html]
-                            [--out listening_v2.html] [--pages out/transplant]
+usage: python -m pmvc.page2 [dir] [--variant encv2] [--ladder DIR] [--forms FILE] [--reached KEY=VARIANT,...]
+                            [--notes notes_v2.html] [--out listening_v2.html] [--pages out/transplant]
 
 A fourth page beside `pmvc.page`'s three, in their form (its shell, its buttons). From <dir>
 (JVS's test recordings and a variant's renders of them) it makes, for one sentence each of
 SPEAKERS, a card: the recording, the render, the render with the recording's envelope in every
 frame (`pmvc.gap`), and between the last two the steps of `pmvc.ladder` (its clips are read from
 `--ladder`, the directory it wrote them to): the envelope mended by averages only, and frame by
-frame but slowly; and with `--forms` (a file of `pmvc.form`'s SPECs) the track rendered again
-with the tract in each of those forms. Under each clip, how far its envelope is from the
-recording's in the vowels.
+frame but slowly (of the steps, HEARD_STEPS are on the cards); with `--forms` (a file of
+`pmvc.form`'s SPECs) the track rendered again with the tract in the first of those forms; and
+with `--reached` the renders that `pmvc.reach` found by searching the tracks, and those of
+V1's tracks in the speakers' own tract shapes (`pmvc.form --write ... --shapes`). Under each
+clip, how far its envelope is from the recording's in the vowels.
 The tables are read from what `pmvc.ladder`, `pmvc.gap` and `pmvc.bench` wrote in <dir>:
 ladder.json, gap_<variant>.json, gap_low_<variant>.json, bench_v1.json, and for the test of
 how near the voice comes to a recording's envelope when asked, bench_static.json,
@@ -55,19 +57,27 @@ LABELS: dict[str, str] = {
     "sex": "① 性別に共通の補正 1 本",
     "speaker": "② 話者ごとの補正 1 本",
     "sound": "③ 音素ごとの補正（性別に共通）",
-    "own": "④ 音素ごとの補正（話者ごと）",
+    "own": "④ 音素ごと・話者ごとの平均の補正",
     "slow": "⑤ フレームごと、ただしゆっくり",
     "form-a": "ⓐ 喉頭の上の管を長く狭く、声門の閉じ方を少し鋭く",
     "form-b": "ⓑ ⓐ に高域の損失を少し足す",
     "form-c": "ⓒ 包絡だけに当てはめた形（6 つとも）",
+    "shape": "ⓓ ⓐ + 話者の声道の形（制御は V1 のまま）",
+    "reach-a": "ⓔ ⓐ のまま、制御を探索",
+    "reach-as": "ⓕ 話者の声道の形 + 制御を探索",
 }
-# the forms heard on the cards, in the order of `--forms`' lines
+# the forms of `--forms`' lines, in their order, and those heard on the cards
 FORMS: tuple[str, ...] = ("form-a", "form-b", "form-c")
+HEARD_FORMS: tuple[str, ...] = ("form-a",)
+# the steps of the ladder heard on the cards
+HEARD_STEPS: tuple[str, ...] = ("S", "S+envR", "own", "slow")
+# the searched renders (`pmvc.reach`'s and `pmvc.form --shapes`' variants), as `--reached` names them
+REACHED: tuple[str, ...] = ("shape", "reach-a", "reach-as")
 ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("基準", ("R", "S", "S+envR")),
-    ("平均だけで作った補正（合成音に掛けるカーブを、その発話以外の平均から作る）", ("sex", "speaker", "sound", "own")),
-    ("フレームごとの補正を 0.1 秒の移動平均でならしたもの", ("slow",)),
-    ("エンジンの形を変えて鳴らし直した合成音（補正は掛けていません。制御列は V1 と同じ。第 2 節）", FORMS),
+    ("フレームごとの補正を 0.1 秒の移動平均でならしたもの（前回、上限にかなり近いと確認）", ("slow",)),
+    ("前回までに聞いた、時間で変わらない補正と形", ("own", "form-a")),
+    ("今回: 話者ごとの声道の形と、制御の探索（エンジンをそのまま鳴らした音。補正は掛けていません）", REACHED),
 )
 # V1's values of the settings a form is fitted in (`pmvc.form`'s `--from`)
 START: dict[str, str] = {
@@ -85,16 +95,28 @@ STEPS: tuple[tuple[str, str, str], ...] = (
     ("S+envR", "フレームごとに合わせる", "制御列が録音をフレームごとに追う（上限）"),
 )
 
-LADDER_TEXT = """<p>前回の試聴で、「合成音 + 録音の包絡」（合成音の短時間スペクトルに、録音との包絡の比をフレームごとに掛けた音）が、どのカードでも録音の次に良いと確認できました。ただ、この音は包絡のずれを一度に全部直しています。全員に共通のずれ、話者ごとのずれ、音ごとのずれ、フレームごとのずれのうち、どこまで直せば近づいて聞こえるのかを、段階に分けて作りました。</p>
-<p>①〜④は、合成音に掛ける補正カーブを<b>平均だけ</b>で作っています。その発話自身のフレームは使わず、①と③は同性のほかの話者、②と④は同じ話者のほかの発話の平均です。つまり、設定や声道の形として前もって持てる情報だけで作った音です。⑤は、フレームごとの補正を 0.1 秒の移動平均でならしました。</p>
+NOW_TEXT = """<p>前回の試聴で、平均だけで作った補正（①〜④）と形だけの変更（ⓐ）は V1 とほとんど変わらず、フレームごとの補正をゆっくり掛けた音（⑤）だけが上限にかなり近い、と確認できました。つまり、合成音の包絡が録音を<b>時間に沿って</b>追わないと、近づいて聞こえません。</p>
+<p>そこで今回は、補正を掛けるのをやめて、エンジンそのものがどこまで録音の包絡を追えるかを調べました。制御列（舌・顎・唇などの 14 チャネル）を 50 ms きざみで動かし、実際に鳴らしながら録音の包絡に寄せる探索です（<code>pmvc.reach</code>）。あわせて、エンジン（フォーク）に「話者ごとの声道の形」を足しました。声門から唇までの 12 か所で、声道の断面積を何倍にするかを話者ごとに決める設定です（時間では変わりません。既定では無効で、V1 の音は 1 サンプルも変わりません）。</p>
+<p>カードの最後の段が今回の音です。どれも、エンジンをそのまま鳴らした音です。</p>
+<ul>
+<li><b>ⓓ</b>: ⓐ の形に、その話者の声道の形を足したもの。制御列は V1 のまま（エンコーダの出力そのまま）。</li>
+<li><b>ⓔ</b>: ⓐ の形のまま、制御列だけをその文の録音に合わせて探索したもの。</li>
+<li><b>ⓕ</b>: 話者の声道の形と、制御列の探索の両方。声道の形は、その話者の 3 文に共通の 1 組です。</li>
+</ul>
 <p>聞いていただきたいのは次の点です。</p>
 <ul>
-<li>①〜④のうち、「フレームごとに合わせる（上限）」に近づいて聞こえる段はありますか。女性の「華やかさ」や本人らしさは、どの段で出ますか。</li>
-<li>②（話者ごとの補正 1 本）と④（音素ごと、話者ごと）の差は聞こえますか。</li>
-<li>⑤（ゆっくり）は、上限の音とどのくらい違って聞こえますか。</li>
+<li>ⓕ は、V1 や ⓐ より録音に近づいて聞こえますか。⑤（男女 1 人ずつにあります）や上限と比べて、どのくらいの位置ですか。</li>
+<li>ⓕ に副作用はありますか（ざらつき、こもり、ブザーのような音、発音の崩れ）。包絡のずれだけを見て探索しているので、前回の ⓒ のような抜け道に入っていないかを耳で確かめたいです。</li>
+<li>ⓓ（形だけ）と ⓕ の差、ⓔ（制御だけ）と ⓕ の差は聞こえますか。ⓓ が良ければ話者ごとの設定だけで済み、ⓕ まで要るならエンコーダの学習をやり直すことになります。</li>
+</ul>"""
+LADDER_TEXT = """<p>前回（2 回め）の試聴で使った表です。「合成音 + 録音の包絡」（上限）は包絡のずれを一度に全部直しているので、どこまで直せば近づいて聞こえるのかを段階に分けました。①〜④は補正カーブを<b>平均だけ</b>で作ったもの（その発話自身のフレームは使わず、同性のほかの話者や同じ話者のほかの発話の平均）、⑤はフレームごとの補正を 0.1 秒の移動平均でならしたものです。</p>
+<p>試聴の結果は次のとおりでした。</p>
+<ul>
+<li>①〜④は、V1 より微小なニュアンスで近づいた気はするが、4 つの間にほぼ差がない。②と④の差もほとんど分からない。</li>
+<li>⑤は上限にかなり近く、①〜④よりずっと良い。上限との違いは、一部の音（「なく」「だった」）の後ろで薄く二重に聞こえるものがある程度。</li>
 </ul>
-<p>照合モデルの答えは下の表のとおりです。平均だけで作った①〜④では本人率が上がらず、⑤で少し、フレームごとに合わせて初めて大きく上がります。耳でも同じかどうかで、次の作業の配分（エンジンの形を直すこと、制御列が録音を細かく追えるようにすること）を決めます。</p>"""
-FIRST_TEXT = """<p>最初の診断と、前回の試聴（耳合わせ①）の結果です。この節に音はありません。</p>
+<p>照合モデルの答えも同じ向きです。平均だけで作った①〜④では本人率が上がらず、⑤で少し、フレームごとに合わせて初めて大きく上がります。</p>"""
+FIRST_TEXT = """<p>最初の診断と、1 回めの試聴の結果です。この節に音はありません。</p>
 <ul>
 <li>「合成音 + 録音の包絡」は、4 枚のカードすべてで録音の次に良く、録音にかなり近く聞こえる。→ 包絡を録音に合わせることを、以後の作業の的にします。</li>
 <li>ノイズフロアや短い残響を足しても、違いは聞こえない。→ NISQA の自然さがこれで上がるのは、耳には関係のない採点の癖でした。出力段（部屋とノイズ）は作りません。</li>
@@ -102,7 +124,7 @@ FIRST_TEXT = """<p>最初の診断と、前回の試聴（耳合わせ①）の�
 <li>喉頭の上の管を狭めた音は、副作用はないが違いは少し分かる程度。「華やかさ」は「合成音 + 録音の包絡」のほうが圧倒的に良い。</li>
 </ul>
 <p>下の表は、録音と合成音の成分を入れ替えた音の、照合モデルと NISQA の点数です。</p>"""
-REACH_TEXT = """<p>話者性は動く包絡にあります。では、いまのエンジンに「録音の包絡に合わせよ」と直接頼むと、どこまで寄れるでしょうか。2 通りで試しました。1 つは話者ごとの設定（体格の 4 つの値、声門、喉頭の上の管、喉頭・口蓋帆・舌の根のずれ）を、照合モデルを使わずに包絡の距離だけで当てはめること。もう 1 つは、制御列そのものを発話ごとに探索して、包絡の距離を下げることです。この節に音はありません。</p>"""
+REACH_TEXT = """<p>作業の最初に、いまのエンジンに「録音の包絡に合わせよ」と頼むとどこまで寄れるかを 2 通りで試したときの記録です。1 つは話者ごとの設定（体格の 4 つの値、声門、喉頭の上の管、喉頭・口蓋帆・舌の根のずれ）を包絡の距離だけで当てはめること。もう 1 つは、制御列を発話ごとに探索すること（変更を 1 か所ずつ試し、発話全体の距離で採点する方式）です。このときは「ほとんど寄れない」という結果でしたが、探索が弱かったためで、第 1 節の探索（包絡が局所的に決まることを使い、全部の箇所を同時に動かす方式）に置き換えました。この節に音はありません。</p>"""
 LOW_TEXT = """<p>NISQA の自然さのモデルは、合成音に声と無関係なノイズフロアや短い残響を足すだけで点を上げます。どの帯域のどの区間を聞いているかを調べた表です。</p>"""
 
 
@@ -113,23 +135,34 @@ def chosen(d: Path, speaker: str, k: int) -> dict[str, Any]:
     return sorted((m for m in metas if m["speaker"] == speaker), key=lambda m: abs(m["span"][1] - m["span"][0] - LENGTH))[k]
 
 
-def versions(d: Path, variant: str, ladder: Path, m: dict[str, Any], forms: list[str]) -> dict[str, Array]:
+def versions(d: Path, variant: str, ladder: Path, m: dict[str, Any], forms: list[str], reached: dict[str, list[str]]) -> dict[str, Array]:
     """A card's clips, at one speech level: the recording, `pmvc.ladder`'s steps of its render,
-    and for each of `forms` (SPECs of `pmvc.form`) the track rendered again with the tract in it."""
+    for each of `forms` (SPECs of `pmvc.form`) the track rendered again with the tract in it,
+    and for each of `reached` the render that one of its variants has of the recording."""
     x = gap.pair(d, variant, m["id"])[0]
+
+    def on_clock(y: Array) -> Array:
+        y = resample_poly(y, 1, 48000 // gap.SR)[round(LEAD * gap.SR) :]
+        y = np.pad(y, (0, max(0, len(x) - len(y))))[: len(x)]
+        return at_level(np.roll(y, -gap.lag(x, y)), gap.SR, LEVEL)
+
     out = {"R": at_level(x, gap.SR, LEVEL)}
-    for k in LABELS:
-        if k != "R" and k not in FORMS:
-            out[k] = load(ladder / k / f"{m['id']}.wav", gap.SR)[0]
+    for k in HEARD_STEPS:
+        out[k] = load(ladder / k / f"{m['id']}.wav", gap.SR)[0]
     track = json.loads((d / variant / f"{m['id']}.tracks.json").read_text())
     for k, spec in zip(FORMS, forms):
-        y = resample_poly(render_track(formed(track, m["sex"], settings(spec))), 1, 48000 // gap.SR)[round(LEAD * gap.SR) :]
-        y = np.pad(y, (0, max(0, len(x) - len(y))))[: len(x)]
-        out[k] = at_level(np.roll(y, -gap.lag(x, y)), gap.SR, LEVEL)
+        if k in HEARD_FORMS:
+            out[k] = on_clock(render_track(formed(track, m["sex"], settings(spec))))
+    for k, variants in reached.items():
+        for v in variants:
+            if (d / v / f"{m['id']}.wav").exists():
+                out[k] = on_clock(load(d / v / f"{m['id']}.wav", 48000)[0])
     return out
 
 
-def cards(d: Path, variant: str, ladder: Path, forms: list[str], clips: dict[str, str]) -> str:
+def cards(d: Path, variant: str, ladder: Path, forms: list[str], reached: dict[str, list[str]], clips: dict[str, str], errors: dict[str, dict[str, list[tuple[float, float]]]]) -> str:
+    """The cards. `errors` takes, for each kind of clip and each sex, the envelope's error of
+    the cards' clips (as far as it is heard, and plain)."""
     metas = [json.loads((d / "meta" / f"{i}.json").read_text()) for i in ids_in(d, "test")]
     aligned: dict[str, Any] = json.loads((d / "aligned.json").read_text())
     out = []
@@ -138,20 +171,19 @@ def cards(d: Path, variant: str, ladder: Path, forms: list[str], clips: dict[str
             m = chosen(d, speaker, n)
             pitch = float(np.median([x["f0Median"] for x in metas if x["speaker"] == speaker]))
             heard = Clip(d, variant, m, pitch, aligned)
-            made = versions(d, variant, ladder, m, forms)
+            made = versions(d, variant, ladder, m, forms, reached)
             paths: dict[str, Path] = {}
             said: dict[str, str] = {}
             for k, x in made.items():
+                if k != "R":
+                    lack = heard.lack(x)
+                    plain = float(np.sqrt(((lack - lack.mean(axis=1, keepdims=True)) ** 2).mean()))
+                    errors.setdefault(k, {}).setdefault(m["sex"], []).append((heard_error(heard.real, lack), plain))
                 if k == "slow" and speaker not in WITH_SLOW:
                     continue
                 paths[k] = Path(tmp) / f"{m['id']}_{len(paths)}.wav"
                 sf.write(str(paths[k]), x * min(1.0, 0.98 / max(float(np.abs(x).max()), 1e-9)), gap.SR, subtype="PCM_16")
-                if k == "R":
-                    said[k] = "録音そのもの"
-                else:
-                    lack = heard.lack(x)
-                    plain = float(np.sqrt(((lack - lack.mean(axis=1, keepdims=True)) ** 2).mean()))
-                    said[k] = f"母音の包絡のずれ {heard_error(heard.real, lack):.1f} dB（聞こえ方で重み付け。重みなしでは {plain:.1f} dB）"
+                said[k] = "録音そのもの" if k == "R" else f"母音の包絡のずれ {errors[k][m['sex']][-1][0]:.1f} dB（聞こえ方で重み付け。重みなしでは {plain:.1f} dB）"
             rows_html = "".join(
                 f'<div class="kind"><span class="kind-label">{esc(title)}</span><div class="clips">'
                 + "".join(button(clips, f"{m['id']}/{k}", paths[k], LABELS[k], said[k], "ref" if k == "R" else "", "包絡") for k in keys if k in paths)
@@ -168,6 +200,36 @@ def cards(d: Path, variant: str, ladder: Path, forms: list[str], clips: dict[str
 </article>"""
             )
     return "".join(out)
+
+
+def cards_table(d: Path, errors: dict[str, dict[str, list[tuple[float, float]]]]) -> str:
+    """The envelope's error of the cards' own clips, a row a kind; and under it what the
+    speakers' shapes do to the other test sentences (`pmvc.form --shapes`' form_shape.json)."""
+    order = ("S", "own", "form-a", "shape", "reach-a", "reach-as", "slow", "S+envR")
+    body = "".join(
+        f'<tr><th>{esc(LABELS[k])}</th>' + "".join(f'<td class="num">{pair({s: float(np.mean([e[i] for e in errors[k][s]])) for s in SEXES}, "{:.1f}")}</td>' for i in (0, 1)) + "</tr>"
+        for k in order if k in errors and all(s in errors[k] for s in SEXES)
+    )  # fmt: skip
+    out = f"""<div class="scroll"><table>
+<caption>カードの 4 文（女性 2 文 / 男性 2 文）での、母音の包絡の録音とのずれ（dB、rms）。「重み付き」は各帯域を録音での大きさに応じて数えたもの、「重みなし」は 8 kHz までの全帯域を同じ重みで数えたもの。ⓕ の声道の形は、カードの文を含むその話者の 3 文に合わせてあります。</caption>
+<thead><tr><th>音</th><th>ずれ（重み付き）</th><th>ずれ（重みなし）</th></tr></thead><tbody>{body}</tbody></table></div>"""
+    p = d / "form_shape.json"
+    if p.exists():
+        tries = json.loads(p.read_text())["tries"]
+        names = {"": "合成音（V1）"}
+        for k in tries:
+            if k:
+                names[k] = "ⓓ ⓐ + 話者の声道の形" if k.endswith("+shapes") else "ⓐ"
+        rows = "".join(
+            f'<tr><th>{esc(names[k])}</th>'
+            + "".join(f'<td class="num">{pair({s: m[s][key] for s in SEXES}, fmt)}</td>' for key, fmt in (("heard", "{:.1f}"), ("total", "{:.1f}"), ("quality", "{:.2f}"), ("natural", "{:.2f}"), ("own", "{:.3f}")) if all(key in m[s] for s in SEXES))
+            + "</tr>"
+            for k, m in tries.items()
+        )
+        out += f"""<div class="scroll"><table>
+<caption>声道の形は、合わせるのに使っていない文でも効くか。カードの 4 話者のテスト全文（各 25 文、うち 3 文が形を合わせた文）を、制御列は V1 のまま鳴らした値です。女性 / 男性。類似度は WavLM の本人とのコサイン類似度（実録音は 0.98）。NISQA は参考です。</caption>
+<thead><tr><th>音</th><th>ずれ（重み付き）</th><th>ずれ（重みなし）</th><th>NISQA 品質</th><th>NISQA 自然さ</th><th>類似度</th></tr></thead><tbody>{rows}</tbody></table></div>"""
+    return out
 
 
 def ladder_table(d: Path) -> str:
@@ -207,11 +269,12 @@ FORM_KEYS: tuple[tuple[str, str, str], ...] = (
 )
 FORM_TEXT = """<p>合成音の包絡のずれのうち、全員に共通の部分はエンジンの形から来ています。そこで、形の設定を実際に鳴らしながら録音の包絡に当てはめました（制御列は V1 のまま。当てはめはテストに入っていない 24 話者で行い、下の表はテストの 8 話者です）。動かしたのは、喉頭の上の管の長さと狭め、声門の閉じ方、梨状窩、そしてエンジン（フォーク）に新しく足した「周波数とともに増える損失」です。この損失は既定では無効で、V1 の音は 1 サンプルも変わりません。</p>
 <p><b>最初の当てはめは、物差しの抜け道に入りました。</b>母音の包絡のずれだけを見て当てはめると、「強い損失 + 鋭い声門の閉じ方」という形（ⓒ）になり、ずれは 1.7 dB 縮みます。ところが予測モデルと照合モデルは、この音を V1 よりかなり悪いと判定します（下の表）。スペクトログラムで見ると、5 kHz より上の余分な共鳴の線は消えますが、録音でははっきりしている 2〜4.5 kHz のフォルマントまでならされていました。包絡のずれを全帯域同じ重みで数えていたので、録音でほとんど鳴っていない 5〜8 kHz を消すことが高く評価されてしまったのです。</p>
-<p>そこで、包絡のずれを「録音で大きく鳴っている帯域ほど重く数える」ように直し（表の「聞こえ方で重み付け」）、損失を使わない控えめな形（ⓐ）を選び直しました。第 1 節のカードの最後の段で、ⓐⓑⓒを聞けます。聞いていただきたいのは次の点です。</p>
+<p>そこで、包絡のずれを「録音で大きく鳴っている帯域ほど重く数える」ように直し（表の「聞こえ方で重み付け」）、損失を使わない控えめな形（ⓐ）を選び直しました。</p>
+<p>前回の試聴の結果は次のとおりでした（ⓑとⓒの音は、いまのページからは外してあります）。</p>
 <ul>
-<li>ⓐは「合成音（V1）」より録音に近づいて聞こえますか。副作用はありますか。</li>
-<li>ⓒは本当に悪く聞こえますか（こもる、ざらつく、など）。包絡のずれは最も小さいのに、予測モデルは最も低く付けています。どちらの物差しが耳に近いかを知りたいです。</li>
-<li>ⓑ（ⓐ に高域の損失を少し）は、ⓐと比べてどうですか。</li>
+<li>ⓐは V1 よりほんの少し録音に近い。ただ、⑤や上限からはまだだいぶ遠い。</li>
+<li>ⓒは強いざらつきとブザーのような音があり、使えない。包絡のずれは最も小さいのに耳では最悪で、包絡のずれだけでは形を選べないことが確かめられました。</li>
+<li>ⓑ（ⓐ に高域の損失を少し）は V1 との差が非常に小さく、ⓐのほうが少し良い。</li>
 </ul>"""
 
 
@@ -454,21 +517,27 @@ def tract_section(d: Path, variant: str, n: int) -> str:
 </section>"""
 
 
-def build(d: Path, variant: str, ladder: Path, forms: list[str], notes: str) -> str:
+def build(d: Path, variant: str, ladder: Path, forms: list[str], reached: dict[str, list[str]], notes: str) -> str:
     clips: dict[str, str] = {}
+    errors: dict[str, dict[str, list[tuple[float, float]]]] = {}
     form = form_section(d, forms)
-    body = f"""<section aria-labelledby="h-ladder"><h2 id="h-ladder">1. 包絡をどこまで合わせれば、録音に近く聞こえるか</h2>
+    made = cards(d, variant, ladder, forms if form else [], reached, clips, errors)
+    body = f"""<section aria-labelledby="h-now"><h2 id="h-now">1. エンジンは録音の包絡を追えるか（話者ごとの声道の形と、制御の探索）</h2>
+{NOW_TEXT}
+{cards_table(d, errors)}
+{made}
+</section>
+<section aria-labelledby="h-ladder"><h2 id="h-ladder">2. 包絡をどこまで合わせれば、録音に近く聞こえるか（前回の試聴）</h2>
 {LADDER_TEXT}
 {ladder_table(d)}
-{cards(d, variant, ladder, forms if form else [], clips)}
 </section>"""
     if form:
-        body += f"""<section aria-labelledby="h-form"><h2 id="h-form">2. エンジンの形を直す（最初の当てはめと、その失敗）</h2>
+        body += f"""<section aria-labelledby="h-form"><h2 id="h-form">3. エンジンの形を直す（最初の当てはめと、その失敗）</h2>
 {FORM_TEXT}
 {form}
 </section>"""
-    n = 3 if form else 2
-    body += f"""<section aria-labelledby="h-swap"><h2 id="h-swap">{n}. 最初の診断と、前回の試聴の結果</h2>
+    n = 4 if form else 3
+    body += f"""<section aria-labelledby="h-swap"><h2 id="h-swap">{n}. 最初の診断と、1 回めの試聴の結果</h2>
 {FIRST_TEXT}
 {swap_table(d, variant)}
 {LOW_TEXT}
@@ -480,7 +549,7 @@ def build(d: Path, variant: str, ladder: Path, forms: list[str], notes: str) -> 
 </section>"""
     reach = reach_tables(d)
     if reach:
-        body += f"""<section aria-labelledby="h-reach"><h2 id="h-reach">{n + 2}. 頼まれれば、エンジンは録音の包絡に寄れるか</h2>
+        body += f"""<section aria-labelledby="h-reach"><h2 id="h-reach">{n + 2}. 最初の試み: 話者ごとの設定と、発話全体で採点する探索</h2>
 {REACH_TEXT}
 {reach}
 </section>"""
@@ -494,12 +563,15 @@ def main() -> None:
     ap.add_argument("--variant", type=str, default="encv2")
     ap.add_argument("--ladder", type=Path, default=ROOT / "out" / "jvs" / "v2_probe" / "ladder", help="where pmvc.ladder wrote its clips")
     ap.add_argument("--forms", type=Path, default=None, help="a file of forms (pmvc.form's SPECs, a line each, up to three): their renders on the cards, and their section if <dir>/form_test.json has them")
+    ap.add_argument("--reached", type=str, default="", help="the searched renders on the cards, each with the variants that may hold a card's clip: shape=VARIANT,reach-a=VARIANT,reach-as=VARIANT+VARIANT")
     ap.add_argument("--notes", type=Path, default=None)
     ap.add_argument("--pages", type=Path, default=ROOT / "out" / "transplant")
     ap.add_argument("--out", type=str, default="listening_v2.html")
     a = ap.parse_args()
     forms = [line for line in a.forms.read_text().splitlines() if line.strip()] if a.forms else []
-    page = build(a.dir, a.variant, a.ladder, forms, a.notes.read_text() if a.notes else "<p>（所見は未記入）</p>")
+    reached = {w.split("=")[0]: w.split("=")[1].split("+") for w in a.reached.split(",")} if a.reached else {}
+    assert all(k in REACHED for k in reached), f"--reached takes {REACHED}"
+    page = build(a.dir, a.variant, a.ladder, forms, reached, a.notes.read_text() if a.notes else "<p>（所見は未記入）</p>")
     (a.pages / a.out).write_text(page)
     print(f"{a.pages / a.out}: {len(page) / 1e6:.1f} MB")
 

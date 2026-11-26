@@ -61,7 +61,9 @@ from scipy.optimize import minimize
 from .audio import Array, load, log_mel
 from .clicks import measure
 from .listener import FEATURE_RATE, LISTEN_SR, Listener, distance, to16k
-from .paths import ROOT
+from .paths import ROOT, engine_is_fresh
+
+engine_is_fresh(pmvc_engine.__file__)
 
 # name, default, lower, upper. The noise gains multiply CHIMERA's own.
 PARAMS: tuple[tuple[str, float, float, float], ...] = (

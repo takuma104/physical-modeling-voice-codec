@@ -13,7 +13,10 @@ dependencies = ["numpy"]
 module-name = "pmvc_engine"
 
 # rebuild when the Rust sources change (uv otherwise only watches this file): this crate's, the
-# wrapper's it is made of, and the engine's (a fork from V2 on, which changes)
+# wrapper's it is made of, and the engine's (a fork from V2 on, which changes). uv 0.6.8 takes
+# no notice of the two keys that lead out of this directory: after an edit of the wrapper or
+# the engine, `uv sync --reinstall-package pmvc-engine` (`pmvc.paths.engine_is_fresh` stops a
+# run on a build older than its sources)
 [tool.uv]
 cache-keys = [
     { file = "pyproject.toml" },
